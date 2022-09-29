@@ -1,0 +1,316 @@
+#!/usr/bin/make -f
+# Sample debian/rules that uses debhelper.
+# This file is public domain software, originally written by Joey Hess.
+#
+# This version is for a multibinary package. It also allows you to build any
+# of the binary packages independantly, via binary-<package> targets.
+
+# Uncomment this to turn on verbose mode.
+#export DH_VERBOSE=1
+
+# # Set default flags with dpkg-buildflags
+# # This might also close #712228
+# export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+# DPKG_EXPORT_BUILDFLAGS = 1
+# include /usr/share/dpkg/buildflags.mk
+
+# Set a dummy HOME variable upon build. Some build daemons do not set HOME, but
+# ghc-cabal expects it to be available.
+export HOME = /homedoesnotexistatbuildtime
+
+# From /usr/share/doc/autotools-dev/examples/rules.gz:
+export DEB_HOST_GNU_TYPE  ?= $(shell dpkg-architecture -qDEB_HOST_GNU_TYPE)
+export DEB_BUILD_GNU_TYPE ?= $(shell dpkg-architecture -qDEB_BUILD_GNU_TYPE)
+export DEB_HOST_ARCH      ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
+export DEB_TARGET_ARCH_ENDIAN	?= $(shell dpkg-architecture -qDEB_TARGET_ARCH_ENDIAN)
+
+# We're cross-building if DEB_BUILD_GNU_TYPE != DEB_HOST_GNU_TYPE
+ifneq ($(DEB_BUILD_GNU_TYPE), $(DEB_HOST_GNU_TYPE))
+  EXTRA_CONFIGURE_FLAGS += --host $(DEB_BUILD_GNU_TYPE) --build $(DEB_BUILD_GNU_TYPE) --target $(DEB_HOST_GNU_TYPE) --enable-unregisterised
+  BUILD_CROSS=YES
+else
+  EXTRA_CONFIGURE_FLAGS += --target $(DEB_HOST_GNU_TYPE)
+  BUILD_CROSS=NO
+endif
+
+ProjectVersion=$(shell cat VERSION)
+
+export GHC=$(firstword $(shell bash -c "type -p ghc"))
+
+DEB_HOOGLE_TXT_DIR = /usr/lib/ghc-doc/hoogle/
+
+ifneq (,$(filter powerpcspe x32, $(DEB_HOST_ARCH)))
+  EXTRA_CONFIGURE_FLAGS += --enable-unregisterised
+endif
+
+# Use system's default ld (ld.bfd) rather than ld.gold, which fails for
+# haskell-cryptohash-sha256 on mips/mipsel. For more information, see
+# https://bugs.debian.org/901947
+# NOTE: This should probably be removed, and revert back to using ld.gold,
+# once #901947 has been fixed.
+# Do the same for powerpcspe, due to https://bugs.debian.org/904915
+# Do the same for sparc64, due to https://bugs.debian.org/908998
+ifneq (,$(filter mips mipsel powerpc powerpcspe sparc64, $(DEB_HOST_ARCH)))
+  EXTRA_CONFIGURE_FLAGS += --disable-ld-override
+endif
+
+%:
+ifneq (,$(filter s390x arm64 armhf, $(DEB_HOST_ARCH)))
+	# Build fails with out-of-memory on Ubuntu's s390x builders.
+	# Setting `ggc-min-expand=10` doesn't solve this.
+	# For now, reduce number of parallel jobs.
+	dh $@ --max-parallel=2
+else
+	dh $@
+endif
+
+
+override_dh_autoreconf:
+	dh_autoreconf perl -- boot
+
+override_dh_auto_configure:
+	echo "SRC_HC_OPTS += -lffi -optl-pthread" >> mk/build.mk
+ifeq (NO,$(BUILD_CROSS))
+	echo "HADDOCK_DOCS := YES" >> mk/build.mk
+	echo "EXTRA_HADDOCK_OPTS += --mathjax=file:///usr/share/javascript/mathjax/MathJax.js" >> mk/build.mk
+	echo "XSLTPROC_OPTS += --nonet" >> mk/build.mk
+else
+	echo "SRC_HC_OPTS += -O0 -H64m" >> mk/build.mk
+	echo "GhcStage1HcOpts = -O" >> mk/build.mk
+	echo "GhcStage2HcOpts = -O0" >> mk/build.mk
+	echo "GhcLibHcOpts = -O" >> mk/build.mk
+	echo "SplitObjs = NO" >> mk/build.mk
+	echo "HADDOCK_DOCS := NO" >> mk/build.mk
+	echo "BUILD_SPHINX_HTML := NO" >> mk/build.mk
+	echo "BUILD_SPHINX_PDF := NO" >> mk/build.mk
+endif
+ifeq (armhf,$(DEB_HOST_ARCH))
+	echo "SRC_HC_OPTS += -D__ARM_PCS_VFP" >> mk/build.mk
+endif
+ifeq (big, $(DEB_TARGET_ARCH_ENDIAN))
+	# See https://gitlab.haskell.org/ghc/ghc/issues/16998
+	patch -p1 < debian/patches/Disable-unboxed-arrays.patch
+endif
+ifneq (,$(filter mips mipsel s390x, $(DEB_HOST_ARCH)))
+	echo "SRC_HC_OPTS     += -optc--param -optcggc-min-expand=10" >> mk/build.mk
+endif
+ifneq (,$(filter mips64el, $(DEB_HOST_ARCH)))
+	# Pass -mxgot to fix relocation linker errors
+	echo "compiler/hsSyn/HsInstances_HC_OPTS += -optc-mxgot" >> mk/build.mk
+endif
+ifeq (x32,$(DEB_HOST_ARCH))
+	echo "INTEGER_LIBRARY = integer-simple" >> mk/build.mk
+endif
+ifneq (,$(filter nostrip, $(DEB_BUILD_OPTIONS)))
+#	echo "GhcStage1HcOpts += -DDEBUG" >> mk/build.mk
+#	echo "GhcStage2HcOpts += -DDEBUG" >> mk/build.mk
+	echo "SRC_HC_OPTS   += -H32m -O0" >> mk/build.mk
+	echo "GhcHcOpts     += -Rghc-timing -DDEBUG" >> mk/build.mk
+#	echo "GhcLibHcOpts  += -O -dcore-lint -keep-hc-files " >> mk/build.mk
+	echo "SplitObjs     = NO" >> mk/build.mk
+	echo "STRIP         = :" >> mk/build.mk
+endif
+ifneq (,$(filter noopt, $(DEB_BUILD_OPTIONS)))
+	echo "SRC_HC_OPTS   += -H32m -O0" >> mk/build.mk
+	echo "GhcHcOpts     += -O0" >> mk/build.mk
+	# This breaks the build - to be investigated:
+	# echo "GhcLibHcOpts  += -O0" >> mk/build.mk
+	echo "GhcRtsCcOpts  += -O0" >> mk/build.mk
+endif
+ifneq (,$(filter alpha m68k mipsel hppa sh4 x32, $(DEB_HOST_ARCH)))
+	# Virtual memory exhausted when trying to build unregisterised compiler on
+	# 32-bit targets. Disable optimizations for compiler/hsSyn/HsInstances.hs.
+	# See https://bugs.debian.org/933968
+	# See https://gitlab.haskell.org/ghc/ghc/issues/17048
+	echo "compiler/hsSyn/HsInstances_HC_OPTS += -O0" >> mk/build.mk
+endif
+	# We also want to build the threaded profiling-enabled debug runtime,
+	# because it does no harm
+	echo 'GhcRTSWays += $$(if $$(filter p, $$(GhcLibWays)),thr_debug_p,)' >> mk/build.mk
+
+	# We can't do this with a configure flag in 6.8.1 as libdir is not
+	# defined at the point at which we := it
+	echo 'ghclibdir := $${libdir}/ghc' >> mk/build.mk
+	echo 'bindir  := /usr/bin' >> mk/build.mk
+	# docdir doesn't have a configure flag, and unfortunately
+	# we also need to explicitly define all of its dependents as they
+	# are set with :=
+	echo 'docdir  := $$(datarootdir)/doc/ghc-doc' >> mk/build.mk
+	echo 'htmldir := $$(docdir)'                   >> mk/build.mk
+	echo 'dvidir  := $$(docdir)'                   >> mk/build.mk
+	echo 'pdfdir  := $$(docdir)'                   >> mk/build.mk
+	echo 'psdir   := $$(docdir)'                   >> mk/build.mk
+	echo 'STRIP_CMD = $(DEB_HOST_GNU_TYPE)-strip'  >> mk/build.mk
+	echo 'RANLIB_CMD = $(DEB_HOST_GNU_TYPE)-ranlib'>> mk/build.mk
+	# We want verbose builds
+	echo 'V=1'                                     >> mk/build.mk
+	dh_auto_configure -- \
+		$(EXTRA_CONFIGURE_FLAGS) \
+		--with-system-libffi --libdir=/usr/lib
+
+override_dh_auto_build:
+	dh_auto_build
+
+override_dh_auto_test:
+ifeq ($(filter nocheck,$(DEB_BUILD_OPTIONS)),)
+	# Do some very simple tests that the compiler actually works
+	rm -rf debian/testghc
+	mkdir debian/testghc
+	echo 'main = putStrLn "Foo"' > debian/testghc/foo.hs
+	inplace/bin/ghc-stage2 debian/testghc/foo.hs -o debian/testghc/foo
+	[ "$$(debian/testghc/foo)" = "Foo" ]
+	rm debian/testghc/*
+	echo 'main = putStrLn "Foo"' > debian/testghc/foo.hs
+	inplace/bin/ghc-stage2 debian/testghc/foo.hs -o debian/testghc/foo -O2
+	[ "$$(debian/testghc/foo)" = "Foo" ]
+	rm debian/testghc/*
+	@printf "====BEGIN GHC INFO OUTPUT====\n"
+	@inplace/bin/ghc-stage2 --info
+	@printf "====END GHC INFO OUTPUT====\n"
+endif
+
+FILES = \( -type f -o -type l \)
+PROF_FILE = \( -name "*.p_*" -o -name "lib*_p.a" \)
+
+override_dh_auto_install:
+	# See https://bugs.debian.org/944493 for why we use --no-parallel.
+	dh_auto_install --no-parallel
+
+	# Delete all the library LICENSE files
+	rm -f debian/tmp/usr/share/doc/ghc-doc/html/libraries/*/LICENSE
+
+	# Remove the haddock.t files, they really should not be in the released
+	# package (upstream #10410)
+	find debian/tmp -name \*.haddock.t -delete
+
+	# Generate lintian overrides
+	mkdir -p debian/tmp/usr/share/lintian/overrides
+	echo "ghc binary: extra-license-file `cd debian/tmp && echo usr/lib/ghc/Cabal-*/Distribution/License.hi`" >> debian/tmp/usr/share/lintian/overrides/ghc
+	echo "ghc: extra-license-file `cd debian/tmp && echo usr/lib/ghc/Cabal-*/Distribution/License.dyn_hi`" >> debian/tmp/usr/share/lintian/overrides/ghc
+	echo "ghc-prof binary: extra-license-file `cd debian/tmp && echo usr/lib/ghc/Cabal-*/Distribution/License.p_hi`" >> debian/tmp/usr/share/lintian/overrides/ghc-prof
+
+	# Sort out the package.conf files
+	mkdir -p debian/tmp/var/lib/ghc
+	# Old directories for symlink-workaround. Remove once all libraries use new path
+	mv debian/tmp/usr/lib/ghc/package.conf.d \
+	   debian/tmp/var/lib/ghc/
+	rm debian/tmp/var/lib/ghc/package.conf.d/package.cache
+	chmod +x debian/provided_substvars
+	debian/provided_substvars
+	sed -ri 's,/usr/share/doc/ghc-doc/html/libraries/(.*)\.haddock,/usr/lib/ghc-doc/haddock/ghc/\1.haddock,' debian/tmp/var/lib/ghc/package.conf.d/*.conf
+
+	# Sort out the binaries
+	if inplace/bin/ghc-stage2 --info | grep '"Have interpreter","NO"'; then \
+	    cd debian/tmp/usr/bin ;rm -f ghci* runghc* runhaskell*; \
+	fi
+
+	# Check if we have a ghci binary
+	if test -e debian/tmp/usr/bin/ghci-$(ProjectVersion); then \
+	    echo 'ghci=ghc-ghci' >> debian/ghc.substvars ; fi
+ifeq (NO,$(BUILD_CROSS))
+	# Add haddock substvars
+	echo "haddock:Depends=haddock-interface-$$(debian/tmp/usr/lib/ghc/bin/haddock --interface-version)" >> debian/ghc-doc.substvars
+	echo "haddock:Provides=haddock-interface-$$(debian/tmp/usr/lib/ghc/bin/haddock --interface-version)" >> debian/ghc.substvars
+	mkdir -p debian/tmp/usr/lib/ghc-doc
+	cp debian/gen_contents_index debian/tmp/usr/lib/ghc-doc/
+	chmod +x debian/tmp/usr/lib/ghc-doc/gen_contents_index
+	mkdir debian/tmp/usr/lib/ghc-doc/haddock
+	mkdir debian/tmp/usr/lib/ghc-doc/haddock/ghc/
+	for f in `find debian/tmp/usr/share/doc/ghc-doc/html/libraries/ -maxdepth 1 -mindepth 1 -type d`; do \
+	    mkdir debian/tmp/usr/lib/ghc-doc/haddock/ghc/`basename $$f` ; \
+	    mv $$f/*.haddock debian/tmp/usr/lib/ghc-doc/haddock/ghc/`basename $$f` ; done
+	cd debian/tmp/usr/share/doc/ghc-doc/html/libraries/; ln -s ghc-$(ProjectVersion) ghc
+	install -Dm 644 debian/index.html debian/tmp/usr/share/doc/ghc-doc/index.html
+
+	# manpages
+	echo ".so man1/ghc.1" > debian/tmp/usr/share/man/man1/ghc-$(ProjectVersion).1
+	if test -e debian/tmp/usr/bin/ghci-$(ProjectVersion); then \
+	    echo ".so man1/ghc.1" > debian/tmp/usr/share/man/man1/ghci.1 ;\
+	    echo ".so man1/ghc.1" > debian/tmp/usr/share/man/man1/ghci-$(ProjectVersion).1 ;\
+	    cp debian/runghc.man debian/tmp/usr/share/man/man1/runghc.1 ; fi
+	cp utils/hp2ps/hp2ps.1 debian/tmp/usr/share/man/man1/hp2ps.1
+	cp debian/ghc-pkg.man debian/tmp/usr/share/man/man1/ghc-pkg.1
+	echo ".so man1/ghc-pkg.1" > debian/tmp/usr/share/man/man1/ghc-pkg-$(ProjectVersion).1
+
+	cp debian/haddock.man debian/tmp/usr/share/man/man1/haddock.1
+	find debian/tmp/usr/share/man $(FILES)           >> debian/ghc.install
+endif
+	# ####################
+	# Now all the files are sorted, create the package filelists
+
+	# ghc
+	find debian/tmp/usr/bin $(FILES)                 >> debian/ghc.install
+#	find debian/tmp/usr/share/ghc* $(FILES)          >> debian/ghc.install
+	find debian/tmp/usr/lib/ghc $(FILES) ! $(PROF_FILE) >> debian/ghc.install
+	find debian/tmp/var				 >> debian/ghc.install
+	echo debian/tmp/usr/share/lintian/overrides/ghc >> debian/ghc.install
+	# ghc-prof
+	find debian/tmp/usr/lib $(FILES) $(PROF_FILE) > debian/ghc-prof.install
+	echo debian/tmp/usr/share/lintian/overrides/ghc-prof >> debian/ghc-prof.install
+	# ghc-doc
+ifeq (NO,$(BUILD_CROSS))
+	mkdir -p debian/tmp/$(DEB_HOOGLE_TXT_DIR)
+	find debian/tmp/usr/share/doc/ghc-doc/html/libraries/*/ -name "*.txt" \
+		-printf "%p $(DEB_HOOGLE_TXT_DIR)/%f\n" >> debian/ghc-doc.links
+	find debian/tmp/usr/share/doc/ghc-doc $(FILES) > debian/ghc-doc.install
+	find debian/tmp/usr/lib/ghc-doc $(FILES)      >> debian/ghc-doc.install
+	sed -i s,^debian/tmp,, debian/*.install debian/*.links
+endif
+	rm -f debian/ghc.links
+	echo "/var/lib/ghc/package.conf.d /usr/lib/ghc/package.conf.d" >> debian/ghc.links
+
+override_dh_auto_clean:
+	dh_auto_clean
+	rm -f mk/build.mk
+
+	rm -f debian/*.install
+	rm -f debian/*.1
+	rm -f debian/ghc.manpages
+	rm -f debian/ghc.links
+	rm -f debian/ghc-doc.links
+	rm -f mk/build.mk
+	rm -rf debian/testghc
+	rm -f ch01.html ch02.html index.html
+	rm -rf debian/tmp-db
+
+	# Hacks:
+	rm -f config.log
+	rm -f libraries/ghc-prim/GHC/PrimopWrappers.hs
+	rm -f libraries/ghc-prim/GHC/Prim.hs
+	rm -f libraries/ghc-prim/GHC/Generics.hc
+	rm -f libraries/ghc-prim/GHC/Generics.dyn_hc
+	rm -f libraries/ghc-prim/GHC/IntWord32.hc
+	rm -f libraries/integer-gmp/GHC/Integer/Type.hc
+	rm -f libraries/base/GHC/ConsoleHandler.hc
+	rm -f libraries/base/GHC/IO/Encoding/CodePage.hc
+	rm -f libraries/base/Unsafe/Coerce.hc
+	rm -f rts/libs.depend mk/install.mk
+	rm -f rts/package.conf.install.raw
+	rm -f rts/package.conf.inplace.raw
+	rm -f utils/ghc-pwd/dist-boot/Main.hi
+	rm -f utils/ghc-pwd/dist-boot/Main.o
+	rm -f utils/ghc-pwd/dist-boot/ghc-pwd
+
+	rm -f libraries/haskeline/a.out
+	rm -rf utils/ghctags/dist-install
+
+override_dh_compress:
+	dh_compress -X.haddock -X.txt
+
+override_dh_installdeb:
+	dh_haskell_provides
+	dh_installdeb
+
+override_dh_shlibdeps:
+	dh_shlibdeps -XlibHS
+
+# we do not want shlibs files there, neither postrm scripts
+override_dh_makeshlibs:
+
+# we have ghc-testsuite for this, empty override
+override_dh_auto_test:
+
+#GHC has no meaningful debugging symbols, so we don't ship a -dbgsym
+#package.
+override_dh_strip:
+	dh_strip --no-automatic-dbgsym
