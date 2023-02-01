@@ -55,7 +55,7 @@ ifneq (,$(filter mips mipsel powerpc powerpcspe sparc64, $(DEB_HOST_ARCH)))
 endif
 
 %:
-ifneq (,$(filter s390x arm64 armhf, $(DEB_HOST_ARCH)))
+ifneq (,$(filter s390x armhf, $(DEB_HOST_ARCH)))
 	# Build fails with out-of-memory on Ubuntu's s390x builders.
 	# Setting `ggc-min-expand=10` doesn't solve this.
 	# For now, reduce number of parallel jobs.
