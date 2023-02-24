@@ -1,8 +1,8 @@
-ghc (8.8.4-3+u001) UNRELEASED; urgency=medium
+ghc (8.8.4-3deepin) unstable; urgency=medium
 
-  * update
-
- -- Debian Haskell Group <pkg-haskell-maintainers@lists.alioth.debian.org>  Thu, 30 Jun 2022 08:52:24 +0800
+  [ LiChengGang ]
+  * 
+ -- LiChengGang <lichenggang@uniontech.com>  Fri, 24 Feb 2023 14:05:54 +0800
 
 ghc (8.8.4-3) unstable; urgency=medium
 
