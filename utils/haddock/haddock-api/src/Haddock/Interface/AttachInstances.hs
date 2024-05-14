@@ -1,5 +1,6 @@
-{-# LANGUAGE MagicHash, BangPatterns #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# OPTIONS_GHC -Wno-incomplete-record-updates #-}
+{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Haddock.Interface.AttachInstances
@@ -17,33 +18,31 @@ module Haddock.Interface.AttachInstances (attachInstances) where
 
 import Haddock.Types
 import Haddock.Convert
-import Haddock.GhcUtils
 
 import Control.Applicative ((<|>))
 import Control.Arrow hiding ((<+>))
-import Data.List
+import Data.List (sortBy)
 import Data.Ord (comparing)
 import Data.Maybe ( maybeToList, mapMaybe, fromMaybe )
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 
-import Class
-import DynFlags
-import CoreSyn (isOrphan)
-import ErrUtils
-import FamInstEnv
+import GHC.Data.FastString (unpackFS)
+import GHC.Core.Class
+import GHC.Core (isOrphan)
+import GHC.Core.FamInstEnv
 import GHC
-import InstEnv
-import Module ( ModuleSet, moduleSetElts )
-import MonadUtils (liftIO)
-import Name
-import NameEnv
-import Outputable (text, sep, (<+>))
-import SrcLoc
-import TyCon
-import TyCoRep
-import TysPrim( funTyConName )
-import Var hiding (varName)
+import GHC.Core.InstEnv
+import GHC.Unit.Module.Env ( ModuleSet, moduleSetElts )
+import GHC.Types.Name
+import GHC.Types.Name.Env
+import GHC.Utils.Outputable (text, sep, (<+>))
+import GHC.Types.SrcLoc
+import GHC.Core.TyCon
+import GHC.Core.TyCo.Rep
+import GHC.Builtin.Types.Prim( funTyConName )
+import GHC.Types.Var hiding (varName)
+import GHC.HsToCore.Docs
 
 type ExportedNames = Set.Set Name
 type Modules = Set.Set Module
@@ -101,7 +100,7 @@ attachToExportItem index expInfo getInstDoc getFixity export =
             fam_instances = maybeToList mb_instances >>= snd
             fam_insts = [ ( synFamInst
                           , getInstDoc n
-                          , spanNameE n synFamInst (L eSpan (tcdName d))
+                          , spanNameE n synFamInst (L (locA eSpan) (tcdName d))
                           , nameModule_maybe n
                           )
                         | i <- sortBy (comparing instFam) fam_instances
@@ -113,7 +112,7 @@ attachToExportItem index expInfo getInstDoc getFixity export =
                         ]
             cls_insts = [ ( synClsInst
                           , getInstDoc n
-                          , spanName n synClsInst (L eSpan (tcdName d))
+                          , spanName n synClsInst (L (locA eSpan) (tcdName d))
                           , nameModule_maybe n
                           )
                         | let is = [ (instanceSig i, getName i) | i <- cls_instances ]
@@ -125,9 +124,8 @@ attachToExportItem index expInfo getInstDoc getFixity export =
             cleanFamInsts = [ (fi, n, L l r, m) | (Right fi, n, L l (Right r), m) <- fam_insts ]
             famInstErrs = [ errm | (Left errm, _, _, _) <- fam_insts ]
         in do
-          dfs <- getDynFlags
           let mkBug = (text "haddock-bug:" <+>) . text
-          liftIO $ putMsg dfs (sep $ map mkBug famInstErrs)
+          putMsgM (sep $ map mkBug famInstErrs)
           return $ cls_insts ++ cleanFamInsts
       return $ e { expItemInstances = insts }
     e -> return e
@@ -137,12 +135,12 @@ attachToExportItem index expInfo getInstDoc getFixity export =
                                , expItemSubDocs = subDocs
                                } = e { expItemFixities =
       nubByName fst $ expItemFixities e ++
-      [ (n',f) | n <- getMainDeclBinder d
+      [ (n',f) | n <- getMainDeclBinder emptyOccEnv d
                , n' <- n : (map fst subDocs ++ patsyn_names)
                , f <- maybeToList (getFixity n')
       ] }
       where
-        patsyn_names = concatMap (getMainDeclBinder . fst) patsyns
+        patsyn_names = concatMap (getMainDeclBinder emptyOccEnv . fst) patsyns
 
     attachFixities e = e
     -- spanName: attach the location to the name that is the same file as the instance location
@@ -177,37 +175,50 @@ findFixity iface ifaceMap instIfaceMap = \name ->
 -- Collecting and sorting instances
 --------------------------------------------------------------------------------
 
+-- | Stable name for stable comparisons. GHC's `Name` uses unstable
+-- ordering based on their `Unique`'s.
+newtype SName = SName Name
+
+instance Eq SName where
+  SName n1 == SName n2 = n1 `stableNameCmp` n2 == EQ
+
+instance Ord SName where
+  SName n1 `compare` SName n2 = n1 `stableNameCmp` n2
 
 -- | Simplified type for sorting types, ignoring qualification (not visible
 -- in Haddock output) and unifying special tycons with normal ones.
 -- For the benefit of the user (looks nice and predictable) and the
 -- tests (which prefer output to be deterministic).
-data SimpleType = SimpleType Name [SimpleType]
-                | SimpleTyLit TyLit
+data SimpleType = SimpleType SName [SimpleType]
+                | SimpleIntTyLit Integer
+                | SimpleStringTyLit String
+                | SimpleCharTyLit Char
                   deriving (Eq,Ord)
 
 
-instHead :: ([TyVar], [PredType], Class, [Type]) -> ([Int], Name, [SimpleType])
+instHead :: ([TyVar], [PredType], Class, [Type]) -> ([Int], SName, [SimpleType])
 instHead (_, _, cls, args)
-  = (map argCount args, className cls, map simplify args)
+  = (map argCount args, SName (className cls), map simplify args)
 
 argCount :: Type -> Int
 argCount (AppTy t _)     = argCount t + 1
 argCount (TyConApp _ ts) = length ts
-argCount (FunTy _ _ )    = 2
+argCount (FunTy _ _ _ _) = 2
 argCount (ForAllTy _ t)  = argCount t
 argCount (CastTy t _)    = argCount t
 argCount _ = 0
 
 simplify :: Type -> SimpleType
-simplify (FunTy t1 t2)  = SimpleType funTyConName [simplify t1, simplify t2]
+simplify (FunTy _ _ t1 t2)  = SimpleType (SName funTyConName) [simplify t1, simplify t2]
 simplify (ForAllTy _ t) = simplify t
 simplify (AppTy t1 t2) = SimpleType s (ts ++ maybeToList (simplify_maybe t2))
   where (SimpleType s ts) = simplify t1
-simplify (TyVarTy v) = SimpleType (tyVarName v) []
-simplify (TyConApp tc ts) = SimpleType (tyConName tc)
+simplify (TyVarTy v) = SimpleType (SName (tyVarName v)) []
+simplify (TyConApp tc ts) = SimpleType (SName (tyConName tc))
                                        (mapMaybe simplify_maybe ts)
-simplify (LitTy l) = SimpleTyLit l
+simplify (LitTy (NumTyLit n)) = SimpleIntTyLit n
+simplify (LitTy (StrTyLit s)) = SimpleStringTyLit (unpackFS s)
+simplify (LitTy (CharTyLit c)) = SimpleCharTyLit c
 simplify (CastTy ty _) = simplify ty
 simplify (CoercionTy _) = error "simplify:Coercion"
 
@@ -216,9 +227,9 @@ simplify_maybe (CoercionTy {}) = Nothing
 simplify_maybe ty              = Just (simplify ty)
 
 -- Used for sorting
-instFam :: FamInst -> ([Int], Name, [SimpleType], Int, SimpleType)
+instFam :: FamInst -> ([Int], SName, [SimpleType], Int, SimpleType)
 instFam FamInst { fi_fam = n, fi_tys = ts, fi_rhs = t }
-  = (map argCount ts, n, map simplify ts, argCount t, simplify t)
+  = (map argCount ts, SName n, map simplify ts, argCount t, simplify t)
 
 
 --------------------------------------------------------------------------------
@@ -255,7 +266,7 @@ isTypeHidden expInfo = typeHidden
       case t of
         TyVarTy {} -> False
         AppTy t1 t2 -> typeHidden t1 || typeHidden t2
-        FunTy t1 t2 -> typeHidden t1 || typeHidden t2
+        FunTy _ _ t1 t2 -> typeHidden t1 || typeHidden t2
         TyConApp tcon args -> nameHidden (getName tcon) || any typeHidden args
         ForAllTy bndr ty -> typeHidden (tyVarKind (binderVar bndr)) || typeHidden ty
         LitTy _ -> False

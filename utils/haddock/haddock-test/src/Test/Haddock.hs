@@ -42,6 +42,7 @@ checkFiles :: Config c -> Bool -> IO ()
 checkFiles cfg@(Config { .. }) somethingCrashed = do
     putStrLn "Testing output files..."
 
+    createDirectoryIfMissing True (cfgOutDir cfg)
     files <- ignore <$> getDirectoryTree (cfgOutDir cfg)
     failed <- liftM catMaybes . forM files $ \file -> do
         putStr $ "Checking \"" ++ file ++ "\"... "
@@ -88,9 +89,9 @@ runHaddock cfg@(Config { .. }) = do
                         , pure $ "--odir=" ++ outDir cfgDirConfig tpkg
                         , tpkgFiles tpkg
                         ]
-                    , pcEnv = Just $ cfgEnv
-                    , pcStdOut = Just $ haddockStdOut
-                    , pcStdErr = Just $ haddockStdOut
+                    , pcEnv = Just cfgEnv
+                    , pcStdOut = Just haddockStdOut
+                    , pcStdErr = Just haddockStdOut
                     }
 
         let msg = "Failed to run Haddock on test package '" ++ tpkgName tpkg ++ "'"
@@ -158,7 +159,7 @@ diffFile cfg diff file = do
     hFlush stdout
     handle <- runProcess' diff $ processConfig
         { pcArgs = [outFile', refFile']
-        , pcStdOut = Just $ stdout
+        , pcStdOut = Just stdout
         }
     waitForProcess handle >> return ()
   where

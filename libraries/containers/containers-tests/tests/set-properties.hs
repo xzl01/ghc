@@ -6,25 +6,24 @@ import Data.Monoid (mempty)
 import Data.Maybe
 import Data.Set
 import Prelude hiding (lookup, null, map, filter, foldr, foldl, all, take, drop, splitAt)
-import Test.Framework
-import Test.Framework.Providers.HUnit
-import Test.Framework.Providers.QuickCheck2
-import Test.HUnit hiding (Test, Testable)
-import Test.QuickCheck
-import Test.QuickCheck.Function
-import Test.QuickCheck.Poly
+import Test.Tasty
+import Test.Tasty.HUnit
+import Test.Tasty.QuickCheck
+import Test.QuickCheck.Function (apply)
 import Control.Monad.Trans.State.Strict
 import Control.Monad.Trans.Class
 import Control.Monad (liftM, liftM3)
 import Data.Functor.Identity
 import Data.Foldable (all)
-#if !MIN_VERSION_base(4,8,0)
-import Control.Applicative (Applicative (..), (<$>))
-#endif
 import Control.Applicative (liftA2)
 
+#if __GLASGOW_HASKELL__ >= 806
+import Utils.NoThunks (whnfHasNoThunks)
+#endif
+
 main :: IO ()
-main = defaultMain [ testCase "lookupLT" test_lookupLT
+main = defaultMain $ testGroup "set-properties"
+                   [ testCase "lookupLT" test_lookupLT
                    , testCase "lookupGT" test_lookupGT
                    , testCase "lookupLE" test_lookupLE
                    , testCase "lookupGE" test_lookupGE
@@ -44,6 +43,12 @@ main = defaultMain [ testCase "lookupLT" test_lookupLT
                    , testProperty "prop_InsertDelete" prop_InsertDelete
                    , testProperty "prop_InsertBiased" prop_InsertBiased
                    , testProperty "prop_DeleteValid" prop_DeleteValid
+                   , testProperty "alterF" prop_alterF
+                   , testProperty "alterF/delete" prop_alterF_delete
+                   , testProperty "alterF/insert" prop_alterF_insert
+                   , testProperty "alterF/member" prop_alterF_member
+                   , testProperty "alterF/four" prop_alterF_four
+                   , testProperty "alterF/valid" prop_alterF_valid
                    , testProperty "prop_Link" prop_Link
                    , testProperty "prop_Merge" prop_Merge
                    , testProperty "prop_UnionValid" prop_UnionValid
@@ -98,6 +103,10 @@ main = defaultMain [ testCase "lookupLT" test_lookupLT
                    , testProperty "powerSet"             prop_powerSet
                    , testProperty "cartesianProduct"     prop_cartesianProduct
                    , testProperty "disjointUnion"        prop_disjointUnion
+#if __GLASGOW_HASKELL__ >= 806
+                   , testProperty "strict foldr"         prop_strictFoldr'
+                   , testProperty "strict foldl"         prop_strictFoldl'
+#endif
                    ]
 
 -- A type with a peculiar Eq instance designed to make sure keys
@@ -369,6 +378,52 @@ prop_DeleteValid :: Int -> Property
 prop_DeleteValid k = forValidUnitTree $ \t -> valid (delete k (insert k t))
 
 {--------------------------------------------------------------------
+  alterF
+--------------------------------------------------------------------}
+
+newtype Ident a = Ident { runIdent :: a }
+instance Functor Ident where
+  fmap f (Ident a) = Ident (f a)
+
+newtype Consty a b = Consty { getConsty :: a}
+instance Functor (Consty a) where
+  fmap _ (Consty a) = Consty a
+
+data Four a = Four a a a a
+  deriving (Eq, Show)
+instance Functor Four where
+  fmap f (Four a b c d) = Four (f a) (f b) (f c) (f d)
+
+four :: Bool -> Four Bool
+               -- insert  delete  id     toggle
+four True  = Four True    False   True   False
+four False = Four True    False   False  True
+
+toggle :: Ord a => a -> Set a -> Set a
+toggle k s =
+    if member k s
+        then delete k s
+        else insert k s
+
+prop_alterF :: Fun Bool [Bool] -> Int -> Set Int -> Property
+prop_alterF f k s = fmap (member k) (alterF (apply f) k s) === apply f (member k s)
+
+prop_alterF_insert :: Int -> Set Int -> Property
+prop_alterF_insert k s = runIdent (alterF (const (Ident True)) k s) === insert k s
+
+prop_alterF_delete :: Int -> Set Int -> Property
+prop_alterF_delete k s = runIdent (alterF (const (Ident False)) k s) === delete k s
+
+prop_alterF_member :: Int -> Set Int -> Property
+prop_alterF_member k s = getConsty (alterF (\b -> Consty b) k s) === member k s
+
+prop_alterF_four :: Int -> Set Int -> Property
+prop_alterF_four k s = alterF four k s === Four (insert k s) (delete k s) s (toggle k s)
+
+prop_alterF_valid :: Int -> Set Int -> Property
+prop_alterF_valid k s = fmap valid (alterF four k s) === Four True True True True
+
+{--------------------------------------------------------------------
   Balance
 --------------------------------------------------------------------}
 prop_Link :: Int -> Property
@@ -614,16 +669,16 @@ prop_spanAntitone xs' = valid tw .&&. valid dw
     xs = fromList xs'
     (tw, dw) = spanAntitone isLeft xs
 
-prop_powerSet :: Set Int -> Property
-prop_powerSet xs = valid ps .&&. ps === ps'
-  where
-    xs' = take 10 xs
-
-    ps = powerSet xs'
-    ps' = fromList . fmap fromList $ lps (toList xs')
-
-    lps [] = [[]]
-    lps (y : ys) = fmap (y:) (lps ys) ++ lps ys
+prop_powerSet :: Property
+prop_powerSet = forAll (resize 10 arbitrary :: Gen (Set Int)) $ \xs ->
+   -- We don't actually have to check on the values directly, because the power
+   -- set is the *only* one that can be produced by a function with the type of
+   -- `powerSet` and satisfy the criteria below. In particular, the `valid ps`
+   -- test ensures that we haven't duplicated any subsets, while the size test
+   -- ensures that we haven't omitted any. Parametricity ensures that we
+   -- haven't produced any elements out of thin air.
+   let ps = powerSet xs
+   in valid ps .&&. all valid ps .&&. size ps === 2^size xs
 
 prop_cartesianProduct :: Set Int -> Set Int -> Property
 prop_cartesianProduct xs ys =
@@ -638,3 +693,13 @@ prop_disjointUnion xs ys =
 isLeft :: Either a b -> Bool
 isLeft (Left _) = True
 isLeft _ = False
+
+#if __GLASGOW_HASKELL__ >= 806
+prop_strictFoldr' :: Set Int -> Property
+prop_strictFoldr' m = whnfHasNoThunks (foldr' (:) [] m)
+#endif
+
+#if __GLASGOW_HASKELL__ >= 806
+prop_strictFoldl' :: Set Int -> Property
+prop_strictFoldl' m = whnfHasNoThunks (foldl' (flip (:)) [] m)
+#endif

@@ -1,10 +1,10 @@
-#include <stdlib.h>
+#include "Rts.h"
 #include "elf_compat.h"
-#include "ghcplatform.h"
+#include "elf_plt_aarch64.h"
+
+#include <stdlib.h>
 
 #if defined(aarch64_HOST_ARCH)
-
-#include "elf_plt_aarch64.h"
 
 #if defined(OBJFORMAT_ELF)
 
@@ -46,8 +46,8 @@ bool needStubForRelaAarch64(Elf_Rela * rela) {
 bool
 makeStubAarch64(Stub * s) {
     // We (the linker) may corrupt registers x16 (IP0) and x17 (IP1) [AAPCS64]
-    // and the condition flags, according to the "ELF for the ARM64
-    // Architecture".
+    // and the condition flags, according to the "ELF for the ARM 64-bit
+    // Architecture (AArch64)".
     //
     // [Special purpose regs]
     // X16 and X17 are IP0 and IP1, intra-procedure-call temporary registers.

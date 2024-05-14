@@ -1,0 +1,62 @@
+commit bea762f2c9d3ff1f67e3fdb22a8ac288b32225b0
+Author: Ilias Tsitsimpis <iliastsi@debian.org>
+Date:   Thu Oct 12 12:44:02 2023 +0300
+
+    hadrian: Pass -DNOSMP to C compiler when needed
+    
+    Hadrian passes the -DNOSMP flag to GHC when the target doesn't support
+    SMP, but doesn't pass it to CC as well, leading to the following
+    compilation error on mips64el:
+    
+    | Run Cc (FindCDependencies CDep) Stage1: rts/sm/NonMovingScav.c => _build/stage1/rts/build/c/sm/NonMovingScav.o.d
+    Command line: /usr/bin/mips64el-linux-gnuabi64-gcc -E -MM -MG -MF _build/stage1/rts/build/c/hooks/FlagDefaults.thr_debug_p_o.d -MT _build/stage1/rts/build/c/hooks/FlagDefaults.o -Irts/include -I_build/stage1/rts/build -I_build/stage1/rts/build/include -Irts/include -x c rts/hooks/FlagDefaults.c -Wall -Wextra -Wstrict-prototypes -Wmissing-prototypes -Wmissing-declarations -Winline -Wpointer-arith -Wmissing-noreturn -Wnested-externs -Wredundant-decls -Wundef -fno-strict-aliasing -DTHREADED_RTS -DDEBUG -fomit-frame-pointer -O2 -g -Irts -I_build/stage1/rts/build -DDEBUG -fno-omit-frame-pointer -g3 -O0
+    ===> Command failed with error code: 1
+    In file included from rts/include/Stg.h:348,
+                     from rts/include/Rts.h:38,
+                     from rts/hooks/FlagDefaults.c:8:
+    rts/include/stg/SMP.h:416:2: error: #error memory barriers unimplemented on this architecture
+      416 | #error memory barriers unimplemented on this architecture
+          |  ^~~~~
+    rts/include/stg/SMP.h:440:2: error: #error memory barriers unimplemented on this architecture
+      440 | #error memory barriers unimplemented on this architecture
+          |  ^~~~~
+    rts/include/stg/SMP.h:464:2: error: #error memory barriers unimplemented on this architecture
+      464 | #error memory barriers unimplemented on this architecture
+          |  ^~~~~
+    
+    The old make system correctly passed this flag to both GHC and CC [1].
+    
+    Fix this error by passing -DNOSMP to CC as well.
+    
+    [1] https://gitlab.haskell.org/ghc/ghc/-/blob/00920f176b0235d5bb52a8e054d89a664f8938fe/rts/ghc.mk#L407
+    
+    Closes #24082
+
+Index: b/hadrian/src/Settings/Packages.hs
+===================================================================
+--- a/hadrian/src/Settings/Packages.hs
++++ b/hadrian/src/Settings/Packages.hs
+@@ -300,13 +300,11 @@ rtsPackageArgs = package rts ? do
+           -- Set the namespace for the rts fs functions
+           , arg $ "-DFS_NAMESPACE=rts"
+           , arg $ "-DCOMPILING_RTS"
+-          , notM targetSupportsSMP           ? arg "-DNOSMP"
+           , way `elem` [debug, debugDynamic] ? pure [ "-DTICKY_TICKY"
+                                                     , "-optc-DTICKY_TICKY"]
+           , Profiling `wayUnit` way          ? arg "-DPROFILING"
+           , Threaded  `wayUnit` way          ? arg "-DTHREADED_RTS"
+-          , notM targetSupportsSMP           ? pure [ "-DNOSMP"
+-                                                    , "-optc-DNOSMP" ]
++          , notM targetSupportsSMP           ? arg "-optc-DNOSMP"
+           ]
+ 
+     let cArgs = mconcat
+@@ -325,6 +323,8 @@ rtsPackageArgs = package rts ? do
+           , arg "-Irts"
+           , arg $ "-I" ++ path
+ 
++          , notM targetSupportsSMP           ? arg "-DNOSMP"
++
+           , Debug     `wayUnit` way          ? pure [ "-DDEBUG"
+                                                     , "-fno-omit-frame-pointer"
+                                                     , "-g3"

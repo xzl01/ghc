@@ -9,7 +9,7 @@
 --                (c) Oregon Graduate Institute of Science and Technology, 2002
 -- License     :  BSD-style (see the file libraries/base/LICENSE)
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  portable
 --
 -- Monadic fixpoints.
@@ -33,6 +33,7 @@ import Data.Ord ( Down(..) )
 import GHC.Base ( Monad, NonEmpty(..), errorWithoutStackTrace, (.) )
 import GHC.Generics
 import GHC.List ( head, tail )
+import GHC.Tuple (Solo (..))
 import Control.Monad.ST.Imp
 import System.IO
 
@@ -62,6 +63,11 @@ class (Monad m) => MonadFix m where
         mfix :: (a -> m a) -> m a
 
 -- Instances of MonadFix for Prelude monads
+
+-- | @since 4.15
+instance MonadFix Solo where
+    mfix f = let a = f (unSolo a) in a
+             where unSolo (Solo x) = x
 
 -- | @since 2.01
 instance MonadFix Maybe where
@@ -156,4 +162,3 @@ instance (MonadFix f, MonadFix g) => MonadFix (f :*: g) where
 -- | @since 4.12.0.0
 instance MonadFix Down where
     mfix f = Down (fix (getDown . f))
-      where getDown (Down x) = x

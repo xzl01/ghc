@@ -5,8 +5,8 @@
 # This file is part of the GHC build system.
 #
 # To understand how the build system works and how to modify it, see
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Architecture
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Modifying
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/architecture
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/modifying
 #
 # -----------------------------------------------------------------------------
 
@@ -20,16 +20,16 @@ define cmm-suffix-rules
 
 ifneq "$$(CLEANING)" "YES"
 
-$1/$2/build/%.$$($3_osuf) : $1/%.cmm $$(rts_H_FILES) $$(includes_H_FILES) $$(includes_DERIVEDCONSTANTS) $$(LAX_DEPS_FOLLOW) $$$$($1_$2_HC_DEP) | $$$$(dir $$$$@)/.
+$1/$2/build/%.$$($3_osuf) : $1/%.cmm $$(rts_H_FILES) $$(includes_$2_H_FILES) $$(LAX_DEPS_FOLLOW) $$$$($1_$2_HC_DEP) | $$$$(dir $$$$@)/.
 	$$(call cmd,$1_$2_HC) $$($1_$2_$3_MOST_HC_OPTS) -c $$< -o $$@
 
-$1/$2/build/%.$$($3_osuf) : $1/$2/build/%.cmm $$(rts_H_FILES) $$(includes_H_FILES) $$(includes_DERIVEDCONSTANTS) $$(LAX_DEPS_FOLLOW) $$$$($1_$2_HC_DEP) | $$$$(dir $$$$@)/.
+$1/$2/build/%.$$($3_osuf) : $1/$2/build/%.cmm $$(rts_H_FILES) $$(includes_$2_H_FILES) $$(LAX_DEPS_FOLLOW) $$$$($1_$2_HC_DEP) | $$$$(dir $$$$@)/.
 	$$(call cmd,$1_$2_HC) $$($1_$2_$3_MOST_HC_OPTS) -c $$< -o $$@
 
-$1/$2/build/%.$$($3_hcsuf) : $1/%.cmm $$(rts_H_FILES) $$(includes_H_FILES) $$(includes_DERIVEDCONSTANTS) $$(LAX_DEPS_FOLLOW) $$$$($1_$2_HC_DEP) | $$$$(dir $$$$@)/.
+$1/$2/build/%.$$($3_hcsuf) : $1/%.cmm $$(rts_H_FILES) $$(includes_$2_H_FILES) $$(LAX_DEPS_FOLLOW) $$$$($1_$2_HC_DEP) | $$$$(dir $$$$@)/.
 	$$(call cmd,$1_$2_HC) $$($1_$2_$3_MOST_HC_OPTS) -C $$< -o $$@
 
-$1/$2/build/%.$$($3_hcsuf) : $1/$2/build/%.cmm $$(rts_H_FILES) $$(includes_H_FILES) $$(includes_DERIVEDCONSTANTS) $$(LAX_DEPS_FOLLOW) $$$$($1_$2_HC_DEP) | $$$$(dir $$$$@)/.
+$1/$2/build/%.$$($3_hcsuf) : $1/$2/build/%.cmm $$(rts_H_FILES) $$(includes_$2_H_FILES) $$(LAX_DEPS_FOLLOW) $$$$($1_$2_HC_DEP) | $$$$(dir $$$$@)/.
 	$$(call cmd,$1_$2_HC) $$($1_$2_$3_MOST_HC_OPTS) -C $$< -o $$@
 
 # XXX
@@ -40,10 +40,10 @@ $1/$2/build/%.$$($3_hcsuf) : $1/$2/build/%.cmm $$(rts_H_FILES) $$(includes_H_FIL
 # so for now they're commented out. They aren't needed, as we can always
 # go directly to .o files.
 #
-# $1/$2/build/%.$$($3_ssuf) : $1/%.cmm $$(rts_H_FILES) $$(includes_H_FILES) $$(LAX_DEPS_FOLLOW) $$$$($1_$2_HC_DEP) | $$$$(dir $$$$@)/.
+# $1/$2/build/%.$$($3_ssuf) : $1/%.cmm $$(rts_H_FILES) $$(includes_$2_H_FILES) $$(LAX_DEPS_FOLLOW) $$$$($1_$2_HC_DEP) | $$$$(dir $$$$@)/.
 # 	$$(call cmd,$1_$2_HC) $$($1_$2_$3_MOST_HC_OPTS) -S $$< -o $$@
 #
-# $1/$2/build/%.$$($3_ssuf) : $1/$2/build/%.cmm $$(rts_H_FILES) $$(includes_H_FILES) $$(LAX_DEPS_FOLLOW) $$$$($1_$2_HC_DEP) | $$$$(dir $$$$@)/.
+# $1/$2/build/%.$$($3_ssuf) : $1/$2/build/%.cmm $$(rts_H_FILES) $$(includes_$2_H_FILES) $$(LAX_DEPS_FOLLOW) $$$$($1_$2_HC_DEP) | $$$$(dir $$$$@)/.
 # 	$$(call cmd,$1_$2_HC) $$($1_$2_$3_MOST_HC_OPTS) -S $$< -o $$@
 
 endif

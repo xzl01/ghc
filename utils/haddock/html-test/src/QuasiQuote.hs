@@ -1,4 +1,5 @@
-{-# LANGUAGE TemplateHaskell, QuasiQuotes #-}
+{-# LANGUAGE Haskell2010 #-}
+{-# LANGUAGE QuasiQuotes #-}
 
 -- example taken from the GHC documentation
 module QuasiQuote where

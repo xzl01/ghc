@@ -1,20 +1,24 @@
+{-# LANGUAGE Safe #-}
+
 -- | TAI and leap-second maps for converting to UTC: most people won't need this module.
-module Data.Time.Clock.Internal.AbsoluteTime
-(
+module Data.Time.Clock.Internal.AbsoluteTime (
     -- TAI arithmetic
-    AbsoluteTime,taiEpoch,addAbsoluteTime,diffAbsoluteTime,
+    AbsoluteTime,
+    taiEpoch,
+    addAbsoluteTime,
+    diffAbsoluteTime,
     taiNominalDayStart,
 ) where
 
-import Data.Typeable
-import Data.Data
 import Control.DeepSeq
+import Data.Data
 import Data.Time.Calendar.Days
 import Data.Time.Clock.Internal.DiffTime
 
-
 -- | AbsoluteTime is TAI, time as measured by a clock.
-newtype AbsoluteTime = MkAbsoluteTime DiffTime deriving (Eq,Ord,Data,Typeable)
+newtype AbsoluteTime
+    = MkAbsoluteTime DiffTime
+    deriving (Eq, Ord, Data, Typeable)
 
 instance NFData AbsoluteTime where
     rnf (MkAbsoluteTime a) = rnf a

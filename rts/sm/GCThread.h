@@ -7,7 +7,7 @@
  * Documentation on the architecture of the Garbage Collector can be
  * found in the online commentary:
  *
- *   http://ghc.haskell.org/trac/ghc/wiki/Commentary/Rts/Storage/GC
+ *   https://gitlab.haskell.org/ghc/ghc/wikis/commentary/rts/storage/gc
  *
  * ---------------------------------------------------------------------------*/
 
@@ -83,6 +83,7 @@ typedef struct gen_workspace_ {
     bdescr *     todo_bd;
     StgPtr       todo_free;            // free ptr for todo_bd
     StgPtr       todo_lim;             // lim for todo_bd
+    struct NonmovingSegment *todo_seg; // only available for oldest gen workspace
 
     WSDeque *    todo_q;
     bdescr *     todo_overflow;
@@ -100,9 +101,6 @@ typedef struct gen_workspace_ {
     bdescr *     part_list;
     StgWord      n_part_blocks;      // count of above
     StgWord      n_part_words;
-
-    StgWord pad[1];
-
 } gen_workspace ATTRIBUTE_ALIGNED(64);
 // align so that computing gct->gens[n] is a shift, not a multiply
 // fails if the size is <64, which is why we need the pad above
@@ -127,8 +125,6 @@ typedef struct gc_thread_ {
 
 #if defined(THREADED_RTS)
     OSThreadId id;                 // The OS thread that this struct belongs to
-    SpinLock   gc_spin;
-    SpinLock   mut_spin;
     volatile StgWord wakeup;       // NB not StgWord8; only StgWord is guaranteed atomic
 #endif
     uint32_t thread_index;         // a zero based index identifying the thread
@@ -184,12 +180,14 @@ typedef struct gc_thread_ {
     W_ copied;
     W_ scanned;
     W_ any_work;
-    W_ no_work;
     W_ scav_find_work;
+    W_ max_n_todo_overflow;
 
-    Time gc_start_cpu;   // process CPU time
-    Time gc_sync_start_elapsed;  // start of GC sync
-    Time gc_start_elapsed;  // process elapsed time
+    Time gc_start_cpu;             // thread CPU time
+    Time gc_end_cpu;               // thread CPU time
+    Time gc_sync_start_elapsed;    // start of GC sync
+    Time gc_start_elapsed;         // process elapsed time
+    Time gc_end_elapsed;           // process elapsed time
     W_ gc_start_faults;
 
     // -------------------
@@ -208,7 +206,7 @@ extern uint32_t n_gc_threads;
 
 extern gc_thread **gc_threads;
 
-#if defined(THREADED_RTS) && defined(llvm_CC_FLAVOR)
+#if defined(THREADED_RTS) && defined(CC_LLVM_BACKEND)
 extern ThreadLocalKey gctKey;
 #endif
 

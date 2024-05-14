@@ -4,6 +4,8 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns        #-}
 
+{-# OPTIONS -fno-warn-name-shadowing #-}
+
 -- | Get information on modules, expressions, and identifiers
 module GHCi.UI.Info
     ( ModInfo(..)
@@ -18,12 +20,13 @@ module GHCi.UI.Info
 
 import           Control.Exception
 import           Control.Monad
+import           Control.Monad.Catch as MC
 import           Control.Monad.Trans.Class
 import           Control.Monad.Trans.Except
 import           Control.Monad.Trans.Maybe
 import           Data.Data
 import           Data.Function
-import           Data.List
+import           Data.List (find, sortBy)
 import           Data.Map.Strict   (Map)
 import qualified Data.Map.Strict   as M
 import           Data.Maybe
@@ -31,18 +34,19 @@ import           Data.Time
 import           Prelude           hiding (mod,(<>))
 import           System.Directory
 
-import qualified CoreUtils
-import           Desugar
-import           DynFlags (HasDynFlags(..))
-import           FastString
+import           GHC.Hs.Syn.Type
+import           GHC.Driver.Session (HasDynFlags(..))
+import           GHC.Data.FastString
 import           GHC
-import           GhcMonad
-import           Name
-import           NameSet
-import           Outputable
-import           SrcLoc
-import           TcHsSyn
-import           Var
+import           GHC.Driver.Monad
+import           GHC.Driver.Env
+import           GHC.Driver.Ppr
+import           GHC.Types.Name
+import           GHC.Types.Name.Set
+import           GHC.Utils.Outputable
+import           GHC.Types.SrcLoc
+import           GHC.Types.Var
+import qualified GHC.Data.Strict as Strict
 
 -- | Info about a module. This information is generated every time a
 -- module is loaded.
@@ -74,6 +78,9 @@ data SpanInfo = SpanInfo
       -- information about the identifier such as module,
       -- locality, definition location, etc.
     }
+
+instance Outputable SpanInfo where
+  ppr (SpanInfo s t i) = ppr s <+> ppr t <+> ppr i
 
 -- | Test whether second span is contained in (or equal to) first span.
 -- This is basically 'containsSpan' for 'SpanInfo'
@@ -137,7 +144,7 @@ findNameUses infos span0 string =
     locToSpans (modinfo,name',span') =
         stripSurrounding (span' : map toSrcSpan spans)
       where
-        toSrcSpan = RealSrcSpan . spaninfoSrcSpan
+        toSrcSpan s = RealSrcSpan (spaninfoSrcSpan s) Strict.Nothing
         spans = filter ((== Just name') . fmap getName . spaninfoVar)
                        (modinfoSpans modinfo)
 
@@ -147,7 +154,7 @@ stripSurrounding xs = filter (not . isRedundant) xs
   where
     isRedundant x = any (x `strictlyContains`) xs
 
-    (RealSrcSpan s1) `strictlyContains` (RealSrcSpan s2)
+    (RealSrcSpan s1 _) `strictlyContains` (RealSrcSpan s2 _)
          = s1 /= s2 && s1 `containsSpan` s2
     _                `strictlyContains` _ = False
 
@@ -187,7 +194,7 @@ resolveNameFromModule infos name = do
      modL <- maybe (throwE $ "No module for" <+> ppr name) return $
              nameModule_maybe name
 
-     info <- maybe (throwE (ppr (moduleUnitId modL) <> ":" <>
+     info <- maybe (throwE (ppr (moduleUnit modL) <> ":" <>
                             ppr modL)) return $
              M.lookup (moduleName modL) infos
 
@@ -229,7 +236,7 @@ findType infos span0 string = do
 guessModule :: GhcMonad m
             => Map ModuleName ModInfo -> FilePath -> MaybeT m ModuleName
 guessModule infos fp = do
-    target <- lift $ guessTarget fp Nothing
+    target <- lift $ guessTarget fp Nothing Nothing
     case targetId target of
         TargetModule mn  -> return mn
         TargetFile fp' _ -> guessModule' fp'
@@ -240,7 +247,7 @@ guessModule infos fp = do
         Nothing -> do
             fp'' <- liftIO (makeRelativeToCurrentDirectory fp')
 
-            target' <- lift $ guessTarget fp'' Nothing
+            target' <- lift $ guessTarget fp'' Nothing Nothing
             case targetId target' of
                 TargetModule mn -> return mn
                 _               -> MaybeT . pure $ findModByFp fp''
@@ -257,6 +264,7 @@ collectInfo :: (GhcMonad m) => Map ModuleName ModInfo -> [ModuleName]
                -> m (Map ModuleName ModInfo)
 collectInfo ms loaded = do
     df <- getDynFlags
+    unit_state <- hsc_units <$> getSession
     liftIO (filterM cacheInvalid loaded) >>= \case
         [] -> return ms
         invalidated -> do
@@ -264,13 +272,13 @@ collectInfo ms loaded = do
                               show (length invalidated) ++
                               " module(s) ... "))
 
-            foldM (go df) ms invalidated
+            foldM (go df unit_state) ms invalidated
   where
-    go df m name = do { info <- getModInfo name; return (M.insert name info m) }
-                   `gcatch`
+    go df unit_state m name = do { info <- getModInfo name; return (M.insert name info m) }
+                   `MC.catch`
                    (\(e :: SomeException) -> do
                          liftIO $ putStrLn
-                                $ showSDocForUser df alwaysQualify
+                                $ showSDocForUser df unit_state alwaysQualify
                                 $ "Error while getting type info from" <+>
                                   ppr name <> ":" <+> text (show e)
                          return m)
@@ -302,57 +310,54 @@ getModInfo name = do
     m <- getModSummary name
     p <- parseModule m
     typechecked <- typecheckModule p
-    allTypes <- processAllTypeCheckedModule typechecked
+    let allTypes = processAllTypeCheckedModule typechecked
     let i = tm_checked_module_info typechecked
     ts <- liftIO $ getModificationTime $ srcFilePath m
     return (ModInfo m allTypes i ts)
 
 -- | Get ALL source spans in the module.
-processAllTypeCheckedModule :: forall m . GhcMonad m => TypecheckedModule
-                            -> m [SpanInfo]
-processAllTypeCheckedModule tcm = do
-    bts <- mapM getTypeLHsBind $ listifyAllSpans tcs
-    ets <- mapM getTypeLHsExpr $ listifyAllSpans tcs
-    pts <- mapM getTypeLPat    $ listifyAllSpans tcs
-    return $ mapMaybe toSpanInfo
-           $ sortBy cmpSpan
-           $ catMaybes (bts ++ ets ++ pts)
+processAllTypeCheckedModule :: TypecheckedModule -> [SpanInfo]
+processAllTypeCheckedModule tcm
+  = mapMaybe toSpanInfo
+  $ sortBy cmpSpan
+  $ catMaybes (bts ++ ets ++ pts)
   where
+    bts = map getTypeLHsBind $ listifyAllSpans tcs
+    ets = map getTypeLHsExpr $ listifyAllSpans tcs
+    pts = map getTypeLPat    $ listifyAllSpans tcs
+
     tcs = tm_typechecked_source tcm
 
     -- | Extract 'Id', 'SrcSpan', and 'Type' for 'LHsBind's
-    getTypeLHsBind :: LHsBind GhcTc -> m (Maybe (Maybe Id,SrcSpan,Type))
-    getTypeLHsBind (dL->L _spn FunBind{fun_id = pid,fun_matches = MG _ _ _})
-        = pure $ Just (Just (unLoc pid),getLoc pid,varType (unLoc pid))
-    getTypeLHsBind _ = pure Nothing
+    getTypeLHsBind :: LHsBind GhcTc -> Maybe (Maybe Id,SrcSpan,Type)
+    getTypeLHsBind (L _spn FunBind{fun_id = pid,fun_matches = MG _ _ _})
+        = Just (Just (unLoc pid), getLocA pid,varType (unLoc pid))
+    getTypeLHsBind _ = Nothing
 
     -- | Extract 'Id', 'SrcSpan', and 'Type' for 'LHsExpr's
-    getTypeLHsExpr :: LHsExpr GhcTc -> m (Maybe (Maybe Id,SrcSpan,Type))
-    getTypeLHsExpr e = do
-        hs_env  <- getSession
-        (_,mbe) <- liftIO $ deSugarExpr hs_env e
-        return $ fmap (\expr -> (mid, getLoc e, CoreUtils.exprType expr)) mbe
+    getTypeLHsExpr :: LHsExpr GhcTc -> Maybe (Maybe Id,SrcSpan,Type)
+    getTypeLHsExpr e = Just (mid, getLocA e, lhsExprType e)
       where
         mid :: Maybe Id
-        mid | HsVar _ (dL->L _ i) <- unwrapVar (unLoc e) = Just i
-            | otherwise                                  = Nothing
+        mid | HsVar _ (L _ i) <- unwrapVar (unLoc e) = Just i
+            | otherwise                              = Nothing
 
-        unwrapVar (HsWrap _ _ var) = var
-        unwrapVar e'               = e'
+        unwrapVar (XExpr (WrapExpr (HsWrap _ var))) = var
+        unwrapVar e'                                = e'
 
     -- | Extract 'Id', 'SrcSpan', and 'Type' for 'LPats's
-    getTypeLPat :: LPat GhcTc -> m (Maybe (Maybe Id,SrcSpan,Type))
-    getTypeLPat (dL->L spn pat) =
-        pure (Just (getMaybeId pat,spn,hsPatType pat))
+    getTypeLPat :: LPat GhcTc -> Maybe (Maybe Id,SrcSpan,Type)
+    getTypeLPat (L spn pat) = Just (getMaybeId pat,locA spn,hsPatType pat)
       where
-        getMaybeId (VarPat _ (dL->L _ vid)) = Just vid
+        getMaybeId :: Pat GhcTc -> Maybe Id
+        getMaybeId (VarPat _ (L _ vid)) = Just vid
         getMaybeId _                        = Nothing
 
     -- | Get ALL source spans in the source.
-    listifyAllSpans :: (HasSrcSpan a , Typeable a) => TypecheckedSource -> [a]
+    listifyAllSpans :: Typeable a => TypecheckedSource -> [LocatedA a]
     listifyAllSpans = everythingAllSpans (++) [] ([] `mkQ` (\x -> [x | p x]))
       where
-        p (dL->L spn _) = isGoodSrcSpan spn
+        p (L spn _) = isGoodSrcSpan (locA spn)
 
     -- | Variant of @syb@'s @everything@ (which summarises all nodes
     -- in top-down, left-to-right order) with a stop-condition on 'NameSet's
@@ -368,7 +373,7 @@ processAllTypeCheckedModule tcm = do
 
     -- | Pretty print the types into a 'SpanInfo'.
     toSpanInfo :: (Maybe Id,SrcSpan,Type) -> Maybe SpanInfo
-    toSpanInfo (n,RealSrcSpan spn,typ)
+    toSpanInfo (n,RealSrcSpan spn _,typ)
         = Just $ spanInfoFromRealSrcSpan spn (Just typ) n
     toSpanInfo _ = Nothing
 

@@ -16,7 +16,9 @@
  * Arguments are swapped for uniformity with unlockClosure. */
 #if defined(THREADED_RTS)
 #define LOCK_CLOSURE(closure, info)                             \
-    if (CInt[n_capabilities] == 1 :: CInt) {                    \
+    CInt _n_caps;                                                 \
+    _n_caps = %relaxed CInt[n_capabilities];                    \
+    if (_n_caps == 1 :: CInt) {                                 \
         info = GET_INFO(closure);                               \
     } else {                                                    \
         ("ptr" info) = ccall reallyLockClosure(closure "ptr");  \
@@ -62,12 +64,12 @@ EXTERN_INLINE StgInfoTable *reallyLockClosure(StgClosure *p)
             info = xchg((P_)(void *)&p->header.info, (W_)&stg_WHITEHOLE_info);
             if (info != (W_)&stg_WHITEHOLE_info) return (StgInfoTable *)info;
 #if defined(PROF_SPIN)
-            ++whitehole_lockClosure_spin;
+            NONATOMIC_ADD(&whitehole_lockClosure_spin, 1);
 #endif
             busy_wait_nop();
         } while (++i < SPIN_COUNT);
 #if defined(PROF_SPIN)
-        ++whitehole_lockClosure_yield;
+        NONATOMIC_ADD(&whitehole_lockClosure_yield, 1);
 #endif
         yieldThread();
     } while (1);
@@ -75,7 +77,7 @@ EXTERN_INLINE StgInfoTable *reallyLockClosure(StgClosure *p)
 
 INLINE_HEADER StgInfoTable *lockClosure(StgClosure *p)
 {
-    if (n_capabilities == 1) {
+    if (getNumCapabilities() == 1) {
         return (StgInfoTable *)p->header.info;
     }
     else {
@@ -88,7 +90,7 @@ INLINE_HEADER StgInfoTable *lockClosure(StgClosure *p)
 EXTERN_INLINE StgInfoTable *tryLockClosure(StgClosure *p)
 {
     StgWord info;
-    if (n_capabilities == 1) {
+    if (RELAXED_LOAD(&n_capabilities) == 1) {
         return (StgInfoTable *)p->header.info;
     }
     else {
@@ -119,9 +121,8 @@ tryLockClosure(StgClosure *p)
 
 EXTERN_INLINE void unlockClosure(StgClosure *p, const StgInfoTable *info)
 {
-    // This is a strictly ordered write, so we need a write_barrier():
-    write_barrier();
-    p->header.info = info;
+    // This is a strictly ordered write, so we need a RELEASE ordering.
+    RELEASE_STORE(&p->header.info, info);
 }
 
 #endif /* CMINUSMINUS */

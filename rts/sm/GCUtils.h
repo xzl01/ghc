@@ -7,15 +7,18 @@
  * Documentation on the architecture of the Garbage Collector can be
  * found in the online commentary:
  *
- *   http://ghc.haskell.org/trac/ghc/wiki/Commentary/Rts/Storage/GC
+ *   https://gitlab.haskell.org/ghc/ghc/wikis/commentary/rts/storage/gc
  *
  * --------------------------------------------------------------------------*/
 
 #pragma once
 
+#include "GCTDecl.h"
+
 #include "BeginPrivate.h"
 
-#include "GCTDecl.h"
+#define ACQUIRE_ALLOC_BLOCK_SPIN_LOCK() ACQUIRE_SPIN_LOCK(&gc_alloc_block_sync)
+#define RELEASE_ALLOC_BLOCK_SPIN_LOCK() RELEASE_SPIN_LOCK(&gc_alloc_block_sync)
 
 bdescr* allocGroup_sync(uint32_t n);
 bdescr* allocGroupOnNode_sync(uint32_t node, uint32_t n);
@@ -67,7 +70,9 @@ recordMutableGen_GC (StgClosure *p, uint32_t gen_no)
         bd = new_bd;
         gct->mut_lists[gen_no] = bd;
     }
-    *bd->free++ = (StgWord)p;
+    *bd->free++ = (StgWord) p;
+    // N.B. we are allocating into our Capability-local mut_list, therefore
+    // we don't need an atomic increment.
 }
 
 #include "EndPrivate.h"

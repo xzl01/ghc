@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 {-# LANGUAGE CPP                #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 
@@ -44,6 +45,7 @@ module Control.Concurrent.STM.TBQueue (
         isFullTBQueue,
   ) where
 
+import           Control.Monad   (unless)
 import           Data.Typeable   (Typeable)
 import           GHC.Conc        (STM, TVar, newTVar, newTVarIO, orElse,
                                   readTVar, retry, writeTVar)
@@ -130,8 +132,11 @@ readTBQueue (TBQueue rsize read _wsize write _size) = do
       case ys of
         [] -> retry
         _  -> do
-          let (z:zs) = reverse ys -- NB. lazy: we want the transaction to be
-                                  -- short, otherwise it will conflict
+          -- NB. lazy: we want the transaction to be
+          -- short, otherwise it will conflict
+          let ~(z,zs) = case reverse ys of
+                          z':zs' -> (z',zs')
+                          _      -> error "readTBQueue: impossible"
           writeTVar write []
           writeTVar read zs
           return z
@@ -152,8 +157,8 @@ flushTBQueue (TBQueue rsize read wsize write size) = do
   if null xs && null ys
     then return []
     else do
-      writeTVar read []
-      writeTVar write []
+      unless (null xs) $ writeTVar read []
+      unless (null ys) $ writeTVar write []
       writeTVar rsize 0
       writeTVar wsize size
       return (xs ++ reverse ys)
@@ -161,10 +166,20 @@ flushTBQueue (TBQueue rsize read wsize write size) = do
 -- | Get the next value from the @TBQueue@ without removing it,
 -- retrying if the channel is empty.
 peekTBQueue :: TBQueue a -> STM a
-peekTBQueue c = do
-  x <- readTBQueue c
-  unGetTBQueue c x
-  return x
+peekTBQueue (TBQueue _ read _ write _) = do
+  xs <- readTVar read
+  case xs of
+    (x:_) -> return x
+    [] -> do
+      ys <- readTVar write
+      case ys of
+        [] -> retry
+        _  -> do
+          let (z:zs) = reverse ys -- NB. lazy: we want the transaction to be
+                                  -- short, otherwise it will conflict
+          writeTVar write []
+          writeTVar read (z:zs)
+          return z
 
 -- | A version of 'peekTBQueue' which does not retry. Instead it
 -- returns @Nothing@ if no value is available.

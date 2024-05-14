@@ -9,7 +9,7 @@
  * Thus we raise it here (before any #include of network-related headers)
  * to 1024 so that at least those programs would work that would work on
  * Linux if that used select() (luckily it uses poll() by now).
- * See https://ghc.haskell.org/trac/ghc/ticket/13497#comment:23
+ * See https://gitlab.haskell.org/ghc/ghc/issues/13497#note_140304
  * The real solution would be to remove all uses of select()
  * on Windows, too, and use IO Completion Ports instead.
  * Note that on Windows, one can simply define FD_SETSIZE to the desired
@@ -21,11 +21,11 @@
 #endif
 
 /* select and supporting types is not Posix */
-/* #include "PosixSource.h" */
+/* #include <rts/PosixSource.h> */
+#include <Rts.h>
 #include <limits.h>
 #include <stdbool.h>
 #include "HsBase.h"
-#include "Rts.h"
 #if !defined(_WIN32)
 #include <poll.h>
 #endif
@@ -141,7 +141,7 @@ compute_WaitForSingleObject_timeout(bool infinite, Time remaining)
  * reliably on Linux when the fd is a not-O_NONBLOCK socket, so if you pass
  * socket fds to this function, ensure they have O_NONBLOCK;
  * see `man 2 poll` and `man 2 select`, and
- * https://ghc.haskell.org/trac/ghc/ticket/13497#comment:26).
+ * https://gitlab.haskell.org/ghc/ghc/issues/13497#note_140309).
  *
  * This function blocks until either `msecs` have passed, or input is
  * available.
@@ -168,7 +168,7 @@ fdReady(int fd, bool write, int64_t msecs, bool isSock)
     Time remaining = MSToTime(msecs);
 
     // Note [Guaranteed syscall time spent]
-    //
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // The implementation ensures that if fdReady() is called with N `msecs`,
     // it will not return before an FD-polling syscall *returns*
     // with `endTime` having passed.

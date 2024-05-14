@@ -17,13 +17,24 @@
 -----------------------------------------------------------------------------
 
 
-module GHC.Num (module GHC.Num, module GHC.Integer, module GHC.Natural) where
+module GHC.Num
+   ( module GHC.Num
+   , module GHC.Num.Integer
+   , module GHC.Num.Natural
+    -- reexported for backward compatibility
+   , module GHC.Natural
+   , module GHC.Integer
+   )
+where
 
 #include "MachDeps.h"
 
+import qualified GHC.Natural
+import qualified GHC.Integer
+
 import GHC.Base
-import GHC.Integer
-import GHC.Natural
+import GHC.Num.Integer
+import GHC.Num.Natural
 
 infixl 7  *
 infixl 6  +, -
@@ -86,7 +97,7 @@ subtract :: (Num a) => a -> a -> a
 subtract x y = y - x
 
 -- | @since 2.01
-instance  Num Int  where
+instance Num Int where
     I# x + I# y = I# (x +# y)
     I# x - I# y = I# (x -# y)
     negate (I# x) = I# (negateInt# x)
@@ -97,8 +108,7 @@ instance  Num Int  where
              | n `eqInt` 0 = 0
              | otherwise   = 1
 
-    {-# INLINE fromInteger #-}   -- Just to be sure!
-    fromInteger i = I# (integerToInt i)
+    fromInteger i = I# (integerToInt# i)
 
 -- | @since 2.01
 instance Num Word where
@@ -109,30 +119,33 @@ instance Num Word where
     abs x                  = x
     signum 0               = 0
     signum _               = 1
-    fromInteger i          = W# (integerToWord i)
+    fromInteger i          = W# (integerToWord# i)
 
 -- | @since 2.01
-instance  Num Integer  where
-    (+) = plusInteger
-    (-) = minusInteger
-    (*) = timesInteger
-    negate         = negateInteger
-    fromInteger x  =  x
+instance Num Integer where
+    (+) = integerAdd
+    (-) = integerSub
+    (*) = integerMul
+    negate         = integerNegate
+    fromInteger i  = i
 
-    abs = absInteger
-    signum = signumInteger
+    abs    = integerAbs
+    signum = integerSignum
 
 -- | Note that `Natural`'s 'Num' instance isn't a ring: no element but 0 has an
 -- additive inverse. It is a semiring though.
 --
 -- @since 4.8.0.0
-instance  Num Natural  where
-    (+) = plusNatural
-    (-) = minusNatural
-    (*) = timesNatural
-    negate      = negateNatural
-    fromInteger = naturalFromInteger
+instance Num Natural where
+    (+)         = naturalAdd
+    (-)         = naturalSubThrow
+    (*)         = naturalMul
+    negate      = naturalNegate
+    fromInteger i = integerToNaturalThrow i
+    abs         = id
+    signum      = naturalSignum
 
-    abs = id
-    signum = signumNatural
+{-# DEPRECATED quotRemInteger "Use integerQuotRem# instead" #-}
+quotRemInteger :: Integer -> Integer -> (# Integer, Integer #)
+quotRemInteger = integerQuotRem#
 

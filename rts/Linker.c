@@ -7,7 +7,7 @@
  * ---------------------------------------------------------------------------*/
 
 #if 0
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #endif
 
 #include "Rts.h"
@@ -26,11 +26,15 @@
 #include "RtsSymbols.h"
 #include "RtsSymbolInfo.h"
 #include "Profiling.h"
+#include "ForeignExports.h"
 #include "sm/OSMem.h"
 #include "linker/M32Alloc.h"
 #include "linker/CacheFlush.h"
 #include "linker/SymbolExtras.h"
+#include "linker/MMap.h"
 #include "PathUtils.h"
+#include "CheckUnload.h" // createOCSectionIndices
+#include "ReportMemoryMap.h"
 
 #if !defined(mingw32_HOST_OS)
 #include "posix/Signals.h"
@@ -43,11 +47,12 @@
 #include <sys/types.h>
 #endif
 
+#include <fcntl.h>
+#include <unistd.h>
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include <assert.h>
 #include <fs_rts.h>
 
 #if defined(HAVE_SYS_STAT_H)
@@ -72,16 +77,39 @@
 #  include <mach-o/fat.h>
 #endif
 
-#if defined(x86_64_HOST_ARCH) && defined(darwin_HOST_OS)
-#define ALWAYS_PIC
-#endif
-
 #if defined(dragonfly_HOST_OS)
 #include <sys/tls.h>
 #endif
+
+/*
+ * Note [iconv and FreeBSD]
+ * ~~~~~~~~~~~~~~~~~~~~~~~~
+ *
+ * On FreeBSD libc.so provides an implementation of the iconv_* family of
+ * functions. However, due to their implementation, these symbols cannot be
+ * resolved via dlsym(); rather, they can only be resolved using the
+ * explicitly-versioned dlvsym().
+ *
+ * This is problematic for the RTS linker since we may be asked to load
+ * an object that depends upon iconv. To handle this we include a set of
+ * fallback cases for these functions, allowing us to resolve them to the
+ * symbols provided by the libc against which the RTS is linked.
+ *
+ * See #20354.
+ */
+
+#if defined(freebsd_HOST_OS)
+extern void iconvctl();
+extern void iconv_open_into();
+extern void iconv_open();
+extern void iconv_close();
+extern void iconv_canonicalize();
+extern void iconv();
+#endif
+
 /*
    Note [runtime-linker-support]
-   -----------------------------
+   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
    When adding support for a new platform to the runtime linker please
    update `$TOP/configure.ac` under heading `Does target have runtime
    linker support?`.
@@ -95,19 +123,19 @@
    addresses of unloaded symbols.
 
    Note [runtime-linker-phases]
-   --------------------------------------
+   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
    Broadly the behavior of the runtime linker can be
-   split into the following four phases:
+   split into the following five phases:
 
    - Indexing (e.g. ocVerifyImage and ocGetNames)
-   - Initialization (e.g. ocResolve and ocRunInit)
-   - Resolve (e.g. resolveObjs())
+   - Initialization (e.g. ocResolve)
+   - RunInit (e.g. ocRunInit)
    - Lookup (e.g. lookupSymbol)
 
    This is to enable lazy loading of symbols. Eager loading is problematic
    as it means that all symbols must be available, even those which we will
    never use. This is especially painful on Windows, where the number of
-   libraries required to link things like mingwex grows to be quite high.
+   libraries required to link things like QT or WxWidgets grows to be quite high.
 
    We proceed through these stages as follows,
 
@@ -131,14 +159,22 @@
 
    * During resolve we attempt to resolve all the symbols needed for the
      initial link. This essentially means, that for any ObjectCode given
-     directly to the command-line we perform lookupSymbols on the required
-     symbols. lookupSymbols may trigger the loading of additional ObjectCode
-     if required.
+     directly to the command-line we perform lookupSymbol on the required
+     symbols. lookupSymbol may trigger the loading of additional ObjectCode
+     if required. After resolving an object we mark its text as executable and
+     not writable.
 
      This phase will produce ObjectCode with status `OBJECT_RESOLVED` if
      the previous status was `OBJECT_NEEDED`.
 
-   * lookupSymbols is used to lookup any symbols required, both during initial
+   * During RunInit we run the initializers ("constructors") of the objects
+     that are in `OBJECT_RESOLVED` state and move them to `OBJECT_READY` state.
+     This must be in a separate phase since we must ensure that all needed
+     objects have been fully resolved before we can run their initializers.
+     This is particularly tricky in the presence of cyclic dependencies (see
+     #21253).
+
+   * lookupSymbol is used to lookup any symbols required, both during initial
      link and during statement and expression compilations in the REPL.
      Declaration of e.g. a foreign import, will eventually call lookupSymbol
      which will either fail (symbol unknown) or succeed (and possibly trigger a
@@ -157,76 +193,25 @@
 
    1) Dependency chains, if A.o required a .o in libB but A.o isn't required to link
       then we don't need to load libB. This means the dependency chain for libraries
-      such as mingw32 and mingwex can be broken down.
+      such as ucrt can be broken down.
 
    2) The number of duplicate symbols, since now only symbols that are
       true duplicates will display the error.
  */
-/*Str*/HashTable *symhash;
-
-/* List of currently loaded objects */
-ObjectCode *objects = NULL;     /* initially empty */
-
-/* List of objects that have been unloaded via unloadObj(), but are waiting
-   to be actually freed via checkUnload() */
-ObjectCode *unloaded_objects = NULL; /* initially empty */
+StrHashTable *symhash;
 
 #if defined(THREADED_RTS)
-/* This protects all the Linker's global state except unloaded_objects */
+/* This protects all the Linker's global state */
 Mutex linker_mutex;
-/*
- * This protects unloaded_objects.  We have a separate mutex for this, because
- * the GC needs to access unloaded_objects in checkUnload, while the linker only
- * needs to access unloaded_objects in unloadObj(), so this allows most linker
- * operations proceed concurrently with the GC.
- */
-Mutex linker_unloaded_mutex;
 #endif
 
-/* Generic wrapper function to try and Resolve and RunInit oc files */
-int ocTryLoad( ObjectCode* oc );
+/* Generic wrapper function to try and resolve oc files */
+static int ocTryLoad( ObjectCode* oc );
+/* Run initializers */
+static int ocRunInit( ObjectCode* oc );
+static int runPendingInitializers (void);
 
-/* Link objects into the lower 2Gb on x86_64.  GHC assumes the
- * small memory model on this architecture (see gcc docs,
- * -mcmodel=small).
- *
- * MAP_32BIT not available on OpenBSD/amd64.
- * Also, MAP_32BIT does not permit W|X mappings on Darwin (see #17353).
- */
-#if defined(x86_64_HOST_ARCH) && !defined(darwin_HOST_OS) && defined(MAP_32BIT)
-#define TRY_MAP_32BIT MAP_32BIT
-#else
-#define TRY_MAP_32BIT 0
-#endif
-
-/*
- * Due to the small memory model (see above), on x86_64 we have to map
- * all our non-PIC object files into the low 2Gb of the address space
- * (why 2Gb and not 4Gb?  Because all addresses must be reachable
- * using a 32-bit signed PC-relative offset). On Linux we can do this
- * using the MAP_32BIT flag to mmap(), however on other OSs
- * (e.g. *BSD, see #2063, and also on Linux inside Xen, see #2512), we
- * can't do this.  So on these systems, we have to pick a base address
- * in the low 2Gb of the address space and try to allocate memory from
- * there.
- *
- * We pick a default address based on the OS, but also make this
- * configurable via an RTS flag (+RTS -xm)
- */
-#if !defined(ALWAYS_PIC) && defined(x86_64_HOST_ARCH)
-
-#if defined(MAP_32BIT)
-// Try to use MAP_32BIT
-#define MMAP_32BIT_BASE_DEFAULT 0
-#else
-// A guess: 1Gb.
-#define MMAP_32BIT_BASE_DEFAULT 0x40000000
-#endif
-
-static void *mmap_32bit_base = (void *)MMAP_32BIT_BASE_DEFAULT;
-#endif
-
-static void ghciRemoveSymbolTable(HashTable *table, const SymbolName* key,
+static void ghciRemoveSymbolTable(StrHashTable *table, const SymbolName* key,
     ObjectCode *owner)
 {
     RtsSymbolInfo *pinfo = lookupStrHashTable(table, key);
@@ -238,6 +223,17 @@ static void ghciRemoveSymbolTable(HashTable *table, const SymbolName* key,
     stgFree(pinfo);
 }
 
+static const char *
+symbolTypeString (SymType type)
+{
+    switch (type & ~SYM_TYPE_DUP_DISCARD) {
+        case SYM_TYPE_CODE: return "code";
+        case SYM_TYPE_DATA: return "data";
+        case SYM_TYPE_INDIRECT_DATA: return "indirect-data";
+        default: barf("symbolTypeString: unknown symbol type");
+    }
+}
+
 /* -----------------------------------------------------------------------------
  * Insert symbols into hash tables, checking for duplicates.
  *
@@ -245,7 +241,7 @@ static void ghciRemoveSymbolTable(HashTable *table, const SymbolName* key,
  */
 /*
  Note [weak-symbols-support]
- -------------------------------------
+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~
  While ghciInsertSymbolTable does implement extensive
  logic for weak symbol support, weak symbols are not currently
  fully supported by the RTS. This code is mostly here for COMDAT
@@ -257,14 +253,15 @@ static void ghciRemoveSymbolTable(HashTable *table, const SymbolName* key,
 
  Some test have been written for weak symbols but have been disabled
  mostly because it's unsure how the weak symbols support should look.
- See Trac #11223
+ See #11223
  */
 int ghciInsertSymbolTable(
    pathchar* obj_name,
-   HashTable *table,
+   StrHashTable *table,
    const SymbolName* key,
    SymbolAddr* data,
-   HsBool weak,
+   SymStrength strength,
+   SymType type,
    ObjectCode *owner)
 {
    RtsSymbolInfo *pinfo = lookupStrHashTable(table, key);
@@ -273,18 +270,42 @@ int ghciInsertSymbolTable(
       pinfo = stgMallocBytes(sizeof (*pinfo), "ghciInsertToSymbolTable");
       pinfo->value = data;
       pinfo->owner = owner;
-      pinfo->weak = weak;
+      pinfo->strength = strength;
+      pinfo->type = type;
       insertStrHashTable(table, key, pinfo);
       return 1;
    }
-   else if (weak && data && pinfo->weak && !pinfo->value)
+   else if (pinfo->type ^ type)
+   {
+       /* We were asked to discard the symbol on duplicates, do so quietly.  */
+       if (!(type & SYM_TYPE_DUP_DISCARD))
+       {
+         debugBelch("Symbol type mismatch.\n");
+         debugBelch("Symbol %s was defined by %" PATH_FMT " to be a %s symbol.\n",
+                    key, obj_name, symbolTypeString(type));
+         debugBelch("      yet was defined by %" PATH_FMT " to be a %s symbol.\n",
+                    pinfo->owner ? pinfo->owner->fileName : WSTR("<builtin>"),
+                    symbolTypeString(pinfo->type));
+       }
+       return 1;
+   }
+   else if (pinfo->strength == STRENGTH_STRONG)
+   {
+       /* The existing symbol is strong meaning we must never override it */
+       IF_DEBUG(linker, debugBelch("%s is already defined as a strong symbol; ignoring redefinition...", key));
+       return 1;
+   }
+   else if (strength == STRENGTH_WEAK &&
+            data &&
+            pinfo->strength == STRENGTH_WEAK &&
+            !pinfo->value)
    {
        /* The existing symbol is weak with a zero value; replace it with the new symbol. */
        pinfo->value = data;
        pinfo->owner = owner;
        return 1;
    }
-   else if (weak)
+   else if (strength == STRENGTH_WEAK)
    {
        return 1; /* weak symbol, because the symbol is weak, data = 0 and we
                  already know of another copy throw this one away.
@@ -294,15 +315,16 @@ int ghciInsertSymbolTable(
                  This also preserves the semantics of linking against
                  the first symbol we find. */
    }
-   else if (pinfo->weak && !weak) /* weak symbol is in the table */
+   else if (pinfo->strength == STRENGTH_WEAK && strength != STRENGTH_WEAK) /* weak symbol is in the table */
    {
       /* override the weak definition with the non-weak one */
       pinfo->value = data;
       pinfo->owner = owner;
-      pinfo->weak = HS_BOOL_FALSE;
+      pinfo->strength = strength;
       return 1;
    }
    else if (  pinfo->owner
+           && pinfo->owner->status != OBJECT_READY
            && pinfo->owner->status != OBJECT_RESOLVED
            && pinfo->owner->status != OBJECT_NEEDED)
    {
@@ -317,10 +339,12 @@ int ghciInsertSymbolTable(
            This is essentially emulating the behavior of a linker wherein it will always
            link in object files that are .o file arguments, but only take object files
            from archives as needed. */
-       if (owner && (owner->status == OBJECT_NEEDED || owner->status == OBJECT_RESOLVED)) {
+       if (owner && (owner->status == OBJECT_NEEDED
+                     || owner->status == OBJECT_RESOLVED
+                     || owner->status == OBJECT_READY)) {
            pinfo->value = data;
            pinfo->owner = owner;
-           pinfo->weak  = weak;
+           pinfo->strength = strength;
        }
 
        return 1;
@@ -338,7 +362,6 @@ int ghciInsertSymbolTable(
         return 1;
     }
 
-   pathchar* archiveName = NULL;
    debugBelch(
       "GHC runtime linker: fatal error: I found a duplicate definition for symbol\n"
       "   %s\n"
@@ -354,15 +377,10 @@ int ghciInsertSymbolTable(
       (char*)key,
       obj_name,
       pinfo->owner == NULL ? WSTR("(GHCi built-in symbols)") :
-      pinfo->owner->archiveMemberName ? archiveName = mkPath(pinfo->owner->archiveMemberName)
+      pinfo->owner->archiveMemberName ? pinfo->owner->archiveMemberName
       : pinfo->owner->fileName
    );
 
-   if (archiveName)
-   {
-       stgFree(archiveName);
-       archiveName = NULL;
-   }
    return 0;
 }
 
@@ -372,7 +390,7 @@ int ghciInsertSymbolTable(
 * Returns: 0 on failure and result is not set,
 *          nonzero on success and result set to nonzero pointer
 */
-HsBool ghciLookupSymbolInfo(HashTable *table,
+HsBool ghciLookupSymbolInfo(StrHashTable *table,
     const SymbolName* key, RtsSymbolInfo **result)
 {
     RtsSymbolInfo *pinfo = lookupStrHashTable(table, key);
@@ -380,10 +398,11 @@ HsBool ghciLookupSymbolInfo(HashTable *table,
         *result = NULL;
         return HS_BOOL_FALSE;
     }
-    if (pinfo->weak)
+    if (pinfo->strength == STRENGTH_WEAK) {
         IF_DEBUG(linker, debugBelch("lookupSymbolInfo: promoting %s\n", key));
-    /* Once it's looked up, it can no longer be overridden */
-    pinfo->weak = HS_BOOL_FALSE;
+        /* Once it's looked up, it can no longer be overridden */
+        pinfo->strength = STRENGTH_NORMAL;
+    }
 
     *result = pinfo;
     return HS_BOOL_TRUE;
@@ -401,7 +420,7 @@ static void *dl_prog_handle;
 static regex_t re_invalid;
 static regex_t re_realso;
 #if defined(THREADED_RTS)
-static Mutex dl_mutex; // mutex to protect dlopen/dlerror critical section
+Mutex dl_mutex; // mutex to protect dlopen/dlerror critical section
 #endif
 #endif
 
@@ -416,7 +435,6 @@ void initLinker (void)
 void
 initLinker_ (int retain_cafs)
 {
-    RtsSymbolVal *sym;
 #if defined(OBJFORMAT_ELF) || defined(OBJFORMAT_MACHO)
     int compileResult;
 #endif
@@ -433,12 +451,10 @@ initLinker_ (int retain_cafs)
         linker_init_done = 1;
     }
 
-    objects = NULL;
-    unloaded_objects = NULL;
+    initUnloadCheck();
 
 #if defined(THREADED_RTS)
     initMutex(&linker_mutex);
-    initMutex(&linker_unloaded_mutex);
 #if defined(OBJFORMAT_ELF) || defined(OBJFORMAT_MACHO)
     initMutex(&dl_mutex);
 #endif
@@ -447,32 +463,20 @@ initLinker_ (int retain_cafs)
     symhash = allocStrHashTable();
 
     /* populate the symbol table with stuff from the RTS */
-    for (sym = rtsSyms; sym->lbl != NULL; sym++) {
+    for (const RtsSymbolVal *sym = rtsSyms; sym->lbl != NULL; sym++) {
         if (! ghciInsertSymbolTable(WSTR("(GHCi built-in symbols)"),
                                     symhash, sym->lbl, sym->addr,
-                                    sym->weak, NULL)) {
+                                    sym->strength, sym->type, NULL)) {
             barf("ghciInsertSymbolTable failed");
         }
         IF_DEBUG(linker, debugBelch("initLinker: inserting rts symbol %s, %p\n", sym->lbl, sym->addr));
-    }
-#   if defined(OBJFORMAT_MACHO) && defined(powerpc_HOST_ARCH)
-    machoInitSymbolsWithoutUnderscore();
-#   endif
-    /* GCC defines a special symbol __dso_handle which is resolved to NULL if
-       referenced from a statically linked module. We need to mimic this, but
-       we cannot use NULL because we use it to mean nonexistent symbols. So we
-       use an arbitrary (hopefully unique) address here.
-    */
-    if (! ghciInsertSymbolTable(WSTR("(GHCi special symbols)"),
-                                symhash, "__dso_handle", (void *)0x12345687, HS_BOOL_FALSE, NULL)) {
-        barf("ghciInsertSymbolTable failed");
     }
 
     // Redirect newCAF to newRetainedCAF if retain_cafs is true.
     if (! ghciInsertSymbolTable(WSTR("(GHCi built-in symbols)"), symhash,
                                 MAYBE_LEADING_UNDERSCORE_STR("newCAF"),
                                 retain_cafs ? newRetainedCAF : newGCdCAF,
-                                HS_BOOL_FALSE, NULL)) {
+                                HS_BOOL_FALSE, SYM_TYPE_CODE, NULL)) {
         barf("ghciInsertSymbolTable failed");
     }
 
@@ -497,15 +501,10 @@ initLinker_ (int retain_cafs)
     }
 #   endif
 
-#if !defined(ALWAYS_PIC) && defined(x86_64_HOST_ARCH)
     if (RtsFlags.MiscFlags.linkerMemBase != 0) {
         // User-override for mmap_32bit_base
         mmap_32bit_base = (void*)RtsFlags.MiscFlags.linkerMemBase;
     }
-#endif
-
-    if (RTS_LINKER_USE_MMAP)
-        m32_allocator_init();
 
 #if defined(OBJFORMAT_PEi386)
     initLinker_PEi386();
@@ -517,9 +516,6 @@ initLinker_ (int retain_cafs)
 
 void
 exitLinker( void ) {
-#if defined(OBJFORMAT_PEi386)
-   exitLinker_PEi386();
-#endif
 #if defined(OBJFORMAT_ELF) || defined(OBJFORMAT_MACHO)
    if (linker_init_done == 1) {
       regfree(&re_invalid);
@@ -530,7 +526,8 @@ exitLinker( void ) {
    }
 #endif
    if (linker_init_done == 1) {
-       freeHashTable(symhash, free);
+       freeStrHashTable(symhash, free);
+       exitUnloadCheck();
    }
 #if defined(THREADED_RTS)
    closeMutex(&linker_mutex);
@@ -626,7 +623,7 @@ internal_dlopen(const char *dll_name)
 
 /*
   Note [RTLD_LOCAL]
-
+  ~~~~~~~~~~~~~~~~~
   In GHCi we want to be able to override previous .so's with newly
   loaded .so's when we recompile something.  This further implies that
   when we look up a symbol in internal_dlsym() we have to iterate
@@ -649,23 +646,65 @@ internal_dlsym(const char *symbol) {
 
     // We acquire dl_mutex as concurrent dl* calls may alter dlerror
     ACQUIRE_LOCK(&dl_mutex);
+
+    // clears dlerror
     dlerror();
+
     // look in program first
     v = dlsym(dl_prog_handle, symbol);
     if (dlerror() == NULL) {
         RELEASE_LOCK(&dl_mutex);
+        IF_DEBUG(linker, debugBelch("internal_dlsym: found symbol '%s' in program\n", symbol));
         return v;
     }
 
     for (o_so = openedSOs; o_so != NULL; o_so = o_so->next) {
         v = dlsym(o_so->handle, symbol);
         if (dlerror() == NULL) {
+            IF_DEBUG(linker, debugBelch("internal_dlsym: found symbol '%s' in shared object\n", symbol));
             RELEASE_LOCK(&dl_mutex);
             return v;
         }
     }
     RELEASE_LOCK(&dl_mutex);
-    return v;
+
+    IF_DEBUG(linker, debugBelch("internal_dlsym: looking for symbol '%s' in special cases\n", symbol));
+#   define SPECIAL_SYMBOL(sym) \
+      if (strcmp(symbol, #sym) == 0) return (void*)&sym;
+
+#   if defined(HAVE_SYS_STAT_H) && defined(linux_HOST_OS) && defined(__GLIBC__)
+    // HACK: GLIBC implements these functions with a great deal of trickery where
+    //       they are either inlined at compile time to their corresponding
+    //       __xxxx(SYS_VER, ...) function or direct syscalls, or resolved at
+    //       link time via libc_nonshared.a.
+    //
+    //       We borrow the approach that the LLVM JIT uses to resolve these
+    //       symbols. See http://llvm.org/PR274 and #7072 for more info.
+
+    SPECIAL_SYMBOL(stat);
+    SPECIAL_SYMBOL(fstat);
+    SPECIAL_SYMBOL(lstat);
+    SPECIAL_SYMBOL(stat64);
+    SPECIAL_SYMBOL(fstat64);
+    SPECIAL_SYMBOL(lstat64);
+    SPECIAL_SYMBOL(atexit);
+    SPECIAL_SYMBOL(mknod);
+#   endif
+
+    // See Note [iconv and FreeBSD]
+#   if defined(freebsd_HOST_OS)
+    SPECIAL_SYMBOL(iconvctl);
+    SPECIAL_SYMBOL(iconv_open_into);
+    SPECIAL_SYMBOL(iconv_open);
+    SPECIAL_SYMBOL(iconv_close);
+    SPECIAL_SYMBOL(iconv_canonicalize);
+    SPECIAL_SYMBOL(iconv);
+#   endif
+
+#undef SPECIAL_SYMBOL
+
+    // we failed to find the symbol
+    return NULL;
 }
 #  endif
 
@@ -691,7 +730,7 @@ addDLL( pathchar *dll_name )
       return NULL;
    }
 
-   // GHC Trac ticket #2615
+   // GHC #2615
    // On some systems (e.g., Gentoo Linux) dynamic files (e.g. libc.so)
    // contain linker scripts rather than ELF-format object code. This
    // code handles the situation by recognizing the real object code
@@ -715,7 +754,7 @@ addDLL( pathchar *dll_name )
                                  MAXLINE-1);
       strncpy(line, (errmsg+(match[1].rm_so)),match_length);
       line[match_length] = '\0'; // make sure string is null-terminated
-      IF_DEBUG(linker, debugBelch ("file name = '%s'\n", line));
+      IF_DEBUG(linker, debugBelch("file name = '%s'\n", line));
       if ((fp = __rts_fopen(line, "r")) == NULL) {
          return errmsg; // return original error if open fails
       }
@@ -818,39 +857,81 @@ HsBool removeLibrarySearchPath(HsPtr dll_path_index)
 }
 
 /* -----------------------------------------------------------------------------
- * insert a symbol in the hash table
+ * insert a code symbol in the hash table
  *
- * Returns: 0 on failure, nozero on success
+ * Returns: 0 on failure, nonzero on success
  */
 HsInt insertSymbol(pathchar* obj_name, SymbolName* key, SymbolAddr* data)
 {
     return ghciInsertSymbolTable(obj_name, symhash, key, data, HS_BOOL_FALSE,
-                                 NULL);
+                                 SYM_TYPE_CODE, NULL);
 }
 
 /* -----------------------------------------------------------------------------
- * lookup a symbol in the hash table
+ * Lookup a symbol in the hash table
+ *
+ * When 'dependent' is not NULL, adds it as a dependent to the owner of the
+ * symbol.
  */
 #if defined(OBJFORMAT_PEi386)
-SymbolAddr* lookupSymbol_ (SymbolName* lbl)
+SymbolAddr* lookupDependentSymbol (SymbolName* lbl, ObjectCode *dependent, SymType *type)
 {
-    return lookupSymbol_PEi386(lbl);
+    ASSERT_LOCK_HELD(&linker_mutex);
+    return lookupSymbol_PEi386(lbl, dependent, type);
 }
 
 #else
 
-SymbolAddr* lookupSymbol_ (SymbolName* lbl)
+SymbolAddr* lookupDependentSymbol (SymbolName* lbl, ObjectCode *dependent, SymType *type)
 {
-    IF_DEBUG(linker, debugBelch("lookupSymbol: looking up %s\n", lbl));
+    ASSERT_LOCK_HELD(&linker_mutex);
+    IF_DEBUG(linker_verbose, debugBelch("lookupSymbol: looking up '%s'\n", lbl));
 
     ASSERT(symhash != NULL);
     RtsSymbolInfo *pinfo;
 
+    /* See Note [Resolving __dso_handle] */
+    if (strcmp(lbl, MAYBE_LEADING_UNDERSCORE_STR("__dso_handle")) == 0) {
+        if (dependent) {
+            return dependent->image;
+        } else {
+            // In the case that we don't know which object the reference lives
+            // in we return a random symbol from the executable image.
+            return &lookupDependentSymbol;
+        }
+    }
+    if (strcmp(lbl, MAYBE_LEADING_UNDERSCORE_STR("__cxa_atexit")) == 0 && dependent) {
+        dependent->cxa_finalize = (cxa_finalize_fn) lookupDependentSymbol(
+                MAYBE_LEADING_UNDERSCORE_STR("__cxa_finalize"),
+                dependent,
+                NULL);
+    }
+
     if (!ghciLookupSymbolInfo(symhash, lbl, &pinfo)) {
-        IF_DEBUG(linker, debugBelch("lookupSymbol: symbol not found\n"));
+        IF_DEBUG(linker_verbose, debugBelch("lookupSymbol: symbol '%s' not found, trying dlsym\n", lbl));
 
 #       if defined(OBJFORMAT_ELF)
-        return internal_dlsym(lbl);
+        SymbolAddr *ret = internal_dlsym(lbl);
+        if (type) {
+            // We assume that the symbol is code since this is usually the case
+            // and dlsym doesn't tell us.
+            *type = SYM_TYPE_CODE;
+        }
+
+        // Generally the dynamic linker would define _DYNAMIC, which is
+        // supposed to point to various bits of dynamic linker state (see
+        // [1]). However, if dynamic linking isn't supported (e.g. in the case
+        // of musl) then we can safely declare that it is NULL.
+        //
+        // [1] https://wiki.gentoo.org/wiki/Hardened/Introduction_to_Position_Independent_Code
+        if (ret == NULL && strcmp(lbl, "_DYNAMIC") == 0) {
+            static void *RTS_DYNAMIC = NULL;
+            ret = (SymbolAddr *) &RTS_DYNAMIC;
+            if (type) {
+                *type = SYM_TYPE_DATA;
+            }
+        }
+        return ret;
 #       elif defined(OBJFORMAT_MACHO)
 
         /* HACK: On OS X, all symbols are prefixed with an underscore.
@@ -861,26 +942,70 @@ SymbolAddr* lookupSymbol_ (SymbolName* lbl)
         */
         IF_DEBUG(linker, debugBelch("lookupSymbol: looking up %s with dlsym\n",
                                     lbl));
-        ASSERT(lbl[0] == '_');
+        CHECK(lbl[0] == '_');
+        if (type) {
+            // We assume that the symbol is code since this is usually the case
+            // and dlsym doesn't tell us.
+            *type = SYM_TYPE_CODE;
+        }
         return internal_dlsym(lbl + 1);
 
 #       else
-        ASSERT(2+2 == 5);
-        return NULL;
+#       error No OBJFORMAT_* macro set
 #       endif
     } else {
+        static void *RTS_NO_FINI = NULL;
+        if (strcmp(lbl, "__fini_array_end") == 0) { return (SymbolAddr *) &RTS_NO_FINI; }
+        if (strcmp(lbl, "__fini_array_start") == 0) { return (SymbolAddr *) &RTS_NO_FINI; }
+        if (type) {
+            // This is an assumption
+            *type = pinfo->type;
+        }
+
+        if (dependent) {
+            // Add dependent as symbol's owner's dependency
+            ObjectCode *owner = pinfo->owner;
+            if (owner) {
+                // TODO: what does it mean for a symbol to not have an owner?
+                insertHashSet(dependent->dependencies, (W_)owner);
+            }
+        }
         return loadSymbol(lbl, pinfo);
     }
 }
 #endif /* OBJFORMAT_PEi386 */
+
+/* Note [Resolving __dso_handle]
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * This symbol, which is defined by the C++ ABI, would typically be defined by
+ * the system's dynamic linker to act as a "handle", identifying a particular
+ * loaded dynamic object to the C++ standard library for the purpose of running
+ * destructors on unload. Here we behave the same way that the dynamic linker
+ * would, using some address (here the start address) of the loaded object as
+ * its handle.
+ *
+ * Note that references to __dso_handle may be relocated using
+ * relocations of bounded displacement and therefore __dso_handle must not be
+ * too far from the loaded object's code (hence using its start address).
+ *
+ * Finally, when we see a reference to __cxa_atexit in an object we take care
+ * to lookup and record the address of __cxa_finalize (largely to ensure that
+ * the symbol dependency is recorded) and call it with the appropriate handle
+ * when the object is unloaded.
+ *
+ * See #20493.
+ * See section 3.3.5 of the Itanium C++ ABI, version 1.83.
+ */
 
 /*
  * Load and relocate the object code for a symbol as necessary.
  * Symbol name only used for diagnostics output.
  */
 SymbolAddr* loadSymbol(SymbolName *lbl, RtsSymbolInfo *pinfo) {
-    IF_DEBUG(linker, debugBelch("lookupSymbol: value of %s is %p\n", lbl,
-                                pinfo->value));
+    IF_DEBUG(linker_verbose,
+             debugBelch("lookupSymbol: value of %s is %p, owned by %" PATH_FMT "\n", lbl,
+                        pinfo->value,
+                        pinfo->owner ? OC_INFORMATIVE_FILENAME(pinfo->owner) : WSTR("No owner, probably built-in.")));
     ObjectCode* oc = pinfo->owner;
 
     /* Symbol can be found during linking, but hasn't been relocated. Do so now.
@@ -897,56 +1022,53 @@ SymbolAddr* loadSymbol(SymbolName *lbl, RtsSymbolInfo *pinfo) {
 #if defined(PROFILING)
         // collect any new cost centres & CCSs
         // that were defined during runInit
-        initProfiling2();
+        refreshProfilingCCSs();
 #endif
     }
 
     return pinfo->value;
 }
 
+void
+printLoadedObjects(void) {
+    ObjectCode* oc;
+    for (oc = objects; oc; oc = oc->next) {
+        if (oc->sections != NULL) {
+            int i;
+            printf("%" PATH_FMT "\n", OC_INFORMATIVE_FILENAME(oc));
+            for (i=0; i < oc->n_sections; i++) {
+                if(oc->sections[i].mapped_start != NULL || oc->sections[i].start != NULL) {
+                    printf("\tsec %2d[alloc: %d; kind: %d]: %p - %p; mmaped: %p - %p\n",
+                        i, oc->sections[i].alloc, oc->sections[i].kind,
+                        oc->sections[i].start,
+                        (void*)((uintptr_t)(oc->sections[i].start) + oc->sections[i].size),
+                        oc->sections[i].mapped_start,
+                        (void*)((uintptr_t)(oc->sections[i].mapped_start) + oc->sections[i].mapped_size));
+                }
+            }
+        }
+   }
+}
+
 SymbolAddr* lookupSymbol( SymbolName* lbl )
 {
     ACQUIRE_LOCK(&linker_mutex);
-    SymbolAddr* r = lookupSymbol_(lbl);
+    // NULL for "don't add dependent". When adding a dependency we call
+    // lookupDependentSymbol directly.
+    SymbolAddr* r = lookupDependentSymbol(lbl, NULL, NULL);
     if (!r) {
         errorBelch("^^ Could not load '%s', dependency unresolved. "
                    "See top entry above.\n", lbl);
+        IF_DEBUG(linker, printLoadedObjects());
         fflush(stderr);
+    }
+
+    if (!runPendingInitializers()) {
+        errorBelch("lookupSymbol: Failed to run initializers.");
     }
     RELEASE_LOCK(&linker_mutex);
     return r;
 }
-
-/* -----------------------------------------------------------------------------
-   Create a StablePtr for a foreign export.  This is normally called by
-   a C function with __attribute__((constructor)), which is generated
-   by GHC and linked into the module.
-
-   If the object code is being loaded dynamically, then we remember
-   which StablePtrs were allocated by the constructors and free them
-   again in unloadObj().
-   -------------------------------------------------------------------------- */
-
-static ObjectCode *loading_obj = NULL;
-
-StgStablePtr foreignExportStablePtr (StgPtr p)
-{
-    ForeignExportStablePtr *fe_sptr;
-    StgStablePtr *sptr;
-
-    sptr = getStablePtr(p);
-
-    if (loading_obj != NULL) {
-        fe_sptr = stgMallocBytes(sizeof(ForeignExportStablePtr),
-                                 "foreignExportStablePtr");
-        fe_sptr->stable_ptr = sptr;
-        fe_sptr->next = loading_obj->stable_ptrs;
-        loading_obj->stable_ptrs = fe_sptr;
-    }
-
-    return sptr;
-}
-
 
 /* -----------------------------------------------------------------------------
  * Debugging aid: look in GHCi's object symbol tables for symbols
@@ -1000,102 +1122,6 @@ resolveSymbolAddr (pathchar* buffer, int size,
 #endif /* OBJFORMAT_PEi386 */
 }
 
-#if RTS_LINKER_USE_MMAP
-//
-// Returns NULL on failure.
-//
-void *
-mmapForLinker (size_t bytes, uint32_t flags, int fd, int offset)
-{
-   void *map_addr = NULL;
-   void *result;
-   size_t size;
-   static uint32_t fixed = 0;
-
-   IF_DEBUG(linker, debugBelch("mmapForLinker: start\n"));
-   size = roundUpToPage(bytes);
-
-#if !defined(ALWAYS_PIC) && defined(x86_64_HOST_ARCH)
-mmap_again:
-
-   if (mmap_32bit_base != 0) {
-       map_addr = mmap_32bit_base;
-   }
-#endif
-
-   IF_DEBUG(linker,
-            debugBelch("mmapForLinker: \tprotection %#0x\n",
-                       PROT_EXEC | PROT_READ | PROT_WRITE));
-   IF_DEBUG(linker,
-            debugBelch("mmapForLinker: \tflags      %#0x\n",
-                       MAP_PRIVATE | TRY_MAP_32BIT | fixed | flags));
-
-   result = mmap(map_addr, size,
-                 PROT_EXEC|PROT_READ|PROT_WRITE,
-                 MAP_PRIVATE|TRY_MAP_32BIT|fixed|flags, fd, offset);
-
-   if (result == MAP_FAILED) {
-       sysErrorBelch("mmap %" FMT_Word " bytes at %p",(W_)size,map_addr);
-       errorBelch("Try specifying an address with +RTS -xm<addr> -RTS");
-       return NULL;
-   }
-
-#if !defined(ALWAYS_PIC) && defined(x86_64_HOST_ARCH)
-   if (mmap_32bit_base != 0) {
-       if (result == map_addr) {
-           mmap_32bit_base = (StgWord8*)map_addr + size;
-       } else {
-           if ((W_)result > 0x80000000) {
-               // oops, we were given memory over 2Gb
-               munmap(result,size);
-#if defined(freebsd_HOST_OS)  || \
-    defined(kfreebsdgnu_HOST_OS) || \
-    defined(dragonfly_HOST_OS)
-               // Some platforms require MAP_FIXED.  This is normally
-               // a bad idea, because MAP_FIXED will overwrite
-               // existing mappings.
-               fixed = MAP_FIXED;
-               goto mmap_again;
-#else
-               errorBelch("loadObj: failed to mmap() memory below 2Gb; "
-                          "asked for %lu bytes at %p. "
-                          "Try specifying an address with +RTS -xm<addr> -RTS",
-                          size, map_addr);
-               return NULL;
-#endif
-           } else {
-               // hmm, we were given memory somewhere else, but it's
-               // still under 2Gb so we can use it.  Next time, ask
-               // for memory right after the place we just got some
-               mmap_32bit_base = (StgWord8*)result + size;
-           }
-       }
-   } else {
-       if ((W_)result > 0x80000000) {
-           // oops, we were given memory over 2Gb
-           // ... try allocating memory somewhere else?;
-           debugTrace(DEBUG_linker,
-                      "MAP_32BIT didn't work; gave us %lu bytes at 0x%p",
-                      bytes, result);
-           munmap(result, size);
-
-           // Set a base address and try again... (guess: 1Gb)
-           mmap_32bit_base = (void*)0x40000000;
-           goto mmap_again;
-       }
-   }
-#endif
-
-   IF_DEBUG(linker,
-            debugBelch("mmapForLinker: mapped %" FMT_Word
-                       " bytes starting at %p\n", (W_)size, result));
-   IF_DEBUG(linker,
-            debugBelch("mmapForLinker: done\n"));
-
-   return result;
-}
-#endif
-
 /*
  * Remove symbols from the symbol table, and free oc->symbols.
  * This operation is idempotent.
@@ -1124,14 +1150,18 @@ static void freeOcStablePtrs (ObjectCode *oc)
 {
     // Release any StablePtrs that were created when this
     // object module was initialized.
-    ForeignExportStablePtr *fe_ptr, *next;
+    struct ForeignExportsList *exports, *next;
 
-    for (fe_ptr = oc->stable_ptrs; fe_ptr != NULL; fe_ptr = next) {
-        next = fe_ptr->next;
-        freeStablePtr(fe_ptr->stable_ptr);
-        stgFree(fe_ptr);
+    for (exports = oc->foreign_exports; exports != NULL; exports = next) {
+        next = exports->next;
+        for (int i = 0; i < exports->n_entries; i++) {
+            freeStablePtr(exports->stable_ptrs[i]);
+        }
+        stgFree(exports->stable_ptrs);
+        exports->stable_ptrs = NULL;
+        exports->next = NULL;
     }
-    oc->stable_ptrs = NULL;
+    oc->foreign_exports = NULL;
 }
 
 static void
@@ -1142,7 +1172,7 @@ freePreloadObjectFile (ObjectCode *oc)
 #else
 
     if (RTS_LINKER_USE_MMAP && oc->imageMapped) {
-        munmap(oc->image, oc->fileSize);
+        munmapForLinker(oc->image, oc->fileSize, "freePreloadObjectFile");
     }
     else {
         stgFree(oc->image);
@@ -1161,6 +1191,37 @@ freePreloadObjectFile (ObjectCode *oc)
  */
 void freeObjectCode (ObjectCode *oc)
 {
+    IF_DEBUG(linker, ocDebugBelch(oc, "start\n"));
+
+    // Run finalizers
+    if (oc->type == STATIC_OBJECT &&
+            (oc->status == OBJECT_READY || oc->status == OBJECT_UNLOADED)) {
+        // Only run finalizers if the initializers have also been run, which
+        // happens when we resolve the object.
+#if defined(OBJFORMAT_ELF)
+        ocRunFini_ELF(oc);
+#elif defined(OBJFORMAT_PEi386)
+        ocRunFini_PEi386(oc);
+#elif defined(OBJFORMAT_MACHO)
+        ocRunFini_MachO(oc);
+#endif
+    }
+
+    // See Note [Resolving __dso_handle]
+    if (oc->cxa_finalize) {
+        oc->cxa_finalize(oc->image);
+    }
+
+    if (oc->type == DYNAMIC_OBJECT) {
+#if defined(OBJFORMAT_ELF)
+        ACQUIRE_LOCK(&dl_mutex);
+        freeNativeCode_ELF(oc);
+        RELEASE_LOCK(&dl_mutex);
+#else
+        barf("freeObjectCode: This shouldn't happen");
+#endif
+    }
+
     freePreloadObjectFile(oc);
 
     if (oc->symbols != NULL) {
@@ -1169,7 +1230,7 @@ void freeObjectCode (ObjectCode *oc)
     }
 
     if (oc->extraInfos != NULL) {
-        freeHashTable(oc->extraInfos, NULL);
+        freeStrHashTable(oc->extraInfos, NULL);
         oc->extraInfos = NULL;
     }
 
@@ -1180,19 +1241,17 @@ void freeObjectCode (ObjectCode *oc)
                 switch(oc->sections[i].alloc){
 #if RTS_LINKER_USE_MMAP
                 case SECTION_MMAP:
-                    munmap(oc->sections[i].mapped_start,
-                           oc->sections[i].mapped_size);
-                    break;
-                case SECTION_M32:
-                    IF_DEBUG(sanity,
-                        memset(oc->sections[i].start,
-                            0x00, oc->sections[i].size));
-                    m32_free(oc->sections[i].start,
-                             oc->sections[i].size);
+                    munmapForLinker(
+                        oc->sections[i].mapped_start,
+                        oc->sections[i].mapped_size,
+                        "freeObjectCode");
                     break;
 #endif
+                case SECTION_M32:
+                    // Freed by m32_allocator_free
+                    break;
                 case SECTION_MALLOC:
-                    IF_DEBUG(sanity,
+                    IF_DEBUG(zero_on_gc,
                         memset(oc->sections[i].start,
                             0x00, oc->sections[i].size));
                     stgFree(oc->sections[i].start);
@@ -1209,16 +1268,17 @@ void freeObjectCode (ObjectCode *oc)
     }
 
     freeProddableBlocks(oc);
+    freeSegments(oc);
 
     /* Free symbol_extras.  On x86_64 Windows, symbol_extras are allocated
      * alongside the image, so we don't need to free. */
 #if defined(NEED_SYMBOL_EXTRAS) && (!defined(x86_64_HOST_ARCH) \
                                     || !defined(mingw32_HOST_OS))
     if (RTS_LINKER_USE_MMAP) {
-        if (!USE_CONTIGUOUS_MMAP && oc->symbol_extras != NULL) {
-            m32_free(oc->symbol_extras,
-                    sizeof(SymbolExtra) * oc->n_symbol_extras);
-        }
+      if (!USE_CONTIGUOUS_MMAP && !RtsFlags.MiscFlags.linkerAlwaysPic &&
+          oc->symbol_extras != NULL) {
+        // Freed by m32_allocator_free
+      }
     }
     else {
         stgFree(oc->symbol_extras);
@@ -1232,38 +1292,30 @@ void freeObjectCode (ObjectCode *oc)
     ocDeinit_ELF(oc);
 #endif
 
+#if defined(NEED_M32)
+    m32_allocator_free(oc->rx_m32);
+    m32_allocator_free(oc->rw_m32);
+#endif
+
     stgFree(oc->fileName);
     stgFree(oc->archiveMemberName);
+
+    freeHashSet(oc->dependencies);
 
     stgFree(oc);
 }
 
-/* -----------------------------------------------------------------------------
-* Sets the initial status of a fresh ObjectCode
-*/
-static void setOcInitialStatus(ObjectCode* oc) {
-    /* If a target has requested the ObjectCode not to be resolved then
-       honor this requests.  Usually this means the ObjectCode has not been
-       initialized and can't be.  */
-    if (oc->status == OBJECT_DONT_RESOLVE)
-      return;
-
-    if (oc->archiveMemberName == NULL) {
-        oc->status = OBJECT_NEEDED;
-    } else {
-        oc->status = OBJECT_LOADED;
-    }
-}
-
 ObjectCode*
-mkOc( pathchar *path, char *image, int imageSize,
-      bool mapped, char *archiveMemberName, int misalignment ) {
+mkOc( ObjectType type, pathchar *path, char *image, int imageSize,
+      bool mapped, pathchar *archiveMemberName, int misalignment ) {
    ObjectCode* oc;
 
-   IF_DEBUG(linker, debugBelch("mkOc: start\n"));
+
+   IF_DEBUG(linker, debugBelch("mkOc: %" PATH_FMT "\n", path));
    oc = stgMallocBytes(sizeof(ObjectCode), "mkOc(oc)");
 
    oc->info = NULL;
+   oc->type = type;
 
 #  if defined(OBJFORMAT_ELF)
    oc->formatName = "ELF";
@@ -1280,33 +1332,54 @@ mkOc( pathchar *path, char *image, int imageSize,
    oc->fileName = pathdup(path);
 
    if (archiveMemberName) {
-       oc->archiveMemberName = stgMallocBytes( strlen(archiveMemberName)+1,
+       oc->archiveMemberName = stgMallocBytes( (pathlen(archiveMemberName)+1) * pathsize,
                                                "loadObj" );
-       strcpy(oc->archiveMemberName, archiveMemberName);
+       pathcopy(oc->archiveMemberName, archiveMemberName);
    } else {
        oc->archiveMemberName = NULL;
    }
 
-   setOcInitialStatus( oc );
+   if (oc->archiveMemberName == NULL) {
+       oc->status = OBJECT_NEEDED;
+   } else {
+       oc->status = OBJECT_LOADED;
+   }
 
    oc->fileSize          = imageSize;
+   oc->n_symbols         = 0;
    oc->symbols           = NULL;
    oc->n_sections        = 0;
    oc->sections          = NULL;
+   oc->n_segments        = 0;
+   oc->segments          = NULL;
    oc->proddables        = NULL;
-   oc->stable_ptrs       = NULL;
+   oc->foreign_exports   = NULL;
 #if defined(NEED_SYMBOL_EXTRAS)
    oc->symbol_extras     = NULL;
 #endif
+   oc->bssBegin          = NULL;
+   oc->bssEnd            = NULL;
    oc->imageMapped       = mapped;
 
    oc->misalignment      = misalignment;
+   oc->cxa_finalize      = NULL;
    oc->extraInfos        = NULL;
 
    /* chain it onto the list of objects */
    oc->next              = NULL;
+   oc->prev              = NULL;
+   oc->next_loaded_object = NULL;
+   oc->mark              = object_code_mark_bit;
+   oc->dependencies      = allocHashSet();
 
-   IF_DEBUG(linker, debugBelch("mkOc: done\n"));
+#if defined(NEED_M32)
+   oc->rw_m32 = m32_allocator_new(false);
+   oc->rx_m32 = m32_allocator_new(true);
+#endif
+
+   oc->nc_ranges = NULL;
+   oc->dlopen_handle = NULL;
+
    return oc;
 }
 
@@ -1318,9 +1391,9 @@ mkOc( pathchar *path, char *image, int imageSize,
 HsInt
 isAlreadyLoaded( pathchar *path )
 {
-    ObjectCode *o;
-    for (o = objects; o; o = o->next) {
-       if (0 == pathcmp(o->fileName, path)) {
+    for (ObjectCode *o = objects; o; o = o->next) {
+       if (0 == pathcmp(o->fileName, path)
+           && o->status != OBJECT_UNLOADED) {
            return 1; /* already loaded */
        }
     }
@@ -1375,11 +1448,10 @@ preloadObjectFile (pathchar *path)
     *
     * See also the misalignment logic for darwin below.
     */
-#if defined(ios_HOST_OS)
-   image = mmap(NULL, fileSize, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
+#if defined(darwin_HOST_OS) || defined(openbsd_HOST_OS)
+   image = mmapForLinker(fileSize, MEM_READ_WRITE, MAP_PRIVATE, fd, 0);
 #else
-   image = mmap(NULL, fileSize, PROT_READ|PROT_WRITE|PROT_EXEC,
-                MAP_PRIVATE, fd, 0);
+   image = mmapForLinker(fileSize, MEM_READ_WRITE_EXECUTE, MAP_PRIVATE, fd, 0);
 #endif
 
    if (image == MAP_FAILED) {
@@ -1418,7 +1490,7 @@ preloadObjectFile (pathchar *path)
 
    image = stgMallocBytes(fileSize, "loadObj(image)");
 
-#endif
+#endif /* !defined(darwin_HOST_OS) */
 
    int n;
    n = fread ( image, 1, fileSize, f );
@@ -1431,7 +1503,10 @@ preloadObjectFile (pathchar *path)
 
 #endif /* RTS_LINKER_USE_MMAP */
 
-   oc = mkOc(path, image, fileSize, true, NULL, misalignment);
+   IF_DEBUG(linker, debugBelch("loadObj: preloaded image at %p\n", (void *) image));
+
+   /* FIXME (AP): =mapped= parameter unconditionally set to true */
+   oc = mkOc(STATIC_OBJECT, path, image, fileSize, true, NULL, misalignment);
 
 #if defined(OBJFORMAT_MACHO)
    if (ocVerifyImage_MachO( oc ))
@@ -1451,21 +1526,27 @@ preloadObjectFile (pathchar *path)
  */
 static HsInt loadObj_ (pathchar *path)
 {
-   ObjectCode* oc;
-   IF_DEBUG(linker, debugBelch("loadObj %" PATH_FMT "\n", path));
-
-   /* debugBelch("loadObj %s\n", path ); */
-
-   /* Check that we haven't already loaded this object.
-      Ignore requests to load multiple times */
+   // Check that we haven't already loaded this object.
+   // Ignore requests to load multiple times
 
    if (isAlreadyLoaded(path)) {
        IF_DEBUG(linker,
                 debugBelch("ignoring repeated load of %" PATH_FMT "\n", path));
-       return 1; /* success */
+       return 1; // success
    }
 
-   oc = preloadObjectFile(path);
+   // Things that look like object files (e.g. end in `.o`) may nevertheless be
+   // archives, as noted in Note [Object merging] in GHC.Driver.Pipeline.Execute.
+   if (isArchive(path)) {
+       if (loadArchive_(path)) {
+            return 1; // success
+       } else {
+            IF_DEBUG(linker,
+                        debugBelch("tried and failed to load %" PATH_FMT " as an archive\n", path));
+       }
+   }
+
+   ObjectCode *oc = preloadObjectFile(path);
    if (oc == NULL) return 0;
 
    if (! loadOc(oc)) {
@@ -1476,8 +1557,10 @@ static HsInt loadObj_ (pathchar *path)
        return 0;
    }
 
-   oc->next = objects;
-   objects = oc;
+   insertOCSectionIndices(oc);
+
+   oc->next_loaded_object = loaded_objects;
+   loaded_objects = oc;
    return 1;
 }
 
@@ -1493,7 +1576,7 @@ HsInt loadOc (ObjectCode* oc)
 {
    int r;
 
-   IF_DEBUG(linker, debugBelch("loadOc: start\n"));
+   IF_DEBUG(linker, ocDebugBelch(oc, "start\n"));
 
    /* verify the in-memory image */
 #  if defined(OBJFORMAT_ELF)
@@ -1506,22 +1589,44 @@ HsInt loadOc (ObjectCode* oc)
    barf("loadObj: no verify method");
 #  endif
    if (!r) {
-       IF_DEBUG(linker, debugBelch("loadOc: ocVerifyImage_* failed\n"));
+       IF_DEBUG(linker, ocDebugBelch(oc, "ocVerifyImage_* failed\n"));
        return r;
    }
 
    /* Note [loadOc orderings]
-      ocAllocateSymbolsExtras has only two pre-requisites, it must run after
-      preloadObjectFile and ocVerify.   Neither have changed.   On most targets
-      allocating the extras is independent on parsing the section data, so the
-      order between these two never mattered.
+      ~~~~~~~~~~~~~~~~~~~~~~~
+      The order of `ocAllocateExtras` and `ocGetNames` matters. For MachO
+      and ELF, `ocInit` and `ocGetNames` initialize a bunch of pointers based
+      on the offset to `oc->image`, but `ocAllocateExtras` may relocate
+      the address of `oc->image` and invalidate those pointers. So we must
+      compute or recompute those pointers after `ocAllocateExtras`.
 
       On Windows, when we have an import library we (for now, as we don't honor
       the lazy loading semantics of the library and instead GHCi is already
       lazy) don't use the library after ocGetNames as it just populates the
-      symbol table.  Allocating space for jump tables in ocAllocateSymbolExtras
+      symbol table.  Allocating space for jump tables in ocAllocateExtras
       would just be a waste then as we'll be stopping further processing of the
-      library in the next few steps.  */
+      library in the next few steps. If necessary, the actual allocation
+      happens in `ocGetNames_PEi386` simply set the correct pointers.
+      */
+
+#if defined(NEED_SYMBOL_EXTRAS)
+#  if defined(OBJFORMAT_MACHO)
+   r = ocAllocateExtras_MachO ( oc );
+   if (!r) {
+       IF_DEBUG(linker,
+                ocDebugBelch(oc, "ocAllocateExtras_MachO failed\n"));
+       return r;
+   }
+#  elif defined(OBJFORMAT_ELF)
+   r = ocAllocateExtras_ELF ( oc );
+   if (!r) {
+       IF_DEBUG(linker,
+                ocDebugBelch(oc, "ocAllocateExtras_ELF failed\n"));
+       return r;
+   }
+#  endif
+#endif
 
    /* build the symbol list for this image */
 #  if defined(OBJFORMAT_ELF)
@@ -1534,33 +1639,22 @@ HsInt loadOc (ObjectCode* oc)
    barf("loadObj: no getNames method");
 #  endif
    if (!r) {
-       IF_DEBUG(linker, debugBelch("loadOc: ocGetNames_* failed\n"));
+       IF_DEBUG(linker, ocDebugBelch(oc, "ocGetNames_* failed\n"));
        return r;
    }
 
-#if defined(NEED_SYMBOL_EXTRAS)
-#  if defined(OBJFORMAT_MACHO)
-   r = ocAllocateSymbolExtras_MachO ( oc );
-   if (!r) {
-       IF_DEBUG(linker,
-                debugBelch("loadOc: ocAllocateSymbolExtras_MachO failed\n"));
-       return r;
+   /* Loaded, but not resolved yet, ensure the OC is in a consistent state.
+      If a target has requested the ObjectCode not to be resolved then honor
+      this requests.  Usually this means the ObjectCode has not been initialized
+      and can't be. */
+   if (oc->status != OBJECT_DONT_RESOLVE) {
+       if (oc->archiveMemberName == NULL) {
+           oc->status = OBJECT_NEEDED;
+       } else {
+           oc->status = OBJECT_LOADED;
+       }
    }
-#  elif defined(OBJFORMAT_ELF)
-   r = ocAllocateSymbolExtras_ELF ( oc );
-   if (!r) {
-       IF_DEBUG(linker,
-                debugBelch("loadOc: ocAllocateSymbolExtras_ELF failed\n"));
-       return r;
-   }
-#  elif defined(OBJFORMAT_PEi386)
-   ocAllocateSymbolExtras_PEi386 ( oc );
-#  endif
-#endif
-
-   /* loaded, but not resolved yet, ensure the OC is in a consistent state */
-   setOcInitialStatus( oc );
-   IF_DEBUG(linker, debugBelch("loadOc: done.\n"));
+   IF_DEBUG(linker, ocDebugBelch(oc, "done\n"));
 
    return 1;
 }
@@ -1583,12 +1677,10 @@ int ocTryLoad (ObjectCode* oc) {
         are to be loaded by this call.
 
         This call is intended to have no side-effects when a non-duplicate
-        symbol is re-inserted.  A symbol is only a duplicate if the object file
-        it is defined in has had it's relocations resolved.  A resolved object
-        file means the symbols inside it are required.
+        symbol is re-inserted.
 
-        The symbol address is not used to distinguish symbols. Duplicate symbols
-        are distinguished by name, oc and attributes (weak symbols etc).
+        We set the Address to NULL since that is not used to distinguish
+        symbols. Duplicate symbols are distinguished by name and oc.
     */
     int x;
     Symbol_t symbol;
@@ -1597,11 +1689,13 @@ int ocTryLoad (ObjectCode* oc) {
         if (   symbol.name
             && !ghciInsertSymbolTable(oc->fileName, symhash, symbol.name,
                                       symbol.addr,
-                                      isSymbolWeak(oc, symbol.name), oc)) {
+                                      isSymbolWeak(oc, symbol.name),
+                                      symbol.type, oc)) {
             return 0;
         }
     }
 
+    IF_DEBUG(linker, ocDebugBelch(oc, "resolving\n"));
 #   if defined(OBJFORMAT_ELF)
     r = ocResolve_ELF ( oc );
 #   elif defined(OBJFORMAT_PEi386)
@@ -1611,11 +1705,41 @@ int ocTryLoad (ObjectCode* oc) {
 #   else
     barf("ocTryLoad: not implemented on this platform");
 #   endif
-    if (!r) { return r; }
+    if (!r) {
+        IF_DEBUG(linker, ocDebugBelch(oc, "resolution failed\n"));
+        return r;
+    }
 
-    // run init/init_array/ctors/mod_init_func
+    IF_DEBUG(linker, ocDebugBelch(oc, "protecting mappings\n"));
+#if defined(NEED_SYMBOL_EXTRAS)
+    ocProtectExtras(oc);
+#endif
 
-    loading_obj = oc; // tells foreignExportStablePtr what to do
+    // We have finished loading and relocating; flush the m32 allocators to
+    // setup page protections.
+#if defined(NEED_M32)
+    m32_allocator_flush(oc->rx_m32);
+    m32_allocator_flush(oc->rw_m32);
+#endif
+
+    IF_DEBUG(linker, ocDebugBelch(oc, "resolved\n"));
+    oc->status = OBJECT_RESOLVED;
+
+    return 1;
+}
+
+// run init/init_array/ctors/mod_init_func
+int ocRunInit(ObjectCode *oc)
+{
+    if (oc->status != OBJECT_RESOLVED) {
+        return 1;
+    }
+
+    IF_DEBUG(linker, ocDebugBelch(oc, "running initializers\n"));
+
+    // See Note [Tracking foreign exports] in ForeignExports.c
+    foreignExportsLoadingObject(oc);
+    int r;
 #if defined(OBJFORMAT_ELF)
     r = ocRunInit_ELF ( oc );
 #elif defined(OBJFORMAT_PEi386)
@@ -1625,12 +1749,25 @@ int ocTryLoad (ObjectCode* oc) {
 #else
     barf("ocTryLoad: initializers not implemented on this platform");
 #endif
-    loading_obj = NULL;
+    foreignExportsFinishedLoadingObject();
 
     if (!r) { return r; }
+    oc->status = OBJECT_READY;
 
-    oc->status = OBJECT_RESOLVED;
+    return 1;
+}
 
+int runPendingInitializers (void)
+{
+    for (ObjectCode *oc = objects; oc; oc = oc->next) {
+        int r = ocRunInit(oc);
+        if (!r) {
+            errorBelch("Could not run initializers of Object Code %" PATH_FMT ".\n", OC_INFORMATIVE_FILENAME(oc));
+            IF_DEBUG(linker, printLoadedObjects());
+            fflush(stderr);
+            return r;
+        }
+    }
     return 1;
 }
 
@@ -1641,22 +1778,25 @@ int ocTryLoad (ObjectCode* oc) {
  */
 static HsInt resolveObjs_ (void)
 {
-    ObjectCode *oc;
-    int r;
-
     IF_DEBUG(linker, debugBelch("resolveObjs: start\n"));
 
-    for (oc = objects; oc; oc = oc->next) {
-        r = ocTryLoad(oc);
-        if (!r)
-        {
+    for (ObjectCode *oc = objects; oc; oc = oc->next) {
+        int r = ocTryLoad(oc);
+        if (!r) {
+            errorBelch("Could not load Object Code %" PATH_FMT ".\n", OC_INFORMATIVE_FILENAME(oc));
+            IF_DEBUG(linker, printLoadedObjects());
+            fflush(stderr);
             return r;
         }
     }
 
+    if (!runPendingInitializers()) {
+        return 0;
+    }
+
 #if defined(PROFILING)
     // collect any new cost centres & CCSs that were defined during runInit
-    initProfiling2();
+    refreshProfilingCCSs();
 #endif
 
     IF_DEBUG(linker, debugBelch("resolveObjs: done\n"));
@@ -1676,45 +1816,35 @@ HsInt resolveObjs (void)
  */
 static HsInt unloadObj_ (pathchar *path, bool just_purge)
 {
-    ObjectCode *oc, *prev, *next;
-    HsBool unloadedAnyObj = HS_BOOL_FALSE;
-
     ASSERT(symhash != NULL);
     ASSERT(objects != NULL);
 
     IF_DEBUG(linker, debugBelch("unloadObj: %" PATH_FMT "\n", path));
 
-    prev = NULL;
-    for (oc = objects; oc; oc = next) {
-        next = oc->next; // oc might be freed
+    bool unloadedAnyObj = false;
+    ObjectCode *prev = NULL;
+    // NOTE (osa): There may be more than one object with the same file name
+    // (happens when loading archive files) so we don't stop after unloading one
+    for (ObjectCode *oc = loaded_objects; oc; oc = oc->next_loaded_object) {
+        if (pathcmp(oc->fileName,path) == 0) {
+            oc->status = OBJECT_UNLOADED;
 
-        if (!pathcmp(oc->fileName,path)) {
-
-            // these are both idempotent, so in just_purge mode we can
-            // later call unloadObj() to really unload the object.
+            // These are both idempotent, so in just_purge mode we can later
+            // call unloadObj() to really unload the object.
             removeOcSymbols(oc);
             freeOcStablePtrs(oc);
 
-            if (!just_purge) {
-                if (prev == NULL) {
-                    objects = oc->next;
-                } else {
-                    prev->next = oc->next;
-                }
-                ACQUIRE_LOCK(&linker_unloaded_mutex);
-                oc->next = unloaded_objects;
-                unloaded_objects = oc;
-                oc->status = OBJECT_UNLOADED;
-                RELEASE_LOCK(&linker_unloaded_mutex);
-                // We do not own oc any more; it can be released at any time by
-                // the GC in checkUnload().
-            } else {
-                prev = oc;
-            }
+            unloadedAnyObj = true;
 
-            /* This could be a member of an archive so continue
-             * unloading other members. */
-            unloadedAnyObj = HS_BOOL_TRUE;
+            if (!just_purge) {
+                n_unloaded_objects += 1;
+                // Remove object code from root set
+                if (prev == NULL) {
+                    loaded_objects = oc->next_loaded_object;
+                } else {
+                    prev->next_loaded_object = oc->next_loaded_object;
+                }
+            }
         } else {
             prev = oc;
         }
@@ -1722,8 +1852,7 @@ static HsInt unloadObj_ (pathchar *path, bool just_purge)
 
     if (unloadedAnyObj) {
         return 1;
-    }
-    else {
+    } else {
         errorBelch("unloadObj: can't find `%" PATH_FMT "' to unload", path);
         return 0;
     }
@@ -1745,15 +1874,9 @@ HsInt purgeObj (pathchar *path)
     return r;
 }
 
-static OStatus getObjectLoadStatus_ (pathchar *path)
+OStatus getObjectLoadStatus_ (pathchar *path)
 {
-    ObjectCode *o;
-    for (o = objects; o; o = o->next) {
-       if (0 == pathcmp(o->fileName, path)) {
-           return o->status;
-       }
-    }
-    for (o = unloaded_objects; o; o = o->next) {
+    for (ObjectCode *o = objects; o; o = o->next) {
        if (0 == pathcmp(o->fileName, path)) {
            return o->status;
        }
@@ -1818,8 +1941,8 @@ void freeProddableBlocks (ObjectCode *oc)
  */
 void
 addSection (Section *s, SectionKind kind, SectionAlloc alloc,
-            void* start, StgWord size, StgWord mapped_offset,
-            void* mapped_start, StgWord mapped_size)
+            void* start, StgWord size,
+            StgWord mapped_offset, void* mapped_start, StgWord mapped_size)
 {
    s->start        = start;     /* actual start of section in memory */
    s->size         = size;      /* actual size of section in memory */
@@ -1841,3 +1964,106 @@ addSection (Section *s, SectionKind kind, SectionAlloc alloc,
                        size, kind ));
 }
 
+#define UNUSED(x) (void)(x)
+
+#if defined(OBJFORMAT_ELF)
+void * loadNativeObj (pathchar *path, char **errmsg)
+{
+   ACQUIRE_LOCK(&linker_mutex);
+   void *r = loadNativeObj_ELF(path, errmsg);
+   RELEASE_LOCK(&linker_mutex);
+   return r;
+}
+#else
+void * GNU_ATTRIBUTE(__noreturn__)
+loadNativeObj (pathchar *path, char **errmsg)
+{
+   UNUSED(path);
+   UNUSED(errmsg);
+   barf("loadNativeObj: not implemented on this platform");
+}
+#endif
+
+HsInt unloadNativeObj (void *handle)
+{
+    bool unloadedAnyObj = false;
+
+    IF_DEBUG(linker, debugBelch("unloadNativeObj: %p\n", handle));
+
+    ObjectCode *prev = NULL, *next;
+    for (ObjectCode *nc = loaded_objects; nc; nc = next) {
+        next = nc->next_loaded_object; // we might move nc
+
+        if (nc->type == DYNAMIC_OBJECT && nc->dlopen_handle == handle) {
+            nc->status = OBJECT_UNLOADED;
+            n_unloaded_objects += 1;
+
+            // dynamic objects have no symbols
+            CHECK(nc->symbols == NULL);
+            freeOcStablePtrs(nc);
+
+            // Remove object code from root set
+            if (prev == NULL) {
+              loaded_objects = nc->next_loaded_object;
+            } else {
+              prev->next_loaded_object = nc->next_loaded_object;
+            }
+            unloadedAnyObj = true;
+        } else {
+            prev = nc;
+        }
+    }
+
+    if (unloadedAnyObj) {
+        return 1;
+    } else {
+        errorBelch("unloadObjNativeObj_ELF: can't find `%p' to unload", handle);
+        return 0;
+    }
+}
+
+/* -----------------------------------------------------------------------------
+ * Segment management
+ */
+void
+initSegment (Segment *s, void *start, size_t size, SegmentProt prot, int n_sections)
+{
+    s->start = start;
+    s->size = size;
+    s->prot = prot;
+    s->sections_idx = (int *)stgCallocBytes(n_sections, sizeof(int),
+                                               "initSegment(segment)");
+    s->n_sections = n_sections;
+}
+
+void freeSegments (ObjectCode *oc)
+{
+    if (oc->segments != NULL) {
+        IF_DEBUG(linker, ocDebugBelch(oc, "freeing %d segments\n", oc->n_segments));
+
+        for (int i = 0; i < oc->n_segments; i++) {
+            Segment *s = &oc->segments[i];
+
+            IF_DEBUG(linker, ocDebugBelch(oc, "freeing segment %d at %p size %zu\n",
+                                          i, s->start, s->size));
+
+            stgFree(s->sections_idx);
+            s->sections_idx = NULL;
+
+            if (0 == s->size) {
+                IF_DEBUG(linker, ocDebugBelch(oc, "skipping segment of 0 size\n"));
+                continue;
+            } else {
+#if RTS_LINKER_USE_MMAP
+                munmapForLinker(s->start, s->size, "freeSegments");
+#else
+                stgFree(s->start);
+#endif
+            }
+            s->start = NULL;
+        }
+
+        stgFree(oc->segments);
+        oc->segments = NULL;
+    }
+}

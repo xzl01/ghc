@@ -1,7 +1,5 @@
-{-# LANGUAGE ScopedTypeVariables, CPP, BangPatterns #-}
-#if __GLASGOW_HASKELL__ >= 703
+{-# LANGUAGE ScopedTypeVariables, CPP #-}
 {-# LANGUAGE Unsafe #-}
-#endif
 {-# OPTIONS_HADDOCK not-home #-}
 -- |
 -- Copyright   : 2010-2011 Simon Meier, 2010 Jasper van der Jeugt
@@ -20,7 +18,7 @@
 -- standard encodings of standard Haskell values.
 --
 -- If you need to write your own builder primitives, then be aware that you are
--- writing code with /all saftey belts off/; i.e.,
+-- writing code with /all safety belts off/; i.e.,
 -- *this is the code that might make your application vulnerable to buffer-overflow attacks!*
 -- The "Data.ByteString.Builder.Prim.Tests" module provides you with
 -- utilities for testing your encodings thoroughly.
@@ -42,7 +40,7 @@ module Data.ByteString.Builder.Prim.Internal (
 
   -- * Bounded-size builder primitives
   , BoundedPrim
-  , boudedPrim
+  , boundedPrim
   , sizeBound
   , runB
 
@@ -64,15 +62,17 @@ module Data.ByteString.Builder.Prim.Internal (
   , (>$<)
   , (>*<)
 
+  -- * Helpers
+  , caseWordSize_32_64
+
+  -- * Deprecated
+  , boudedPrim
   ) where
 
 import Foreign
 import Prelude hiding (maxBound)
 
-#if !(__GLASGOW_HASKELL__ >= 612)
--- ghc-6.10 and older do not support {-# INLINE CONLIKE #-}
-#define CONLIKE
-#endif
+#include "MachDeps.h"
 
 ------------------------------------------------------------------------------
 -- Supporting infrastructure
@@ -93,9 +93,10 @@ infixl 4 >$<
 -- We can use it for example to prepend and/or append fixed values to an
 -- primitive.
 --
+-- > import Data.ByteString.Builder.Prim as P
 -- >showEncoding ((\x -> ('\'', (x, '\''))) >$< fixed3) 'x' = "'x'"
 -- >  where
--- >    fixed3 = char7 >*< char7 >*< char7
+-- >    fixed3 = P.char7 >*< P.char7 >*< P.char7
 --
 -- Note that the rather verbose syntax for composition stems from the
 -- requirement to be able to compute the size / size bound at compile time.
@@ -176,7 +177,7 @@ pairF (FP l1 io1) (FP l2 io2) =
 -- | Change a primitives such that it first applies a function to the value
 -- to be encoded.
 --
--- Note that primitives are 'Contrafunctors'
+-- Note that primitives are 'Contravariant'
 -- <http://hackage.haskell.org/package/contravariant>. Hence, the following
 -- laws hold.
 --
@@ -184,7 +185,7 @@ pairF (FP l1 io1) (FP l2 io2) =
 -- >contramapF f . contramapF g = contramapF (g . f)
 {-# INLINE CONLIKE contramapF #-}
 contramapF :: (b -> a) -> FixedPrim a -> FixedPrim b
-contramapF f (FP l io) = FP l (\x op -> io (f x) op)
+contramapF f (FP l io) = FP l (io . f)
 
 -- | Convert a 'FixedPrim' to a 'BoundedPrim'.
 {-# INLINE CONLIKE toB #-}
@@ -208,7 +209,7 @@ storableToF :: forall a. Storable a => FixedPrim a
 storableToF = FP (sizeOf (undefined :: a)) (\x op -> poke (castPtr op) x)
 #else
 storableToF = FP (sizeOf (undefined :: a)) $ \x op ->
-    if (ptrToWordPtr op) `mod` (fromIntegral (alignment (undefined :: a))) == 0 then poke (castPtr op) x
+    if ptrToWordPtr op `mod` fromIntegral (alignment (undefined :: a)) == 0 then poke (castPtr op) x
     else with x $ \tp -> copyBytes op (castPtr tp) (sizeOf (undefined :: a))
 #endif
 
@@ -231,6 +232,11 @@ data BoundedPrim a = BP {-# UNPACK #-} !Int (a -> Ptr Word8 -> IO (Ptr Word8))
 sizeBound :: BoundedPrim a -> Int
 sizeBound (BP b _) = b
 
+-- | @since 0.10.12.0
+boundedPrim :: Int -> (a -> Ptr Word8 -> IO (Ptr Word8)) -> BoundedPrim a
+boundedPrim = BP
+
+{-# DEPRECATED boudedPrim "Use 'boundedPrim' instead" #-}
 boudedPrim :: Int -> (a -> Ptr Word8 -> IO (Ptr Word8)) -> BoundedPrim a
 boudedPrim = BP
 
@@ -241,7 +247,7 @@ runB (BP _ io) = io
 -- | Change a 'BoundedPrim' such that it first applies a function to the
 -- value to be encoded.
 --
--- Note that 'BoundedPrim's are 'Contrafunctors'
+-- Note that 'BoundedPrim's are 'Contravariant'
 -- <http://hackage.haskell.org/package/contravariant>. Hence, the following
 -- laws hold.
 --
@@ -249,7 +255,7 @@ runB (BP _ io) = io
 -- >contramapB f . contramapB g = contramapB (g . f)
 {-# INLINE CONLIKE contramapB #-}
 contramapB :: (b -> a) -> BoundedPrim a -> BoundedPrim b
-contramapB f (BP b io) = BP b (\x op -> io (f x) op)
+contramapB f (BP b io) = BP b (io . f)
 
 -- | The 'BoundedPrim' that always results in the zero-length sequence.
 {-# INLINE CONLIKE emptyB #-}
@@ -284,9 +290,23 @@ eitherB (BP b1 io1) (BP b2 io2) =
 -- Unicode codepoints above 127 as follows.
 --
 -- @
---charASCIIDrop = 'condB' (< \'\\128\') ('fromF' 'char7') 'emptyB'
+--charASCIIDrop = 'condB' (< \'\\128\') ('liftFixedToBounded' 'Data.ByteString.Builder.Prim.char7') 'emptyB'
 -- @
 {-# INLINE CONLIKE condB #-}
 condB :: (a -> Bool) -> BoundedPrim a -> BoundedPrim a -> BoundedPrim a
 condB p be1 be2 =
     contramapB (\x -> if p x then Left x else Right x) (eitherB be1 be2)
+
+-- | Select an implementation depending on bitness.
+-- Throw a compile time error if bitness is neither 32 nor 64.
+{-# INLINE caseWordSize_32_64 #-}
+caseWordSize_32_64
+  :: a -- Value for 32-bit architecture
+  -> a -- Value for 64-bit architecture
+  -> a
+#if WORD_SIZE_IN_BITS == 32
+caseWordSize_32_64 = const
+#endif
+#if WORD_SIZE_IN_BITS == 64
+caseWordSize_32_64 = const id
+#endif

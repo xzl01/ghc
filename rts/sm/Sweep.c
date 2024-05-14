@@ -7,11 +7,11 @@
  * Documentation on the architecture of the Garbage Collector can be
  * found in the online commentary:
  * 
- *   http://ghc.haskell.org/trac/ghc/wiki/Commentary/Rts/Storage/GC
+ *   https://gitlab.haskell.org/ghc/ghc/wikis/commentary/rts/storage/gc
  *
  * ---------------------------------------------------------------------------*/
 
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
 
 #include "BlockAlloc.h"

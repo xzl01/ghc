@@ -19,6 +19,7 @@ module GHC.Event.Array
     , removeAt
     , snoc
     , unsafeLoad
+    , unsafeCopyFromBuffer
     , unsafeRead
     , unsafeWrite
     , useAsPtr
@@ -32,7 +33,7 @@ import Foreign.ForeignPtr (ForeignPtr, withForeignPtr)
 import Foreign.Ptr (Ptr, nullPtr, plusPtr)
 import Foreign.Storable (Storable(..))
 import GHC.Base hiding (empty)
-import GHC.ForeignPtr (mallocPlainForeignPtrBytes, newForeignPtr_)
+import GHC.ForeignPtr (mallocPlainForeignPtrBytes, newForeignPtr_, unsafeWithForeignPtr)
 import GHC.Num (Num(..))
 import GHC.Real (fromIntegral)
 import GHC.Show (show)
@@ -77,9 +78,9 @@ reallocArray p newSize oldSize = reallocHack undefined p
   reallocHack dummy src = do
       let size = sizeOf dummy
       dst <- mallocPlainForeignPtrBytes (newSize * size)
-      withForeignPtr src $ \s ->
+      unsafeWithForeignPtr src $ \s ->
         when (s /= nullPtr && oldSize > 0) .
-          withForeignPtr dst $ \d -> do
+          unsafeWithForeignPtr dst $ \d -> do
             _ <- memcpy d s (fromIntegral (oldSize * size))
             return ()
       return dst
@@ -98,8 +99,8 @@ duplicate a = dupHack undefined a
   dupHack dummy (Array ref) = do
     AC es len cap <- readIORef ref
     ary <- allocArray cap
-    withForeignPtr ary $ \dest ->
-      withForeignPtr es $ \src -> do
+    unsafeWithForeignPtr ary $ \dest ->
+      unsafeWithForeignPtr es $ \src -> do
         _ <- memcpy dest src (fromIntegral (len * sizeOf dummy))
         return ()
     Array `fmap` newIORef (AC ary len cap)
@@ -118,8 +119,8 @@ unsafeRead :: Storable a => Array a -> Int -> IO a
 unsafeRead (Array ref) ix = do
     AC es _ cap <- readIORef ref
     CHECK_BOUNDS("unsafeRead",cap,ix)
-      withForeignPtr es $ \p ->
-        peekElemOff p ix
+      unsafeWithForeignPtr es $ \ptr -> peekElemOff ptr ix
+        -- this is safe WRT #17760 as we assume that peekElemOff doesn't diverge
 
 unsafeWrite :: Storable a => Array a -> Int -> a -> IO ()
 unsafeWrite (Array ref) ix a = do
@@ -127,17 +128,33 @@ unsafeWrite (Array ref) ix a = do
     unsafeWrite' ac ix a
 
 unsafeWrite' :: Storable a => AC a -> Int -> a -> IO ()
-unsafeWrite' (AC es _ cap) ix a = do
+unsafeWrite' (AC es _ cap) ix a =
     CHECK_BOUNDS("unsafeWrite'",cap,ix)
-      withForeignPtr es $ \p ->
-        pokeElemOff p ix a
+      unsafeWithForeignPtr es $ \ptr -> pokeElemOff ptr ix a
+        -- this is safe WRT #17760 as we assume that peekElemOff doesn't diverge
 
+-- | Precondition: continuation must not diverge due to use of
+-- 'unsafeWithForeignPtr'.
 unsafeLoad :: Array a -> (Ptr a -> Int -> IO Int) -> IO Int
 unsafeLoad (Array ref) load = do
     AC es _ cap <- readIORef ref
-    len' <- withForeignPtr es $ \p -> load p cap
+    len' <- unsafeWithForeignPtr es $ \p -> load p cap
     writeIORef ref (AC es len' cap)
     return len'
+
+-- | Reads n elements from the pointer and copies them
+-- into the array.
+unsafeCopyFromBuffer :: Storable a => Array a -> Ptr a -> Int -> IO ()
+unsafeCopyFromBuffer (Array ref) sptr n =
+    readIORef ref >>= \(AC es _ cap) ->
+    CHECK_BOUNDS("unsafeCopyFromBuffer", cap, n)
+    unsafeWithForeignPtr es $ \pdest -> do
+      let size = sizeOfPtr sptr undefined
+      _ <- memcpy pdest sptr (fromIntegral $ n * size)
+      writeIORef ref (AC es n cap)
+  where
+    sizeOfPtr :: Storable a => Ptr a -> a -> Int
+    sizeOfPtr _ a = sizeOf a
 
 ensureCapacity :: Storable a => Array a -> Int -> IO ()
 ensureCapacity (Array ref) c = do
@@ -147,7 +164,7 @@ ensureCapacity (Array ref) c = do
       writeIORef ref ac'
 
 ensureCapacity' :: Storable a => AC a -> Int -> IO (AC a)
-ensureCapacity' ac@(AC es len cap) c = do
+ensureCapacity' ac@(AC es len cap) c =
     if c > cap
       then do
         es' <- reallocArray es cap' cap
@@ -171,7 +188,7 @@ snoc (Array ref) e = do
     writeIORef ref (AC es len' cap)
 
 clear :: Array a -> IO ()
-clear (Array ref) = do
+clear (Array ref) =
   atomicModifyIORef' ref $ \(AC es _ cap) ->
         (AC es 0 cap, ())
 
@@ -183,7 +200,7 @@ forM_ ary g = forHack ary g undefined
       AC es len _ <- readIORef ref
       let size = sizeOf dummy
           offset = len * size
-      withForeignPtr es $ \p -> do
+      unsafeWithForeignPtr es $ \p -> do
         let go n | n >= offset = return ()
                  | otherwise = do
               f =<< peek (p `plusPtr` n)
@@ -254,8 +271,8 @@ copy' d dstart s sstart maxCount = copyHack d s undefined
       then return dac
       else do
         AC dst dlen dcap <- ensureCapacity' dac (dstart + count)
-        withForeignPtr dst $ \dptr ->
-          withForeignPtr src $ \sptr -> do
+        unsafeWithForeignPtr dst $ \dptr ->
+          unsafeWithForeignPtr src $ \sptr -> do
             _ <- memcpy (dptr `plusPtr` (dstart * size))
                         (sptr `plusPtr` (sstart * size))
                         (fromIntegral (count * size))
@@ -271,7 +288,7 @@ removeAt a i = removeHack a undefined
     let size   = sizeOf dummy
         newLen = oldLen - 1
     when (newLen > 0 && i < newLen) .
-      withForeignPtr fp $ \ptr -> do
+      unsafeWithForeignPtr fp $ \ptr -> do
         _ <- memmove (ptr `plusPtr` (size * i))
                      (ptr `plusPtr` (size * (i+1)))
                      (fromIntegral (size * (newLen-i)))

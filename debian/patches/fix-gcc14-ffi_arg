@@ -1,0 +1,33 @@
+commit 1f534c2e7388273e70534680212c1357614c11ed
+Author: Florian Weimer <fweimer@redhat.com>
+Date:   Thu Feb 15 15:19:52 2024 +0000
+
+    Fix C output for modern C initiative
+    
+    GCC 14 on aarch64 rejects the C code written by GHC with this kind of
+    error:
+    
+       error: assignment to ‘ffi_arg’ {aka ‘long unsigned int’} from ‘HsPtr’ {aka ‘void *’} makes integer from pointer without a cast [-Wint-conversion]
+             68 | *(ffi_arg*)resp = cret;
+                |                 ^
+    
+    Add the correct cast.
+    
+    For more information on this see:
+    https://fedoraproject.org/wiki/Changes/PortingToModernC
+    
+    Tested-by: Richard W.M. Jones <rjones@redhat.com>
+
+Index: b/compiler/GHC/HsToCore/Foreign/Decl.hs
+===================================================================
+--- a/compiler/GHC/HsToCore/Foreign/Decl.hs
++++ b/compiler/GHC/HsToCore/Foreign/Decl.hs
+@@ -681,7 +681,7 @@ mkFExportCBits dflags c_nm maybe_target
+      ,   ppUnless res_hty_is_unit $
+          if libffi
+                   then char '*' <> parens (ffi_cResType <> char '*') <>
+-                       text "resp = cret;"
++                       text "resp = " <> parens ffi_cResType <> text "cret;"
+                   else text "return cret;"
+      , rbrace
+      ]

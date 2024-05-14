@@ -5,7 +5,8 @@ import Distribution.Client.Get
 
 import Distribution.Types.PackageId
 import Distribution.Types.PackageName
-import Distribution.Types.SourceRepo
+import Distribution.Types.SourceRepo (SourceRepo (..), emptySourceRepo, RepoKind (..), RepoType (..), KnownRepoType (..))
+import Distribution.Client.Types.SourceRepo (SourceRepositoryPackage (..))
 import Distribution.Verbosity as Verbosity
 import Distribution.Version
 
@@ -92,11 +93,20 @@ testUnsupportedRepoType :: Assertion
 testUnsupportedRepoType = do
     e <- assertException $
            clonePackagesFromSourceRepo verbosity "." Nothing pkgrepos
-    e @?= ClonePackageUnsupportedRepoType pkgidfoo repo repotype
+    e @?= ClonePackageUnsupportedRepoType pkgidfoo repo' repotype
   where
     pkgrepos = [(pkgidfoo, [repo])]
-    repo     = (emptySourceRepo RepoHead) {
-                 repoType = Just repotype
+    repo     = (emptySourceRepo RepoHead)
+               { repoType     = Just repotype
+               , repoLocation = Just "loc"
+               }
+    repo'    = SourceRepositoryPackage
+               { srpType     = repotype
+               , srpLocation = "loc"
+               , srpTag      = Nothing
+               , srpBranch   = Nothing
+               , srpSubdir   = Proxy
+               , srpCommand  = []
                }
     repotype = OtherRepoType "baz"
 
@@ -111,7 +121,7 @@ testNoRepoLocation = do
     repo     = (emptySourceRepo RepoHead) {
                  repoType = Just repotype
                }
-    repotype = Darcs
+    repotype = KnownRepoType Darcs
 
 
 testSelectRepoKind :: Assertion
@@ -156,7 +166,7 @@ testRepoDestinationExists =
   where
     pkgrepos = [(pkgidfoo, [repo])]
     repo     = (emptySourceRepo RepoHead) {
-                 repoType     = Just Darcs,
+                 repoType     = Just (KnownRepoType Darcs),
                  repoLocation = Just ""
                }
 
@@ -166,20 +176,28 @@ testGitFetchFailed =
     withTestDir verbosity "repos" $ \tmpdir -> do
       let srcdir   = tmpdir </> "src"
           repo     = (emptySourceRepo RepoHead) {
-                       repoType     = Just Git,
+                       repoType     = Just (KnownRepoType Git),
                        repoLocation = Just srcdir
+                     }
+          repo'    = SourceRepositoryPackage
+                     { srpType     = KnownRepoType Git
+                     , srpLocation = srcdir
+                     , srpTag      = Nothing
+                     , srpBranch   = Nothing
+                     , srpSubdir   = Proxy
+                     , srpCommand  = []
                      }
           pkgrepos = [(pkgidfoo, [repo])]
       e1 <- assertException $
               clonePackagesFromSourceRepo verbosity tmpdir Nothing pkgrepos
-      e1 @?= ClonePackageFailedWithExitCode pkgidfoo repo "git" (ExitFailure 128)
+      e1 @?= ClonePackageFailedWithExitCode pkgidfoo repo' "git" (ExitFailure 128)
 
 
 testNetworkGitClone :: Assertion
 testNetworkGitClone =
     withTestDir verbosity "repos" $ \tmpdir -> do
       let repo1 = (emptySourceRepo RepoHead) {
-                    repoType     = Just Git,
+                    repoType     = Just (KnownRepoType Git),
                     repoLocation = Just "https://github.com/haskell/zlib.git"
                   }
       clonePackagesFromSourceRepo verbosity tmpdir Nothing
@@ -187,7 +205,7 @@ testNetworkGitClone =
       assertFileContains (tmpdir </> "zlib1/zlib.cabal") ["name:", "zlib"]
 
       let repo2 = (emptySourceRepo RepoHead) {
-                    repoType     = Just Git,
+                    repoType     = Just (KnownRepoType Git),
                     repoLocation = Just (tmpdir </> "zlib1")
                   }
       clonePackagesFromSourceRepo verbosity tmpdir Nothing
@@ -195,7 +213,7 @@ testNetworkGitClone =
       assertFileContains (tmpdir </> "zlib2/zlib.cabal") ["name:", "zlib"]
 
       let repo3 = (emptySourceRepo RepoHead) {
-                    repoType     = Just Git,
+                    repoType     = Just (KnownRepoType Git),
                     repoLocation = Just (tmpdir </> "zlib1"),
                     repoTag      = Just "0.5.0.0"
                   }

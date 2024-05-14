@@ -27,7 +27,6 @@ available = False
 
 import Control.Concurrent.MVar (MVar, newMVar, swapMVar)
 import Data.Bits (Bits, FiniteBits, (.|.), (.&.))
-import Data.Word
 import Foreign.C.Types (CInt(..), CShort(..))
 import Foreign.Ptr (Ptr)
 import Foreign.Storable (Storable(..))
@@ -37,7 +36,7 @@ import GHC.Enum (maxBound)
 import GHC.Num (Num(..))
 import GHC.Real (fromIntegral, div)
 import GHC.Show (Show)
-import System.Posix.Types (Fd(..))
+import System.Posix.Types (Fd(..), CNfds(..))
 
 import qualified GHC.Event.Array as A
 import qualified GHC.Event.Internal as E
@@ -92,7 +91,7 @@ poll p mtout f = do
         c_pollLoop ptr (fromIntegral len) (fromTimeout tout)
       Nothing   ->
         c_poll_unsafe ptr (fromIntegral len) 0
-  when (n /= 0) $ do
+  when (n /= 0) $
     A.loop a 0 $ \i e -> do
       let r = pfdRevents e
       if r /= 0
@@ -110,7 +109,7 @@ poll p mtout f = do
     -- This function deals with timeouts greater than maxBound :: CInt, by
     -- looping until c_poll returns a non-zero value (0 indicates timeout
     -- expired) OR the full timeout has passed.
-    c_pollLoop :: Ptr PollFd -> (#type nfds_t) -> Int -> IO CInt
+    c_pollLoop :: Ptr PollFd -> CNfds -> Int -> IO CInt
     c_pollLoop ptr len tout
         | isShortTimeout = c_poll ptr len (fromIntegral tout)
         | otherwise = do
@@ -162,24 +161,12 @@ newtype Event = Event CShort
              , FiniteBits -- ^ @since 4.7.0.0
              )
 
--- We have to duplicate the whole enum like this in order for the
--- hsc2hs cross-compilation mode to work
-#if defined(POLLRDHUP)
-#{enum Event, Event
- , pollIn    = POLLIN
- , pollOut   = POLLOUT
- , pollRdHup = POLLRDHUP
- , pollErr   = POLLERR
- , pollHup   = POLLHUP
- }
-#else
 #{enum Event, Event
  , pollIn    = POLLIN
  , pollOut   = POLLOUT
  , pollErr   = POLLERR
  , pollHup   = POLLHUP
  }
-#endif
 
 fromEvent :: E.Event -> Event
 fromEvent e = remap E.evtRead  pollIn .|.
@@ -213,8 +200,8 @@ instance Storable PollFd where
       #{poke struct pollfd, revents} ptr (pfdRevents p)
 
 foreign import ccall safe "poll.h poll"
-    c_poll :: Ptr PollFd -> (#type nfds_t) -> CInt -> IO CInt
+    c_poll :: Ptr PollFd -> CNfds -> CInt -> IO CInt
 
 foreign import ccall unsafe "poll.h poll"
-    c_poll_unsafe :: Ptr PollFd -> (#type nfds_t) -> CInt -> IO CInt
+    c_poll_unsafe :: Ptr PollFd -> CNfds -> CInt -> IO CInt
 #endif /* defined(HAVE_POLL_H) */

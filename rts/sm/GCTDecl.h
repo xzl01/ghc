@@ -5,7 +5,7 @@
  * Documentation on the architecture of the Garbage Collector can be
  * found in the online commentary:
  *
- *   http://ghc.haskell.org/trac/ghc/wiki/Commentary/Rts/Storage/GC
+ *   https://gitlab.haskell.org/ghc/ghc/wikis/commentary/rts/storage/gc
  *
  * ---------------------------------------------------------------------------*/
 
@@ -52,11 +52,11 @@ extern StgWord8 the_gc_thread[];
 
 /* Now, llvm-gcc and some older Clang compilers do not support
    __thread. So we have to fallback to the extremely slow case,
-   unfortunately. Note: clang_CC_FLAVOR implies llvm_CC_FLAVOR.
+   unfortunately.
 
    Also, the iOS Clang compiler doesn't support __thread either for
    some bizarre reason, so there's not much we can do about that... */
-#if defined(llvm_CC_FLAVOR) && (CC_SUPPORTS_TLS == 0)
+#if defined(CC_LLVM_BACKEND) && (CC_SUPPORTS_TLS == 0)
 #define gct ((gc_thread *)(pthread_getspecific(gctKey)))
 #define SET_GCT(to) (pthread_setspecific(gctKey, to))
 #define DECLARE_GCT ThreadLocalKey gctKey;
@@ -66,7 +66,7 @@ extern StgWord8 the_gc_thread[];
 /* However, if we *are* using an LLVM based compiler with __thread
    support, then use that (since LLVM doesn't support global register
    variables.) */
-#elif defined(llvm_CC_FLAVOR) && (CC_SUPPORTS_TLS == 1)
+#elif defined(CC_LLVM_BACKEND) && (CC_SUPPORTS_TLS == 1)
 extern __thread gc_thread* gct;
 #define SET_GCT(to) gct = (to)
 #define DECLARE_GCT __thread gc_thread* gct;
@@ -79,26 +79,6 @@ extern __thread gc_thread* gct;
    might change as gcc improves. -- SDM 2009/04/03 */
 #elif (defined(i386_HOST_ARCH) && (defined(linux_HOST_OS) \
                                    || defined(solaris2_HOST_OS)))
-extern __thread gc_thread* gct;
-#define SET_GCT(to) gct = (to)
-#define DECLARE_GCT __thread gc_thread* gct;
-
-/* -------------------------------------------------------------------------- */
-
-/* Next up: On SPARC we can't pin gct to a register. Names like %l1
-   are just offsets into the register window, which change on each
-   function call.
-
-   There are eight global (non-window) registers, but they're used for other
-   purposes:
-
-    %g0     -- always zero
-    %g1     -- volatile over function calls, used by the linker
-    %g2-%g3 -- used as scratch regs by the C compiler (caller saves)
-    %g4     -- volatile over function calls, used by the linker
-    %g5-%g7 -- reserved by the OS
-*/
-#elif defined(sparc_HOST_ARCH)
 extern __thread gc_thread* gct;
 #define SET_GCT(to) gct = (to)
 #define DECLARE_GCT __thread gc_thread* gct;

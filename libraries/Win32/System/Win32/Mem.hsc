@@ -1,6 +1,6 @@
 #if __GLASGOW_HASKELL__ >= 709
 {-# LANGUAGE Safe #-}
-#elif __GLASGOW_HASKELL__ >= 701
+#else
 {-# LANGUAGE Trustworthy #-}
 #endif
 -----------------------------------------------------------------------------
@@ -17,7 +17,90 @@
 --
 -----------------------------------------------------------------------------
 
-module System.Win32.Mem where
+module System.Win32.Mem
+    ( MEMORY_BASIC_INFORMATION(..)
+    , copyMemory
+    , moveMemory
+    , fillMemory
+    , zeroMemory
+    , memset
+    , getProcessHeap
+#ifndef __WINE_WINDOWS_H
+    , getProcessHeaps
+#endif
+    , HGLOBAL
+      -- * Global allocation
+    , GlobalAllocFlags
+    , gMEM_INVALID_HANDLE
+    , gMEM_FIXED
+    , gMEM_MOVEABLE
+    , gPTR
+    , gHND
+    , gMEM_DDESHARE
+    , gMEM_SHARE
+    , gMEM_LOWER
+    , gMEM_NOCOMPACT
+    , gMEM_NODISCARD
+    , gMEM_NOT_BANKED
+    , gMEM_NOTIFY
+    , gMEM_ZEROINIT
+    , globalAlloc
+    , globalFlags
+    , globalFree
+    , globalHandle
+    , globalLock
+    , globalReAlloc
+    , globalSize
+    , globalUnlock
+
+      -- * Heap allocation
+    , HeapAllocFlags
+    , hEAP_GENERATE_EXCEPTIONS
+    , hEAP_NO_SERIALIZE
+    , hEAP_ZERO_MEMORY
+    , heapAlloc
+    , heapCompact
+    , heapCreate
+    , heapDestroy
+    , heapFree
+    , heapLock
+    , heapReAlloc
+    , heapSize
+    , heapUnlock
+    , heapValidate
+
+      -- * Virtual allocation
+      -- ** Allocation
+    , virtualAlloc
+    , virtualAllocEx
+    , VirtualAllocFlags
+    , mEM_COMMIT
+    , mEM_RESERVE
+      -- ** Locking
+    , virtualLock
+    , virtualUnlock
+      -- ** Protection
+    , virtualProtect
+    , virtualProtectEx
+    , virtualQueryEx
+    , ProtectFlags
+    , pAGE_READONLY
+    , pAGE_READWRITE
+    , pAGE_EXECUTE
+    , pAGE_EXECUTE_READ
+    , pAGE_EXECUTE_READWRITE
+    , pAGE_GUARD
+    , pAGE_NOACCESS
+    , pAGE_NOCACHE
+      -- ** Freeing
+    , virtualFree
+    , virtualFreeEx
+    , FreeFlags
+    , mEM_DECOMMIT
+    , mEM_RELEASE
+
+
+    ) where
 
 import System.Win32.Types
 
@@ -268,10 +351,11 @@ virtualAlloc addt size ty flags =
 foreign import WINDOWS_CCONV unsafe "windows.h VirtualAlloc"
   c_VirtualAlloc :: Addr -> DWORD -> DWORD -> DWORD -> IO Addr
 
--- %fun VirtualAllocEx :: HANDLE -> Addr -> DWORD -> VirtualAllocFlags -> ProtectFlags ->IO Addr
--- %code extern LPVOID WINAPI VirtualAllocEx(HANDLE,LPVOID,DWORD,DWORD,DWORD);
--- %     LPVOID res1=VirtualAllocEx(arg1,arg2,arg3,arg4,arg5);
--- %fail {res1==NULL}{ErrorWin("VirtualAllocEx")}
+virtualAllocEx :: HANDLE -> Addr -> DWORD -> VirtualAllocFlags -> ProtectFlags -> IO Addr
+virtualAllocEx proc addt size ty flags =
+  failIfNull "VirtualAllocEx" $ c_VirtualAllocEx proc addt size ty flags
+foreign import WINDOWS_CCONV unsafe "windows.h VirtualAllocEx"
+  c_VirtualAllocEx :: HANDLE -> Addr -> DWORD -> DWORD -> DWORD -> IO Addr
 
 virtualFree :: Addr -> DWORD -> FreeFlags -> IO ()
 virtualFree addr size flags =
@@ -279,10 +363,11 @@ virtualFree addr size flags =
 foreign import WINDOWS_CCONV unsafe "windows.h VirtualFree"
   c_VirtualFree :: Addr -> DWORD -> FreeFlags -> IO Bool
 
--- %fun VirtualFreeEx :: HANDLE -> Addr -> DWORD -> FreeFlags -> IO ()
--- %code extern BOOL WINAPI VirtualFreeEx(HANDLE,LPVOID,DWORD,DWORD);
--- %     BOOL res1=VirtualFreeEx(arg1,arg2,arg3,arg4);
--- %fail {res1=0}{ErrorWin("VirtualFreeEx")}
+virtualFreeEx :: HANDLE -> Addr -> DWORD -> FreeFlags -> IO ()
+virtualFreeEx proc addr size flags =
+  failIfFalse_ "VirtualFreeEx" $ c_VirtualFreeEx proc addr size flags
+foreign import WINDOWS_CCONV unsafe "windows.h VirtualFreeEx"
+  c_VirtualFreeEx :: HANDLE -> Addr -> DWORD -> FreeFlags -> IO Bool
 
 virtualLock :: Addr -> DWORD -> IO ()
 virtualLock addr size =

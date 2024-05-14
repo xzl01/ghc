@@ -9,8 +9,8 @@ License: BSD3
 License-File: LICENSE
 Author: XXX
 Maintainer: XXX
-Synopsis: Provides shared functionality between iserv and iserv-proxy
-Description:
+Synopsis: Provides shared functionality between iserv and iserv-proxy.
+Description: Provides shared functionality between iserv and iserv-proxy.
 Category: Development
 build-type: Simple
 cabal-version: >=1.10
@@ -22,20 +22,14 @@ Flag network
 Library
     Default-Language: Haskell2010
     Hs-Source-Dirs: src
-    Exposed-Modules: Lib
+    Exposed-Modules: IServ
                    , GHCi.Utils
     Build-Depends: base       >= 4   && < 5,
                    binary     >= 0.7 && < 0.11,
-                   bytestring >= 0.10 && < 0.11,
+                   bytestring >= 0.10 && < 0.12,
                    containers >= 0.5 && < 0.7,
                    deepseq    >= 1.4 && < 1.5,
                    ghci       == @ProjectVersionMunged@
-    if flag(network)
-       Exposed-Modules: Remote.Message
-                      , Remote.Slave
-       Build-Depends: network    >= 2.6 && < 2.7,
-                      directory  >= 1.3 && < 1.4,
-                      filepath   >= 1.4 && < 1.5
 
     if os(windows)
        Cpp-Options: -DWINDOWS

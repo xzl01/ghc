@@ -5,7 +5,7 @@
  * Tasks
  *
  * For details on the high-level design, see
- *   http://ghc.haskell.org/trac/ghc/wiki/Commentary/Rts/Scheduler
+ *   https://gitlab.haskell.org/ghc/ghc/wikis/commentary/rts/scheduler
  *
  * -------------------------------------------------------------------------*/
 
@@ -16,9 +16,8 @@
 #include "BeginPrivate.h"
 
 /*
-   Definition of a Task
-   --------------------
-
+   Note [Definition of a Task]
+   ~~~~~~~~~~~~~~~~~~~~~~~~~~~
    A task is an OSThread that runs Haskell code.  Every OSThread that
    runs inside the RTS, whether as a worker created by the RTS or via
    an in-call from C to Haskell, has an associated Task.  The first
@@ -33,9 +32,8 @@
    Haskell code simultaneously. A task relinquishes its Capability
    when it is asked to evaluate an external (C) call.
 
-   Ownership of Task
-   -----------------
-
+   Note [Ownership of Task]
+   ~~~~~~~~~~~~~~~~~~~~~~~~
    Task ownership is a little tricky.  The default situation is that
    the Task is an OS-thread-local structure that is owned by the OS
    thread named in task->id.  An OS thread not currently executing
@@ -149,8 +147,8 @@ typedef struct Task_ {
     struct InCall_ *spare_incalls;
 
     bool    worker;          // == true if this is a worker Task
-    bool    stopped;         // == true between newBoundTask and
-                                // boundTaskExiting, or in a worker Task.
+    bool    stopped;         // == false between newBoundTask and
+                                // exitMyTask, or in a worker Task.
 
     // So that we can detect when a finalizer illegally calls back into Haskell
     bool running_finalizers;
@@ -200,9 +198,9 @@ extern Mutex all_tasks_mutex;
 void initTaskManager (void);
 uint32_t  freeTaskManager (void);
 
-// Create a new Task for a bound thread.  This Task must be released
-// by calling boundTaskExiting.  The Task is cached in
-// thread-local storage and will remain even after boundTaskExiting()
+// Create a new Task for a bound thread. This Task must be released
+// by calling exitMyTask(). The Task is cached in
+// thread-local storage and will remain even after exitMyTask()
 // has been called; to free the memory, see freeMyTask().
 //
 Task* newBoundTask (void);
@@ -210,11 +208,10 @@ Task* newBoundTask (void);
 // Return the current OS thread's Task, which is created if it doesn't already
 // exist.  After you have finished using RTS APIs, you should call freeMyTask()
 // to release this thread's Task.
-Task* getTask (void);
+Task* getMyTask (void);
 
-// The current task is a bound task that is exiting.
-//
-void boundTaskExiting (Task *task);
+// Exit myTask - This is the counterpart of newBoundTask().
+void exitMyTask (void);
 
 // Free a Task if one was previously allocated by newBoundTask().
 // This is not necessary unless the thread that called newBoundTask()
@@ -271,7 +268,7 @@ extern uint32_t peakWorkerCount;
 #if ((defined(linux_HOST_OS) && \
      (defined(i386_HOST_ARCH) || defined(x86_64_HOST_ARCH))) || \
     (defined(mingw32_HOST_OS) && __GNUC__ >= 4 && __GNUC_MINOR__ >= 4)) && \
-    (!defined(llvm_CC_FLAVOR))
+    (!defined(CC_LLVM_BACKEND))
 #define MYTASK_USE_TLV
 extern __thread Task *my_task;
 #else

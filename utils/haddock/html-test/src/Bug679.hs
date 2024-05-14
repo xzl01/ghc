@@ -1,3 +1,4 @@
+{-# LANGUAGE Haskell2010 #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 module Bug679 where
@@ -13,7 +14,7 @@ $(do
    let methodN = mkName "foo"
 
    methodTy <- [t| $(varT a) -> $(varT a) |]
-   let cla = ClassD [] classN [PlainTV a] [] [SigD methodN methodTy]
+   let cla = ClassD [] classN [PlainTV a ()] [] [SigD methodN methodTy]
  
    -- Note that we are /reusing/ the same type variable 'a' as in the class
    instanceHead <- [t| $(conT classN) (Bar $(varT a)) |]

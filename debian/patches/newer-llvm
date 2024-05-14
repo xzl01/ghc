@@ -1,0 +1,46 @@
+commit 0cc16aaf89d7dc3963764b7193ceac73e4e3329b
+Author: Matthew Pickering <matthewtpickering@gmail.com>
+Date:   Mon Jan 30 10:58:12 2023 +0000
+
+    Bump supported LLVM range from 10 through 15 to 11 through 16
+    
+    LLVM 15 turns on the new pass manager by default, which we have yet to
+    migrate to so for new we pass the `-enable-new-pm-0` flag in our
+    llvm-passes flag.
+    
+    LLVM 11 was the first version to support the `-enable-new-pm` flag so we
+    bump the lowest supported version to 11.
+    
+    Our CI jobs are using LLVM 12 so they should continue to work despite
+    this bump to the lower bound.
+    
+    Fixes #21936
+
+Index: b/configure.ac
+===================================================================
+--- a/configure.ac
++++ b/configure.ac
+@@ -581,8 +581,8 @@ AC_SUBST(InstallNameToolCmd)
+ # tools we are looking for. In the past, GHC supported a number of
+ # versions of LLVM simultaneously, but that stopped working around
+ # 3.5/3.6 release of LLVM.
+-LlvmMinVersion=10  # inclusive
+-LlvmMaxVersion=15 # not inclusive
++LlvmMinVersion=11  # inclusive
++LlvmMaxVersion=16 # not inclusive
+ AC_SUBST([LlvmMinVersion])
+ AC_SUBST([LlvmMaxVersion])
+ sUPPORTED_LLVM_VERSION_MIN=$(echo \($LlvmMinVersion\) | sed 's/\./,/')
+Index: b/llvm-passes
+===================================================================
+--- a/llvm-passes
++++ b/llvm-passes
+@@ -1,5 +1,5 @@
+ [
+-(0, "-mem2reg -globalopt -lower-expect"),
+-(1, "-O1 -globalopt"),
+-(2, "-O2")
++(0, "-enable-new-pm=0 -mem2reg -globalopt -lower-expect"),
++(1, "-enable-new-pm=0 -O1 -globalopt"),
++(2, "-enable-new-pm=0 -O2")
+ ]

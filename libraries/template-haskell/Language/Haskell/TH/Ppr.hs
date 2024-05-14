@@ -1,3 +1,5 @@
+{-# LANGUAGE Safe #-}
+{-# LANGUAGE LambdaCase #-}
 -- | contains a prettyprinter for the
 -- Template Haskell datatypes
 
@@ -14,6 +16,7 @@ import Data.Char ( toLower, chr)
 import GHC.Show  ( showMultiLineString )
 import GHC.Lexeme( startsVarSym )
 import Data.Ratio ( numerator, denominator )
+import Data.Foldable ( toList )
 import Prelude hiding ((<>))
 
 nestDepth :: Int
@@ -74,7 +77,7 @@ ppr_sig v ty = pprName' Applied v <+> dcolon <+> ppr ty
 
 pprFixity :: Name -> Fixity -> Doc
 pprFixity _ f | f == defaultFixity = empty
-pprFixity v (Fixity i d) = ppr_fix d <+> int i <+> ppr v
+pprFixity v (Fixity i d) = ppr_fix d <+> int i <+> pprName' Infix v
     where ppr_fix InfixR = text "infixr"
           ppr_fix InfixL = text "infixl"
           ppr_fix InfixN = text "infix"
@@ -92,10 +95,10 @@ pprPatSynType :: PatSynType -> Doc
 pprPatSynType ty@(ForallT uniTys reqs ty'@(ForallT exTys provs ty''))
   | null exTys,  null provs = ppr (ForallT uniTys reqs ty'')
   | null uniTys, null reqs  = noreqs <+> ppr ty'
-  | null reqs               = forall uniTys <+> noreqs <+> ppr ty'
+  | null reqs               = pprForallBndrs uniTys <+> noreqs <+> ppr ty'
   | otherwise               = ppr ty
-  where noreqs     = text "() =>"
-        forall tvs = text "forall" <+> (hsep (map ppr tvs)) <+> text "."
+  where noreqs = text "() =>"
+        pprForallBndrs tvs = text "forall" <+> hsep (map ppr tvs) <+> text "."
 pprPatSynType ty            = ppr ty
 
 ------------------------------
@@ -123,7 +126,10 @@ isSymOcc n
 pprInfixExp :: Exp -> Doc
 pprInfixExp (VarE v) = pprName' Infix v
 pprInfixExp (ConE v) = pprName' Infix v
-pprInfixExp _        = text "<<Non-variable/constructor in infix context>>"
+pprInfixExp (UnboundVarE v) = pprName' Infix v
+-- This case will only ever be reached in exceptional circumstances.
+-- For example, when printing an error message in case of a malformed expression.
+pprInfixExp e = text "`" <> ppr e <> text "`"
 
 pprExp :: Precedence -> Exp -> Doc
 pprExp _ (VarE v)     = pprName' Applied v
@@ -148,10 +154,17 @@ pprExp _ (InfixE me1 op me2) = parens $ pprMaybeExp noPrec me1
 pprExp i (LamE [] e) = pprExp i e -- #13856
 pprExp i (LamE ps e) = parensIf (i > noPrec) $ char '\\' <> hsep (map (pprPat appPrec) ps)
                                            <+> text "->" <+> ppr e
-pprExp i (LamCaseE ms) = parensIf (i > noPrec)
-                       $ text "\\case" $$ nest nestDepth (ppr ms)
-pprExp _ (TupE es) = parens (commaSep es)
-pprExp _ (UnboxedTupE es) = hashParens (commaSep es)
+pprExp i (LamCaseE ms)
+  = parensIf (i > noPrec) $ text "\\case" $$ braces (semiSep ms)
+pprExp i (LamCasesE ms)
+  = parensIf (i > noPrec) $ text "\\cases" $$ braces (semi_sep ms)
+  where semi_sep = sep . punctuate semi . map (pprClause False)
+pprExp i (TupE es)
+  | [Just e] <- es
+  = pprExp i (ConE (tupleDataName 1) `AppE` e)
+  | otherwise
+  = parens (commaSepWith (pprMaybeExp noPrec) es)
+pprExp _ (UnboxedTupE es) = hashParens (commaSepWith (pprMaybeExp noPrec) es)
 pprExp _ (UnboxedSumE e alt arity) = unboxedSumBars (ppr e) alt arity
 -- Nesting in Cond is to avoid potential problems in do statements
 pprExp i (CondE guard true false)
@@ -173,14 +186,20 @@ pprExp i (LetE ds_ e) = parensIf (i > noPrec) $ text "let" <+> pprDecs ds_
 
 pprExp i (CaseE e ms)
  = parensIf (i > noPrec) $ text "case" <+> ppr e <+> text "of"
-                        $$ nest nestDepth (ppr ms)
-pprExp i (DoE ss_) = parensIf (i > noPrec) $ text "do" <+> pprStms ss_
+                        $$ braces (semiSep ms)
+pprExp i (DoE m ss_) = parensIf (i > noPrec) $
+    pprQualifier m <> text "do" <+> pprStms ss_
   where
+    pprQualifier Nothing = empty
+    pprQualifier (Just modName) = text (modString modName) <> char '.'
     pprStms []  = empty
     pprStms [s] = ppr s
     pprStms ss  = braces (semiSep ss)
-pprExp i (MDoE ss_) = parensIf (i > noPrec) $ text "mdo" <+> pprStms ss_
+pprExp i (MDoE m ss_) = parensIf (i > noPrec) $
+    pprQualifier m <> text "mdo" <+> pprStms ss_
   where
+    pprQualifier Nothing = empty
+    pprQualifier (Just modName) = text (modString modName) <> char '.'
     pprStms []  = empty
     pprStms [s] = ppr s
     pprStms ss  = braces (semiSep ss)
@@ -202,16 +221,18 @@ pprExp _ (ArithSeqE d) = ppr d
 pprExp _ (ListE es) = brackets (commaSep es)
 pprExp i (SigE e t) = parensIf (i > noPrec) $ pprExp sigPrec e
                                           <+> dcolon <+> ppr t
-pprExp _ (RecConE nm fs) = ppr nm <> braces (pprFields fs)
+pprExp _ (RecConE nm fs) = pprName' Applied nm <> braces (pprFields fs)
 pprExp _ (RecUpdE e fs) = pprExp appPrec e <> braces (pprFields fs)
 pprExp i (StaticE e) = parensIf (i >= appPrec) $
                          text "static"<+> pprExp appPrec e
 pprExp _ (UnboundVarE v) = pprName' Applied v
 pprExp _ (LabelE s) = text "#" <> text s
 pprExp _ (ImplicitParamVarE n) = text ('?' : n)
+pprExp _ (GetFieldE e f) = pprExp appPrec e <> text ('.': f)
+pprExp _ (ProjectionE xs) = parens $ hcat $ map ((char '.'<>) . text) $ toList xs
 
 pprFields :: [(Name,Exp)] -> Doc
-pprFields = sep . punctuate comma . map (\(s,e) -> ppr s <+> equals <+> ppr e)
+pprFields = sep . punctuate comma . map (\(s,e) -> pprName' Applied s <+> equals <+> ppr e)
 
 pprMaybeExp :: Precedence -> Maybe Exp -> Doc
 pprMaybeExp _ Nothing = empty
@@ -252,6 +273,12 @@ pprBody eq body = case body of
               | otherwise = arrow
 
 ------------------------------
+pprClause :: Bool -> Clause -> Doc
+pprClause eqDoc (Clause ps rhs ds)
+  = hsep (map (pprPat appPrec) ps) <+> pprBody eqDoc rhs
+    $$ where_clause ds
+
+------------------------------
 instance Ppr Lit where
   ppr = pprLit noPrec
 
@@ -268,9 +295,43 @@ pprLit _ (CharL c)       = text (show c)
 pprLit _ (CharPrimL c)   = text (show c) <> char '#'
 pprLit _ (StringL s)     = pprString s
 pprLit _ (StringPrimL s) = pprString (bytesToString s) <> char '#'
-pprLit i (RationalL rat) = parensIf (i > noPrec) $
-                           integer (numerator rat) <+> char '/'
-                              <+> integer (denominator rat)
+pprLit _ (BytesPrimL {}) = pprString "<binary data>"
+pprLit i (RationalL rat)
+  | withoutFactor 2 (withoutFactor 5 $ denominator rat) /= 1
+  -- if the denominator has prime factors other than 2 and 5, show as fraction
+  = parensIf (i > noPrec) $
+    integer (numerator rat) <+> char '/' <+> integer (denominator rat)
+  | rat /= 0 && (zeroes < -1 || zeroes > 7),
+    let (n, d) = properFraction (rat' / magnitude)
+        (rat', zeroes')
+          | abs rat < 1 = (10 * rat, zeroes - 1)
+          | otherwise = (rat, zeroes)
+  -- if < 0.01 or >= 100_000_000, use scientific notation
+  = parensIf (i > noPrec && rat < 0)
+             (integer n
+              <> (if d == 0 then empty else char '.' <> decimals (abs d))
+              <> char 'e' <> integer zeroes')
+  | let (n, d) = properFraction rat
+  = parensIf (i > noPrec && rat < 0)
+             (integer n <> char '.'
+              <> if d == 0 then char '0' else decimals (abs d))
+  where zeroes :: Integer
+        zeroes = truncate (logBase 10 (abs (fromRational rat) :: Double)
+                           * (1 - epsilon))
+        epsilon = 0.0000001
+        magnitude :: Rational
+        magnitude = 10 ^^ zeroes
+        withoutFactor :: Integer -> Integer -> Integer
+        withoutFactor _ 0 = 0
+        withoutFactor p n
+          | (n', 0) <- divMod n p = withoutFactor p n'
+          | otherwise = n
+        -- | Expects the argument 0 <= x < 1
+        decimals :: Rational -> Doc
+        decimals x
+          | x == 0 = empty
+          | otherwise = integer n <> decimals d
+          where (n, d) = properFraction (x * 10)
 
 bytesToString :: [Word8] -> String
 bytesToString = map (chr . fromIntegral)
@@ -287,11 +348,17 @@ instance Ppr Pat where
 pprPat :: Precedence -> Pat -> Doc
 pprPat i (LitP l)     = pprLit i l
 pprPat _ (VarP v)     = pprName' Applied v
-pprPat _ (TupP ps)    = parens (commaSep ps)
+pprPat i (TupP ps)
+  | [_] <- ps
+  = pprPat i (ConP (tupleDataName 1) [] ps)
+  | otherwise
+  = parens (commaSep ps)
 pprPat _ (UnboxedTupP ps) = hashParens (commaSep ps)
 pprPat _ (UnboxedSumP p alt arity) = unboxedSumBars (ppr p) alt arity
-pprPat i (ConP s ps)  = parensIf (i >= appPrec) $ pprName' Applied s
-                                              <+> sep (map (pprPat appPrec) ps)
+pprPat i (ConP s ts ps)  = parensIf (i >= appPrec) $
+      pprName' Applied s
+  <+> sep (map (\t -> char '@' <> pprParendType t) ts)
+  <+> sep (map (pprPat appPrec) ps)
 pprPat _ (ParensP p)  = parens $ pprPat noPrec p
 pprPat i (UInfixP p1 n p2)
                       = parensIf (i > unopPrec) (pprPat unopPrec p1 <+>
@@ -307,9 +374,9 @@ pprPat i (AsP v p)    = parensIf (i > noPrec) $ ppr v <> text "@"
                                                       <> pprPat appPrec p
 pprPat _ WildP        = text "_"
 pprPat _ (RecP nm fs)
- = parens $     ppr nm
+ = parens $     pprName' Applied nm
             <+> braces (sep $ punctuate comma $
-                        map (\(s,p) -> ppr s <+> equals <+> ppr p) fs)
+                        map (\(s,p) -> pprName' Applied s <+> equals <+> ppr p) fs)
 pprPat _ (ListP ps) = brackets (commaSep ps)
 pprPat i (SigP p t) = parensIf (i > noPrec) $ ppr p <+> dcolon <+> ppr t
 pprPat _ (ViewP e p) = parens $ pprExp noPrec e <+> text "->" <+> pprPat noPrec p
@@ -337,8 +404,11 @@ ppr_dec _ (InstanceD o ctxt i ds) =
         text "instance" <+> maybe empty ppr_overlap o <+> pprCxt ctxt <+> ppr i
                                   $$ where_clause ds
 ppr_dec _ (SigD f t)    = pprPrefixOcc f <+> dcolon <+> ppr t
+ppr_dec _ (KiSigD f k)  = text "type" <+> pprPrefixOcc f <+> dcolon <+> ppr k
 ppr_dec _ (ForeignD f)  = ppr f
 ppr_dec _ (InfixD fx n) = pprFixity n fx
+ppr_dec _ (DefaultD tys) =
+        text "default" <+> parens (sep $ punctuate comma $ map ppr tys)
 ppr_dec _ (PragmaD p)   = ppr p
 ppr_dec isTop (DataFamilyD tc tvs kind)
   = text "data" <+> maybeFamily <+> ppr tc <+> hsep (map ppr tvs) <+> maybeKind
@@ -389,10 +459,10 @@ ppr_dec _ (DefaultSigD n ty)
 ppr_dec _ (PatSynD name args dir pat)
   = text "pattern" <+> pprNameArgs <+> ppr dir <+> pprPatRHS
   where
-    pprNameArgs | InfixPatSyn a1 a2 <- args = ppr a1 <+> ppr name <+> ppr a2
-                | otherwise                 = ppr name <+> ppr args
+    pprNameArgs | InfixPatSyn a1 a2 <- args = ppr a1 <+> pprName' Infix name <+> ppr a2
+                | otherwise                 = pprName' Applied name <+> ppr args
     pprPatRHS   | ExplBidir cls <- dir = hang (ppr pat <+> text "where")
-                                           nestDepth (ppr name <+> ppr cls)
+                                           nestDepth (pprName' Applied name <+> ppr cls)
                 | otherwise            = ppr pat
 ppr_dec _ (PatSynSigD name ty)
   = pprPatSynSig name ty
@@ -417,14 +487,21 @@ ppr_overlap o = text $
 
 ppr_data :: Doc -> Cxt -> Maybe Name -> Doc -> Maybe Kind -> [Con] -> [DerivClause]
          -> Doc
-ppr_data maybeInst ctxt t argsDoc ksig cs decs
-  = sep [text "data" <+> maybeInst
+ppr_data = ppr_typedef "data"
+
+ppr_newtype :: Doc -> Cxt -> Maybe Name -> Doc -> Maybe Kind -> Con -> [DerivClause]
+            -> Doc
+ppr_newtype maybeInst ctxt t argsDoc ksig c decs = ppr_typedef "newtype" maybeInst ctxt t argsDoc ksig [c] decs
+
+ppr_typedef :: String -> Doc -> Cxt -> Maybe Name -> Doc -> Maybe Kind -> [Con] -> [DerivClause] -> Doc
+ppr_typedef data_or_newtype maybeInst ctxt t argsDoc ksig cs decs
+  = sep [text data_or_newtype <+> maybeInst
             <+> pprCxt ctxt
             <+> case t of
                  Just n -> pprName' Applied n <+> argsDoc
                  Nothing -> argsDoc
             <+> ksigDoc <+> maybeWhere,
-         nest nestDepth (sep (pref $ map ppr cs)),
+         nest nestDepth (vcat (pref $ map ppr cs)),
          if null decs
            then empty
            else nest nestDepth
@@ -450,24 +527,6 @@ ppr_data maybeInst ctxt t argsDoc ksig cs decs
                 Nothing -> empty
                 Just k  -> dcolon <+> ppr k
 
-ppr_newtype :: Doc -> Cxt -> Maybe Name -> Doc -> Maybe Kind -> Con -> [DerivClause]
-            -> Doc
-ppr_newtype maybeInst ctxt t argsDoc ksig c decs
-  = sep [text "newtype" <+> maybeInst
-            <+> pprCxt ctxt
-            <+> case t of
-                 Just n -> ppr n <+> argsDoc
-                 Nothing -> argsDoc
-            <+> ksigDoc,
-         nest 2 (char '=' <+> ppr c),
-         if null decs
-           then empty
-           else nest nestDepth
-                $ vcat $ map ppr_deriv_clause decs]
-  where
-    ksigDoc = case ksig of
-                Nothing -> empty
-                Just k  -> dcolon <+> ppr k
 
 ppr_deriv_clause :: DerivClause -> Doc
 ppr_deriv_clause (DerivClause ds ctxt)
@@ -486,18 +545,18 @@ ppr_tySyn :: Doc -> Maybe Name -> Doc -> Type -> Doc
 ppr_tySyn maybeInst t argsDoc rhs
   = text "type" <+> maybeInst
     <+> case t of
-         Just n -> ppr n <+> argsDoc
+         Just n -> pprName' Applied n <+> argsDoc
          Nothing -> argsDoc
     <+> text "=" <+> ppr rhs
 
 ppr_tf_head :: TypeFamilyHead -> Doc
 ppr_tf_head (TypeFamilyHead tc tvs res inj)
-  = ppr tc <+> hsep (map ppr tvs) <+> ppr res <+> maybeInj
+  = pprName' Applied tc <+> hsep (map ppr tvs) <+> ppr res <+> maybeInj
   where
     maybeInj | (Just inj') <- inj = ppr inj'
              | otherwise          = empty
 
-ppr_bndrs :: Maybe [TyVarBndr] -> Doc
+ppr_bndrs :: PprFlag flag => Maybe [TyVarBndr flag] -> Doc
 ppr_bndrs (Just bndrs) = text "forall" <+> sep (map ppr bndrs) <> text "."
 ppr_bndrs Nothing = empty
 
@@ -525,13 +584,13 @@ instance Ppr Foreign where
      <+> showtextl callconv
      <+> showtextl safety
      <+> text (show impent)
-     <+> ppr as
+     <+> pprName' Applied as
      <+> dcolon <+> ppr typ
     ppr (ExportF callconv expent as typ)
         = text "foreign export"
       <+> showtextl callconv
       <+> text (show expent)
-      <+> ppr as
+      <+> pprName' Applied as
       <+> dcolon <+> ppr typ
 
 ------------------------------
@@ -541,13 +600,15 @@ instance Ppr Pragma where
      <+> ppr inline
      <+> ppr rm
      <+> ppr phases
-     <+> ppr n
+     <+> pprName' Applied n
      <+> text "#-}"
+    ppr (OpaqueP n)
+       = text "{-# OPAQUE" <+> pprName' Applied n <+> text "#-}"
     ppr (SpecialiseP n ty inline phases)
        =   text "{-# SPECIALISE"
        <+> maybe empty ppr inline
        <+> ppr phases
-       <+> sep [ ppr n <+> dcolon
+       <+> sep [ pprName' Applied n <+> dcolon
                , nest 2 $ ppr ty ]
        <+> text "#-}"
     ppr (SpecialiseInstP inst)
@@ -568,13 +629,13 @@ instance Ppr Pragma where
     ppr (AnnP tgt expr)
        = text "{-# ANN" <+> target1 tgt <+> ppr expr <+> text "#-}"
       where target1 ModuleAnnotation    = text "module"
-            target1 (TypeAnnotation t)  = text "type" <+> ppr t
-            target1 (ValueAnnotation v) = ppr v
+            target1 (TypeAnnotation t)  = text "type" <+> pprName' Applied t
+            target1 (ValueAnnotation v) = pprName' Applied v
     ppr (LineP line file)
        = text "{-# LINE" <+> int line <+> text (show file) <+> text "#-}"
     ppr (CompleteP cls mty)
-       = text "{-# COMPLETE" <+> (fsep $ punctuate comma $ map ppr cls)
-                <+> maybe empty (\ty -> dcolon <+> ppr ty) mty
+       = text "{-# COMPLETE" <+> (fsep $ punctuate comma $ map (pprName' Applied) cls)
+                <+> maybe empty (\ty -> dcolon <+> pprName' Applied ty) mty <+> text "#-}"
 
 ------------------------------
 instance Ppr Inline where
@@ -600,15 +661,14 @@ instance Ppr RuleBndr where
 
 ------------------------------
 instance Ppr Clause where
-    ppr (Clause ps rhs ds) = hsep (map (pprPat appPrec) ps) <+> pprBody True rhs
-                             $$ where_clause ds
+    ppr = pprClause True
 
 ------------------------------
 instance Ppr Con where
-    ppr (NormalC c sts) = ppr c <+> sep (map pprBangType sts)
+    ppr (NormalC c sts) = pprName' Applied c <+> sep (map pprBangType sts)
 
     ppr (RecC c vsts)
-        = ppr c <+> braces (sep (punctuate comma $ map pprVarBangType vsts))
+        = pprName' Applied c <+> braces (sep (punctuate comma $ map pprVarBangType vsts))
 
     ppr (InfixC st1 c st2) = pprBangType st1
                          <+> pprName' Infix c
@@ -641,18 +701,29 @@ instance Ppr PatSynDir where
 instance Ppr PatSynArgs where
   ppr (PrefixPatSyn args) = sep $ map ppr args
   ppr (InfixPatSyn a1 a2) = ppr a1 <+> ppr a2
-  ppr (RecordPatSyn sels) = braces $ sep (punctuate comma (map ppr sels))
+  ppr (RecordPatSyn sels) = braces $ sep (punctuate comma (map (pprName' Applied) sels))
 
 commaSepApplied :: [Name] -> Doc
 commaSepApplied = commaSepWith (pprName' Applied)
 
-pprForall :: [TyVarBndr] -> Cxt -> Doc
-pprForall tvs cxt
+pprForall :: [TyVarBndr Specificity] -> Cxt -> Doc
+pprForall = pprForall' ForallInvis
+
+pprForallVis :: [TyVarBndr ()] -> Cxt -> Doc
+pprForallVis = pprForall' ForallVis
+
+pprForall' :: PprFlag flag => ForallVisFlag -> [TyVarBndr flag] -> Cxt -> Doc
+pprForall' fvf tvs cxt
   -- even in the case without any tvs, there could be a non-empty
   -- context cxt (e.g., in the case of pattern synonyms, where there
   -- are multiple forall binders and contexts).
   | [] <- tvs = pprCxt cxt
-  | otherwise = text "forall" <+> hsep (map ppr tvs) <+> char '.' <+> pprCxt cxt
+  | otherwise = text "forall" <+> hsep (map ppr tvs)
+                              <+> separator <+> pprCxt cxt
+  where
+    separator = case fvf of
+                  ForallVis   -> text "->"
+                  ForallInvis -> char '.'
 
 pprRecFields :: [(Name, Strict, Type)] -> Type -> Doc
 pprRecFields vsts ty
@@ -669,7 +740,7 @@ pprGadtRHS sts ty
 ------------------------------
 pprVarBangType :: VarBangType -> Doc
 -- Slight infelicity: with print non-atomic type with parens
-pprVarBangType (v, bang, t) = ppr v <+> dcolon <+> pprBangType (bang, t)
+pprVarBangType (v, bang, t) = pprName' Applied v <+> dcolon <+> pprBangType (bang, t)
 
 ------------------------------
 pprBangType :: BangType -> Doc
@@ -722,78 +793,115 @@ pprStrictType = pprBangType
 
 ------------------------------
 pprParendType :: Type -> Doc
-pprParendType (VarT v)            = pprName' Applied v
+pprParendType (VarT v)               = pprName' Applied v
 -- `Applied` is used here instead of `ppr` because of infix names (#13887)
-pprParendType (ConT c)            = pprName' Applied c
-pprParendType (TupleT 0)          = text "()"
-pprParendType (TupleT n)          = parens (hcat (replicate (n-1) comma))
-pprParendType (UnboxedTupleT n)   = hashParens $ hcat $ replicate (n-1) comma
-pprParendType (UnboxedSumT arity) = hashParens $ hcat $ replicate (arity-1) bar
-pprParendType ArrowT              = parens (text "->")
-pprParendType ListT               = text "[]"
-pprParendType (LitT l)            = pprTyLit l
-pprParendType (PromotedT c)       = text "'" <> pprName' Applied c
-pprParendType (PromotedTupleT 0)  = text "'()"
-pprParendType (PromotedTupleT n)  = quoteParens (hcat (replicate (n-1) comma))
-pprParendType PromotedNilT        = text "'[]"
-pprParendType PromotedConsT       = text "'(:)"
-pprParendType StarT               = char '*'
-pprParendType ConstraintT         = text "Constraint"
-pprParendType (SigT ty k)         = parens (ppr ty <+> text "::" <+> ppr k)
-pprParendType WildCardT           = char '_'
-pprParendType (InfixT x n y)      = parens (ppr x <+> pprName' Infix n <+> ppr y)
-pprParendType t@(UInfixT {})      = parens (pprUInfixT t)
-pprParendType (ParensT t)         = ppr t
+pprParendType (ConT c)               = pprName' Applied c
+pprParendType (TupleT 0)             = text "()"
+pprParendType (TupleT 1)             = pprParendType (ConT (tupleTypeName 1))
+pprParendType (TupleT n)             = parens (hcat (replicate (n-1) comma))
+pprParendType (UnboxedTupleT n)      = hashParens $ hcat $ replicate (n-1) comma
+pprParendType (UnboxedSumT arity)    = hashParens $ hcat $ replicate (arity-1) bar
+pprParendType ArrowT                 = parens (text "->")
+pprParendType MulArrowT              = text "FUN"
+pprParendType ListT                  = text "[]"
+pprParendType (LitT l)               = pprTyLit l
+pprParendType (PromotedT c)          = text "'" <> pprName' Applied c
+pprParendType (PromotedTupleT 0)     = text "'()"
+pprParendType (PromotedTupleT 1)     = pprParendType (PromotedT (tupleDataName 1))
+pprParendType (PromotedTupleT n)     = quoteParens (hcat (replicate (n-1) comma))
+pprParendType PromotedNilT           = text "'[]"
+pprParendType PromotedConsT          = text "'(:)"
+pprParendType StarT                  = char '*'
+pprParendType ConstraintT            = text "Constraint"
+pprParendType (SigT ty k)            = parens (ppr ty <+> text "::" <+> ppr k)
+pprParendType WildCardT              = char '_'
+pprParendType t@(InfixT {})          = parens (pprInfixT t)
+pprParendType t@(UInfixT {})         = parens (pprInfixT t)
+pprParendType t@(PromotedInfixT {})  = parens (pprInfixT t)
+pprParendType t@(PromotedUInfixT {}) = parens (pprInfixT t)
+pprParendType (ParensT t)            = ppr t
 pprParendType tuple | (TupleT n, args) <- split tuple
                     , length args == n
                     = parens (commaSep args)
-pprParendType (ImplicitParamT n t)= text ('?':n) <+> text "::" <+> ppr t
-pprParendType EqualityT           = text "(~)"
-pprParendType t@(ForallT {})      = parens (ppr t)
-pprParendType t@(AppT {})         = parens (ppr t)
-pprParendType t@(AppKindT {})     = parens (ppr t)
+pprParendType (ImplicitParamT n t)   = text ('?':n) <+> text "::" <+> ppr t
+pprParendType EqualityT              = text "(~)"
+pprParendType t@(ForallT {})         = parens (ppr t)
+pprParendType t@(ForallVisT {})      = parens (ppr t)
+pprParendType t@(AppT {})            = parens (ppr t)
+pprParendType t@(AppKindT {})        = parens (ppr t)
 
-pprUInfixT :: Type -> Doc
-pprUInfixT (UInfixT x n y) = pprUInfixT x <+> pprName' Infix n <+> pprUInfixT y
-pprUInfixT t               = ppr t
+pprInfixT :: Type -> Doc
+pprInfixT = \case
+  (InfixT x n y)          -> with x n y ""  ppr
+  (UInfixT x n y)         -> with x n y ""  pprInfixT
+  (PromotedInfixT x n y)  -> with x n y "'" ppr
+  (PromotedUInfixT x n y) -> with x n y "'" pprInfixT
+  t                       -> ppr t
+  where
+    with x n y prefix ppr' = ppr' x <+> text prefix <> pprName' Infix n <+> ppr' y
 
 instance Ppr Type where
     ppr (ForallT tvars ctxt ty) = sep [pprForall tvars ctxt, ppr ty]
+    ppr (ForallVisT tvars ty)   = sep [pprForallVis tvars [], ppr ty]
     ppr ty = pprTyApp (split ty)
-       -- Works, in a degnerate way, for SigT, and puts parens round (ty :: kind)
+       -- Works, in a degenerate way, for SigT, and puts parens round (ty :: kind)
        -- See Note [Pretty-printing kind signatures]
 instance Ppr TypeArg where
-    ppr (TANormal ty) = ppr ty
-    ppr (TyArg ki) = char '@' <> ppr ki
+    ppr (TANormal ty) = parensIf (isStarT ty) (ppr ty)
+    ppr (TyArg ki) = char '@' <> parensIf (isStarT ki) (ppr ki)
 
 pprParendTypeArg :: TypeArg -> Doc
-pprParendTypeArg (TANormal ty) = pprParendType ty
-pprParendTypeArg (TyArg ki) = char '@' <> pprParendType ki
+pprParendTypeArg (TANormal ty) = parensIf (isStarT ty) (pprParendType ty)
+pprParendTypeArg (TyArg ki) = char '@' <> parensIf (isStarT ki) (pprParendType ki)
+
+isStarT :: Type -> Bool
+isStarT StarT = True
+isStarT _ = False
+
 {- Note [Pretty-printing kind signatures]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 GHC's parser only recognises a kind signature in a type when there are
 parens around it.  E.g. the parens are required here:
    f :: (Int :: *)
    type instance F Int = (Bool :: *)
-So we always print a SigT with parens (see Trac #10050). -}
+So we always print a SigT with parens (see #10050). -}
 
 pprTyApp :: (Type, [TypeArg]) -> Doc
+pprTyApp (MulArrowT, [TANormal (PromotedT c), TANormal arg1, TANormal arg2])
+  | c == oneName  = sep [pprFunArgType arg1 <+> text "%1 ->", ppr arg2]
+  | c == manyName = sep [pprFunArgType arg1 <+> text "->", ppr arg2]
+pprTyApp (MulArrowT, [TANormal argm, TANormal arg1, TANormal arg2]) =
+                     sep [pprFunArgType arg1 <+> text "%" <> ppr argm <+> text "->", ppr arg2]
 pprTyApp (ArrowT, [TANormal arg1, TANormal arg2]) = sep [pprFunArgType arg1 <+> text "->", ppr arg2]
 pprTyApp (EqualityT, [TANormal arg1, TANormal arg2]) =
     sep [pprFunArgType arg1 <+> text "~", ppr arg2]
 pprTyApp (ListT, [TANormal arg]) = brackets (ppr arg)
+pprTyApp (TupleT 1, args) = pprTyApp (ConT (tupleTypeName 1), args)
+pprTyApp (PromotedTupleT 1, args) = pprTyApp (PromotedT (tupleDataName 1), args)
 pprTyApp (TupleT n, args)
- | length args == n = parens (commaSep args)
+ | length args == n, Just args' <- traverse fromTANormal args
+ = parens (commaSep args')
 pprTyApp (PromotedTupleT n, args)
- | length args == n = quoteParens (commaSep args)
+ | length args == n, Just args' <- traverse fromTANormal args
+ = quoteParens (commaSep args')
 pprTyApp (fun, args) = pprParendType fun <+> sep (map pprParendTypeArg args)
+
+fromTANormal :: TypeArg -> Maybe Type
+fromTANormal (TANormal arg) = Just arg
+fromTANormal (TyArg _) = Nothing
 
 pprFunArgType :: Type -> Doc    -- Should really use a precedence argument
 -- Everything except forall and (->) binds more tightly than (->)
 pprFunArgType ty@(ForallT {})                 = parens (ppr ty)
+pprFunArgType ty@(ForallVisT {})              = parens (ppr ty)
+pprFunArgType ty@(((MulArrowT `AppT` _) `AppT` _) `AppT` _)  = parens (ppr ty)
 pprFunArgType ty@((ArrowT `AppT` _) `AppT` _) = parens (ppr ty)
 pprFunArgType ty@(SigT _ _)                   = parens (ppr ty)
 pprFunArgType ty                              = ppr ty
+
+data ForallVisFlag = ForallVis   -- forall a -> {...}
+                   | ForallInvis -- forall a.   {...}
+  deriving Show
 
 data TypeArg = TANormal Type
              | TyArg Kind
@@ -807,14 +915,27 @@ split t = go t []
 pprTyLit :: TyLit -> Doc
 pprTyLit (NumTyLit n) = integer n
 pprTyLit (StrTyLit s) = text (show s)
+pprTyLit (CharTyLit c) = text (show c)
 
 instance Ppr TyLit where
   ppr = pprTyLit
 
 ------------------------------
-instance Ppr TyVarBndr where
-    ppr (PlainTV nm)    = ppr nm
-    ppr (KindedTV nm k) = parens (ppr nm <+> dcolon <+> ppr k)
+class PprFlag flag where
+    pprTyVarBndr :: (TyVarBndr flag) -> Doc
+
+instance PprFlag () where
+    pprTyVarBndr (PlainTV nm ())    = ppr nm
+    pprTyVarBndr (KindedTV nm () k) = parens (ppr nm <+> dcolon <+> ppr k)
+
+instance PprFlag Specificity where
+    pprTyVarBndr (PlainTV nm SpecifiedSpec)    = ppr nm
+    pprTyVarBndr (PlainTV nm InferredSpec)     = braces (ppr nm)
+    pprTyVarBndr (KindedTV nm SpecifiedSpec k) = parens (ppr nm <+> dcolon <+> ppr k)
+    pprTyVarBndr (KindedTV nm InferredSpec  k) = braces (ppr nm <+> dcolon <+> ppr k)
+
+instance PprFlag flag => Ppr (TyVarBndr flag) where
+    ppr bndr = pprTyVarBndr bndr
 
 instance Ppr Role where
     ppr NominalR          = text "nominal"
@@ -838,18 +959,18 @@ ppr_cxt_preds ts = parens (commaSep ts)
 instance Ppr Range where
     ppr = brackets . pprRange
         where pprRange :: Range -> Doc
-              pprRange (FromR e) = ppr e <> text ".."
+              pprRange (FromR e) = ppr e <+> text ".."
               pprRange (FromThenR e1 e2) = ppr e1 <> text ","
-                                        <> ppr e2 <> text ".."
-              pprRange (FromToR e1 e2) = ppr e1 <> text ".." <> ppr e2
+                                           <+> ppr e2 <+> text ".."
+              pprRange (FromToR e1 e2) = ppr e1 <+> text ".." <+> ppr e2
               pprRange (FromThenToR e1 e2 e3) = ppr e1 <> text ","
-                                             <> ppr e2 <> text ".."
-                                             <> ppr e3
+                                             <+> ppr e2 <+> text ".."
+                                             <+> ppr e3
 
 ------------------------------
 where_clause :: [Dec] -> Doc
 where_clause [] = empty
-where_clause ds = nest nestDepth $ text "where" <+> vcat (map (ppr_dec False) ds)
+where_clause ds = nest nestDepth $ text "where" <+> braces (semiSepWith (ppr_dec False) ds)
 
 showtextl :: Show a => a -> Doc
 showtextl = text . map toLower . show
@@ -871,6 +992,11 @@ instance Ppr Loc where
            , text "-"
            , parens $ int end_ln <> comma <> int end_col ]
 
+-- Takes a separator and a pretty-printing function and prints a list of things
+-- separated by the separator followed by space.
+sepWith :: Doc -> (a -> Doc) -> [a] -> Doc
+sepWith sepDoc pprFun = sep . punctuate sepDoc . map pprFun
+
 -- Takes a list of printable things and prints them separated by commas followed
 -- by space.
 commaSep :: Ppr a => [a] -> Doc
@@ -879,12 +1005,17 @@ commaSep = commaSepWith ppr
 -- Takes a list of things and prints them with the given pretty-printing
 -- function, separated by commas followed by space.
 commaSepWith :: (a -> Doc) -> [a] -> Doc
-commaSepWith pprFun = sep . punctuate comma . map pprFun
+commaSepWith pprFun = sepWith comma pprFun
 
 -- Takes a list of printable things and prints them separated by semicolons
 -- followed by space.
 semiSep :: Ppr a => [a] -> Doc
 semiSep = sep . punctuate semi . map ppr
+
+-- Takes a list of things and prints them with the given pretty-printing
+-- function, separated by semicolons followed by space.
+semiSepWith :: (a -> Doc) -> [a] -> Doc
+semiSepWith pprFun = sepWith semi pprFun
 
 -- Prints out the series of vertical bars that wraps an expression or pattern
 -- used in an unboxed sum.

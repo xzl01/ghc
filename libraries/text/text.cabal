@@ -1,6 +1,6 @@
-cabal-version:  >= 1.10
+cabal-version:  2.2
 name:           text
-version:        1.2.4.0
+version:        2.0.2
 
 homepage:       https://github.com/haskell/text
 bug-reports:    https://github.com/haskell/text/issues
@@ -8,7 +8,7 @@ synopsis:       An efficient packed Unicode text type.
 description:
     .
     An efficient packed, immutable Unicode text type (both strict and
-    lazy), with a powerful loop fusion optimization framework.
+    lazy).
     .
     The 'Text' type represents Unicode character strings, in a time and
     space-efficient manner. This package provides text processing
@@ -37,75 +37,104 @@ description:
     the [text-icu package](https://hackage.haskell.org/package/text-icu)
     based on the well-respected and liberally
     licensed [ICU library](http://site.icu-project.org/).
-    .
-    == Internal Representation: UTF-16 vs. UTF-8
-    .
-    Currently the @text@ library uses UTF-16 as its internal representation
-    which is [neither a fixed-width nor always the most dense representation](http://utf8everywhere.org/)
-    for Unicode text. We're currently investigating the feasibility
-    of [changing Text's internal representation to UTF-8](https://github.com/text-utf8)
-    and if you need such a 'Text' type right now you might be interested in using the spin-off
-    packages <https://hackage.haskell.org/package/text-utf8 text-utf8> and
-    <https://hackage.haskell.org/package/text-short text-short>.
 
-
-license:        BSD2
+license:        BSD-2-Clause
 license-file:   LICENSE
 author:         Bryan O'Sullivan <bos@serpentine.com>
-maintainer:     Bryan O'Sullivan <bos@serpentine.com>, Herbert Valerio Riedel <hvr@gnu.org>
-copyright:      2009-2011 Bryan O'Sullivan, 2008-2009 Tom Harper
+maintainer:     Haskell Text Team <andrew.lelechenko@gmail.com>, Core Libraries Committee
+copyright:      2009-2011 Bryan O'Sullivan, 2008-2009 Tom Harper, 2021 Andrew Lelechenko
 category:       Data, Text
 build-type:     Simple
-tested-with:    GHC==8.6.5, GHC==8.4.4,
-                GHC==8.2.2, GHC==8.0.2, GHC==7.10.3, GHC==7.8.4,
-                GHC==7.6.3, GHC==7.4.2, GHC==7.2.2, GHC==7.0.4
+tested-with:
+    GHC == 8.2.2
+    GHC == 8.4.4
+    GHC == 8.6.5
+    GHC == 8.8.4
+    GHC == 8.10.7
+    GHC == 9.0.2
+    GHC == 9.2.4
+    GHC == 9.4.1
+
 extra-source-files:
     -- scripts/CaseFolding.txt
     -- scripts/SpecialCasing.txt
-    README.markdown
-    benchmarks/Setup.hs
-    benchmarks/cbits/*.c
-    benchmarks/haskell/*.hs
-    benchmarks/haskell/Benchmarks/*.hs
-    benchmarks/haskell/Benchmarks/Programs/*.hs
-    benchmarks/python/*.py
-    benchmarks/ruby/*.rb
-    benchmarks/text-benchmarks.cabal
+    README.md
     changelog.md
-    include/*.h
     scripts/*.hs
-    tests-and-benchmarks.markdown
-    tests/*.hs
-    tests/.ghci
-    tests/Makefile
-    tests/Tests/*.hs
-    tests/Tests/Properties/*.hs
-    tests/cabal.config
-    tests/scripts/*.sh
-    tests/text-tests.cabal
-
-flag bytestring-builder
-  description:
-    Depend on the [bytestring-builder](https://hackage.haskell.org/package/bytestring-builder)
-    package for backwards compatibility.
-  default: False
-  manual: False
+    simdutf/LICENSE-APACHE
+    simdutf/LICENSE-MIT
+    simdutf/simdutf.h
+    tests/literal-rule-test.sh
+    tests/LiteralRuleTest.hs
 
 flag developer
   description: operate in developer mode
   default: False
   manual: True
 
-flag integer-simple
-  description:
-    Use the [simple integer library](http://hackage.haskell.org/package/integer-simple)
-    instead of [integer-gmp](http://hackage.haskell.org/package/integer-gmp)
-  default: False
-  manual: False
+flag simdutf
+  description: use simdutf library
+  default: True
+  manual: True
 
 library
-  c-sources:    cbits/cbits.c
-  include-dirs: include
+  c-sources:    cbits/is_ascii.c
+                cbits/measure_off.c
+                cbits/reverse.c
+                cbits/utils.c
+  hs-source-dirs: src
+
+  if flag(simdutf)
+    include-dirs: simdutf
+    cxx-sources: simdutf/simdutf.cpp
+                 cbits/validate_utf8.cpp
+    cxx-options: -std=c++17
+    cpp-options: -DSIMDUTF
+    if impl(ghc >= 9.4)
+      build-depends: system-cxx-std-lib == 1.0
+    elif os(darwin) || os(freebsd)
+      extra-libraries: c++
+    elif os(openbsd)
+      extra-libraries: c++ c++abi pthread
+    elif os(windows)
+      -- GHC's Windows toolchain is based on clang/libc++ in GHC 9.4 and later
+      if impl(ghc < 9.3)
+        extra-libraries: stdc++
+      else
+        extra-libraries: c++ c++abi
+    elif os(linux)
+      extra-libraries: stdc++
+    else
+      -- This is supposed to be under arch(wasm32), but we can't do that yet
+      -- since cabal check would fail with unrecognized arch, see
+      -- https://github.com/haskell/cabal/pull/8096 for the fix.
+      -- TODO: when a new cabal release is out with that fix, bump cabal in CI
+      -- and add proper arch(wasm32) declaration here.
+      cpp-options: -DSIMDUTF_NO_THREADS
+      cxx-options: -fno-exceptions
+      extra-libraries: c++ c++abi
+
+  -- Certain version of GHC crash on Windows, when TemplateHaskell encounters C++.
+  -- https://gitlab.haskell.org/ghc/ghc/-/issues/19417
+  if flag(simdutf) && os(windows) && impl(ghc >= 8.8 && < 8.10.5 || == 9.0.1)
+    build-depends: base < 0
+
+  -- For GHC 8.2, 8.6.3 and 8.10.1 even TH + C crash Windows linker.
+  if os(windows) && impl(ghc >= 8.2 && < 8.4 || == 8.6.3 || == 8.10.1)
+    build-depends: base < 0
+
+  -- GHC 8.10 has linking issues (probably TH-related) on ARM.
+  if (arch(aarch64) || arch(arm)) && impl(ghc == 8.10.*)
+    build-depends: base < 0
+
+  -- Subword primitives in GHC 9.2.1 are broken on ARM platforms.
+  if (arch(aarch64) || arch(arm)) && impl(ghc == 9.2.1)
+    build-depends: base < 0
+
+  -- NetBSD + GHC 9.2.1 + TH + C++ does not work together.
+  -- https://gitlab.haskell.org/ghc/ghc/-/issues/22577
+  if flag(simdutf) && os(netbsd) && impl(ghc < 9.4)
+    build-depends: base < 0
 
   exposed-modules:
     Data.Text
@@ -119,12 +148,14 @@ library
     Data.Text.Internal.Builder.Functions
     Data.Text.Internal.Builder.Int.Digits
     Data.Text.Internal.Builder.RealFloat.Functions
+    Data.Text.Internal.ByteStringCompat
+    Data.Text.Internal.PrimCompat
+    Data.Text.Internal.Encoding
     Data.Text.Internal.Encoding.Fusion
     Data.Text.Internal.Encoding.Fusion.Common
     Data.Text.Internal.Encoding.Utf16
     Data.Text.Internal.Encoding.Utf32
     Data.Text.Internal.Encoding.Utf8
-    Data.Text.Internal.Functions
     Data.Text.Internal.Fusion
     Data.Text.Internal.Fusion.CaseMapping
     Data.Text.Internal.Fusion.Common
@@ -138,9 +169,9 @@ library
     Data.Text.Internal.Private
     Data.Text.Internal.Read
     Data.Text.Internal.Search
+    Data.Text.Internal.StrictBuilder
     Data.Text.Internal.Unsafe
     Data.Text.Internal.Unsafe.Char
-    Data.Text.Internal.Unsafe.Shift
     Data.Text.Lazy
     Data.Text.Lazy.Builder
     Data.Text.Lazy.Builder.Int
@@ -157,32 +188,20 @@ library
 
   build-depends:
     array            >= 0.3 && < 0.6,
-    base             >= 4.3 && < 5,
+    base             >= 4.10 && < 5,
     binary           >= 0.5 && < 0.9,
+    bytestring       >= 0.10.4 && < 0.12,
     deepseq          >= 1.1 && < 1.5,
-    ghc-prim         >= 0.2 && < 0.6,
-    template-haskell >= 2.5 && < 2.16
-
-  if flag(bytestring-builder)
-    build-depends: bytestring         >= 0.9    && < 0.10.4,
-                   bytestring-builder >= 0.10.4.0.2 && < 0.11
-  else
-    build-depends: bytestring         >= 0.10.4 && < 0.11
+    ghc-prim         >= 0.2 && < 0.11,
+    template-haskell >= 2.5 && < 2.21
 
   ghc-options: -Wall -fwarn-tabs -funbox-strict-fields -O2
   if flag(developer)
-    ghc-prof-options: -auto-all
-    ghc-options: -Werror
+    ghc-options: -fno-ignore-asserts
     cpp-options: -DASSERTS
+    if impl(ghc >= 9.2.2)
+      ghc-options: -fcheck-prim-bounds
 
-  if flag(integer-simple)
-    cpp-options: -DINTEGER_SIMPLE
-    build-depends: integer-simple >= 0.1 && < 0.5
-  else
-    cpp-options: -DINTEGER_GMP
-    build-depends: integer-gmp >= 0.2 && < 1.1
-
-  -- compiler specification
   default-language: Haskell2010
   default-extensions:
     NondecreasingIndentation
@@ -198,132 +217,109 @@ library
     Rank2Types
     RankNTypes
     RecordWildCards
+    Safe
     ScopedTypeVariables
+    TemplateHaskellQuotes
+    Trustworthy
     TypeFamilies
     UnboxedTuples
     UnliftedFFITypes
-
-  if impl(ghc >= 7.2)
-    other-extensions: Trustworthy
-  if impl(ghc >= 7.4)
-    other-extensions: Safe
-  if impl(ghc >= 8.0)
-    other-extensions: TemplateHaskellQuotes
-  else
-    other-extensions: TemplateHaskell
-
-test-suite tests
-  type:           exitcode-stdio-1.0
-  c-sources:      cbits/cbits.c
-  include-dirs:   include
-
-  ghc-options:
-    -Wall -threaded -rtsopts
-
-  cpp-options:
-    -DASSERTS -DTEST_SUITE
-
-  -- modules specific to test-suite
-  hs-source-dirs: tests
-  main-is:        Tests.hs
-  other-modules:
-    Tests.Properties
-    Tests.Properties.Mul
-    Tests.QuickCheckUtils
-    Tests.Regressions
-    Tests.SlowFunctions
-    Tests.Utils
-
-  -- Same as in `library` stanza; this is needed by cabal for accurate
-  -- file-monitoring as well as to avoid `-Wmissing-home-modules`
-  -- warnings We can't use an inter-package library dependency because
-  -- of different `ghc-options`/`cpp-options` (as a side-benefitt,
-  -- this enables per-component build parallelism in `cabal
-  -- new-build`!); We could, however, use cabal-version:2.2's `common`
-  -- blocks at some point in the future to reduce the duplication.
-  hs-source-dirs: .
-  other-modules:
-    Data.Text
-    Data.Text.Array
-    Data.Text.Encoding
-    Data.Text.Encoding.Error
-    Data.Text.Foreign
-    Data.Text.IO
-    Data.Text.Internal
-    Data.Text.Internal.Builder
-    Data.Text.Internal.Builder.Functions
-    Data.Text.Internal.Builder.Int.Digits
-    Data.Text.Internal.Builder.RealFloat.Functions
-    Data.Text.Internal.Encoding.Fusion
-    Data.Text.Internal.Encoding.Fusion.Common
-    Data.Text.Internal.Encoding.Utf16
-    Data.Text.Internal.Encoding.Utf32
-    Data.Text.Internal.Encoding.Utf8
-    Data.Text.Internal.Functions
-    Data.Text.Internal.Fusion
-    Data.Text.Internal.Fusion.CaseMapping
-    Data.Text.Internal.Fusion.Common
-    Data.Text.Internal.Fusion.Size
-    Data.Text.Internal.Fusion.Types
-    Data.Text.Internal.IO
-    Data.Text.Internal.Lazy
-    Data.Text.Internal.Lazy.Encoding.Fusion
-    Data.Text.Internal.Lazy.Fusion
-    Data.Text.Internal.Lazy.Search
-    Data.Text.Internal.Private
-    Data.Text.Internal.Read
-    Data.Text.Internal.Search
-    Data.Text.Internal.Unsafe
-    Data.Text.Internal.Unsafe.Char
-    Data.Text.Internal.Unsafe.Shift
-    Data.Text.Lazy
-    Data.Text.Lazy.Builder
-    Data.Text.Lazy.Builder.Int
-    Data.Text.Lazy.Builder.RealFloat
-    Data.Text.Lazy.Encoding
-    Data.Text.Lazy.IO
-    Data.Text.Lazy.Internal
-    Data.Text.Lazy.Read
-    Data.Text.Read
-    Data.Text.Unsafe
-    Data.Text.Show
-
-  build-depends:
-    HUnit >= 1.2,
-    QuickCheck >= 2.7 && < 2.11,
-    array,
-    base,
-    binary,
-    deepseq,
-    directory,
-    ghc-prim,
-    quickcheck-unicode >= 1.0.1.0,
-    random,
-    template-haskell,
-    test-framework >= 0.4,
-    test-framework-hunit >= 0.2,
-    test-framework-quickcheck2 >= 0.2
-
-  if flag(bytestring-builder)
-    build-depends: bytestring         >= 0.9    && < 0.10.4,
-                   bytestring-builder >= 0.10.4
-  else
-    build-depends: bytestring         >= 0.10.4
-
-  if flag(integer-simple)
-    cpp-options: -DINTEGER_SIMPLE
-    build-depends: integer-simple >= 0.1 && < 0.5
-  else
-    cpp-options: -DINTEGER_GMP
-    build-depends: integer-gmp >= 0.2
-
-  default-language: Haskell2010
-  default-extensions: NondecreasingIndentation
 
 source-repository head
   type:     git
   location: https://github.com/haskell/text
 
-source-repository head
-  type:     mercurial
-  location: https://bitbucket.org/bos/text
+test-suite tests
+  type:           exitcode-stdio-1.0
+  ghc-options:
+    -Wall -threaded -rtsopts
+
+  hs-source-dirs: tests
+  main-is:        Tests.hs
+  other-modules:
+    Tests.Lift
+    Tests.Properties
+    Tests.Properties.Basics
+    Tests.Properties.Builder
+    Tests.Properties.Folds
+    Tests.Properties.Instances
+    Tests.Properties.LowLevel
+    Tests.Properties.Read
+    Tests.Properties.Substrings
+    Tests.Properties.Text
+    Tests.Properties.Transcoding
+    Tests.QuickCheckUtils
+    Tests.Regressions
+    Tests.SlowFunctions
+    Tests.Utils
+
+  build-depends:
+    QuickCheck >= 2.12.6 && < 2.15,
+    base <5,
+    bytestring,
+    deepseq,
+    directory,
+    ghc-prim,
+    tasty,
+    tasty-hunit,
+    tasty-quickcheck,
+    template-haskell,
+    transformers,
+    text
+
+  -- Plugin infrastructure does not work properly in 8.6.1, and
+  -- ghc-9.2.1 library depends on parsec, which causes a circular dependency.
+  if impl(ghc >= 8.2.1 && < 8.6 || >= 8.6.2 && < 9.2 || >= 9.2.2)
+    build-depends: tasty-inspection-testing
+
+  default-language: Haskell2010
+  default-extensions: NondecreasingIndentation
+
+benchmark text-benchmarks
+  type:           exitcode-stdio-1.0
+
+  ghc-options:    -Wall -O2 -rtsopts
+  if impl(ghc >= 8.10)
+    ghc-options:  "-with-rtsopts=-A32m --nonmoving-gc"
+  else
+    ghc-options:  "-with-rtsopts=-A32m"
+  if impl(ghc >= 8.6)
+    ghc-options:  -fproc-alignment=64
+
+  build-depends:  base,
+                  bytestring >= 0.10.4,
+                  containers,
+                  deepseq,
+                  directory,
+                  filepath,
+                  tasty-bench >= 0.2,
+                  text,
+                  transformers
+
+  hs-source-dirs: benchmarks/haskell
+  main-is:        Benchmarks.hs
+  other-modules:
+    Benchmarks.Builder
+    Benchmarks.Concat
+    Benchmarks.DecodeUtf8
+    Benchmarks.EncodeUtf8
+    Benchmarks.Equality
+    Benchmarks.FileRead
+    Benchmarks.FoldLines
+    Benchmarks.Multilang
+    Benchmarks.Programs.BigTable
+    Benchmarks.Programs.Cut
+    Benchmarks.Programs.Fold
+    Benchmarks.Programs.Sort
+    Benchmarks.Programs.StripTags
+    Benchmarks.Programs.Throughput
+    Benchmarks.Pure
+    Benchmarks.ReadNumbers
+    Benchmarks.Replace
+    Benchmarks.Search
+    Benchmarks.Stream
+    Benchmarks.WordFrequencies
+
+  default-language: Haskell2010
+  default-extensions: NondecreasingIndentation
+  other-extensions: DeriveGeneric

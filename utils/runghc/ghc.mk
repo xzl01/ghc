@@ -5,8 +5,8 @@
 # This file is part of the GHC build system.
 #
 # To understand how the build system works and how to modify it, see
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Architecture
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Modifying
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/architecture
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/modifying
 #
 # -----------------------------------------------------------------------------
 
@@ -17,7 +17,6 @@ utils/runghc_dist-install_SHELL_WRAPPER = YES
 utils/runghc_dist-install_INSTALL = YES
 utils/runghc_dist-install_INSTALL_INPLACE = YES
 utils/runghc_dist-install_INSTALL_SHELL_WRAPPER_NAME = runghc-$(ProjectVersion)
-utils/runghc_dist-install_EXTRA_HC_OPTS = -cpp -DVERSION="\"$(ProjectVersion)\""
 
 # Be explicit about which version of ghc to call (#9054).
 define utils/runghc_dist-install_INPLACE_SHELL_WRAPPER_EXTRA

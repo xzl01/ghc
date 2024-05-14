@@ -7,7 +7,7 @@
 -- License     :  BSD-style (see the file libraries/base/LICENSE)
 -- 
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  portable
 --
 -- This library provides facilities for parsing the command-line options
@@ -96,17 +96,17 @@ data ArgDescr a
    | ReqArg (String       -> a) String -- ^   option requires argument
    | OptArg (Maybe String -> a) String -- ^   optional argument
 
--- | @since 4.6.0.0
+-- | @since 4.7.0.0
 instance Functor ArgOrder where
     fmap _ RequireOrder      = RequireOrder
     fmap _ Permute           = Permute
     fmap f (ReturnInOrder g) = ReturnInOrder (f . g)
 
--- | @since 4.6.0.0
+-- | @since 4.7.0.0
 instance Functor OptDescr where
     fmap f (Option a b argDescr c) = Option a b (fmap f argDescr) c
 
--- | @since 4.6.0.0
+-- | @since 4.7.0.0
 instance Functor ArgDescr where
     fmap f (NoArg a)    = NoArg (f a)
     fmap f (ReqArg g s) = ReqArg (f . g) s

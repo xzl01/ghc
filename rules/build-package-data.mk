@@ -5,8 +5,8 @@
 # This file is part of the GHC build system.
 #
 # To understand how the build system works and how to modify it, see
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Architecture
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Modifying
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/architecture
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/modifying
 #
 # -----------------------------------------------------------------------------
 
@@ -62,7 +62,9 @@ endif
 # We filter out -Werror from SRC_CC_OPTS, because when configure tests
 # for a feature it may not generate warning-free C code, and thus may
 # think that the feature doesn't exist if -Werror is on.
-$1_$2_CONFIGURE_CFLAGS = $$(filter-out -Werror,$$(SRC_CC_OPTS)) $$(CONF_CC_OPTS_STAGE$3) $$($1_CC_OPTS) $$($1_$2_CC_OPTS) $$(SRC_CC_WARNING_OPTS)
+#
+# Do `-iquote $(TOP)/$1` so package configure scripts can access their own source.
+$1_$2_CONFIGURE_CFLAGS = $$(filter-out -Werror,$$(SRC_CC_OPTS)) $$(CONF_CC_OPTS_STAGE$3) $$($1_CC_OPTS) $$($1_$2_CC_OPTS) $$(SRC_CC_WARNING_OPTS) -iquote $(TOP)/$1
 $1_$2_CONFIGURE_LDFLAGS = $$(SRC_LD_OPTS) $$($1_LD_OPTS) $$($1_$2_LD_OPTS)
 $1_$2_CONFIGURE_CPPFLAGS = $$(SRC_CPP_OPTS) $$(CONF_CPP_OPTS_STAGE$3) $$($1_CPP_OPTS) $$($1_$2_CPP_OPTS)
 
@@ -98,13 +100,16 @@ ifeq "$$(GMP_FORCE_INTREE)" "YES"
 $1_$2_CONFIGURE_OPTS += --configure-option=--with-intree-gmp
 endif
 
+ifeq "$$(GMP_ENABLED)" "YES"
+$1_$2_CONFIGURE_OPTS += --configure-option=--with-gmp
+endif
+
+
 ifneq "$$(CURSES_LIB_DIRS)" ""
 $1_$2_CONFIGURE_OPTS += --configure-option=--with-curses-libraries="$$(CURSES_LIB_DIRS)"
 endif
 
-ifeq "$$(CrossCompiling)" "YES"
 $1_$2_CONFIGURE_OPTS += --configure-option=--host=$(TargetPlatformFull)
-endif
 
 ifeq "$3" "0"
 $1_$2_CONFIGURE_OPTS += $$(BOOT_PKG_CONSTRAINTS)
@@ -116,23 +121,17 @@ $1_$2_CONFIGURE_OPTS += --with-ar="$$(AR_STAGE$3)"
 $1_$2_CONFIGURE_OPTS += $$(if $$(ALEX),--with-alex="$$(ALEX)")
 $1_$2_CONFIGURE_OPTS += $$(if $$(HAPPY),--with-happy="$$(HAPPY)")
 
+$1_$2_PKGDATA = $1/$2/package-data.mk
+
 ifneq "$$(BINDIST)" "YES"
 ifneq "$$(NO_GENERATED_MAKEFILE_RULES)" "YES"
-$1/$2/inplace-pkg-config : $1/$2/package-data.mk
-$1/$2/build/$$(or $$($1_EXECUTABLE),$$($1_$2_PROGNAME),.)/autogen/cabal_macros.h : $1/$2/package-data.mk
+$1/$2/inplace-pkg-config : $$($1_$2_PKGDATA)
+$1/$2/build/$$(or $$($1_EXECUTABLE),$$($1_$2_PROGNAME),.)/autogen/cabal_macros.h : $$($1_$2_PKGDATA)
 
 # This rule configures the package, generates the package-data.mk file
 # for our build system, and registers the package for use in-place in
 # the build tree.
-$1/$2/package-data.mk : $$$$(ghc-cabal_INPLACE) $$($1_$2_GHC_PKG_DEP) $1/$$($1_PACKAGE).cabal $$(wildcard $1/configure) $$(LAX_DEPS_FOLLOW) $$$$($1_$2_HC_CONFIG_DEP)
-# Checking packages built with the bootstrapping compiler would
-# generally be a waste of time. Either we will rebuild them with
-# stage1/stage2, or we don't really care about them.
-ifneq "$3" "0"
-ifneq "$$($1_NO_CHECK)" "YES"
-	"$$(ghc-cabal_INPLACE)" check $1
-endif
-endif
+$$($1_$2_PKGDATA) : $$$$(ghc-cabal_INPLACE) $$($1_$2_GHC_PKG_DEP) $1/$$($1_PACKAGE).cabal $$(wildcard $1/configure) $$(LAX_DEPS_FOLLOW) $$$$($1_$2_HC_CONFIG_DEP)
 	"$$(ghc-cabal_INPLACE)" configure $1 $2 --with-ghc="$$($1_$2_HC_CONFIG)" --with-ghc-pkg="$$($1_$2_GHC_PKG)" $$($1_CONFIGURE_OPTS) $$($1_$2_CONFIGURE_OPTS)
 ifeq "$$($1_$2_PROG)" ""
 	$$(call cmd,$1_$2_GHC_PKG) update -v0 --force $$($1_$2_GHC_PKG_OPTS) $1/$2/inplace-pkg-config
@@ -140,7 +139,7 @@ endif
 endif # NO_GENERATED_MAKEFILE_RULES
 endif # BINDIST
 
-PACKAGE_DATA_MKS += $1/$2/package-data.mk
+PACKAGE_DATA_MKS += $$($1_$2_PKGDATA)
 
 $(call profEnd, build-package-data($1,$2,$3))
 endef

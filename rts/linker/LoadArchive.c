@@ -5,7 +5,9 @@
 #include "sm/OSMem.h"
 #include "RtsUtils.h"
 #include "LinkerInternals.h"
+#include "CheckUnload.h" // loaded_objects, insertOCSectionIndices
 #include "linker/M32Alloc.h"
+#include "linker/MMap.h"
 
 /* Platform specific headers */
 #if defined(OBJFORMAT_PEi386)
@@ -239,12 +241,12 @@ lookupGNUArchiveIndex(int gnuFileIndexSize, char **fileName_,
     return true;
 }
 
-static HsInt loadArchive_ (pathchar *path)
+HsInt loadArchive_ (pathchar *path)
 {
-    ObjectCode* oc = NULL;
     char *image = NULL;
     HsInt retcode = 0;
     int memberSize;
+    int memberIdx = 0;
     FILE *f = NULL;
     int n;
     size_t thisFileNameSize = (size_t)-1; /* shut up bogus GCC warning */
@@ -440,7 +442,7 @@ static HsInt loadArchive_ (pathchar *path)
                     break;
                 }
             }
-            /* If we didn't find a '/', then a space teminates the
+            /* If we didn't find a '/', then a space terminates the
                filename. Note that if we don't find one, then
                thisFileNameSize ends up as 16, and we already have the
                '\0' at the end. */
@@ -459,7 +461,7 @@ static HsInt loadArchive_ (pathchar *path)
         DEBUG_LOG("Found member file `%s'\n", fileName);
 
         /* TODO: Stop relying on file extensions to determine input formats.
-                 Instead try to match file headers. See Trac #13103.  */
+                 Instead try to match file headers. See #13103.  */
         isObject = (thisFileNameSize >= 2 && strncmp(fileName + thisFileNameSize - 2, ".o"  , 2) == 0)
                 || (thisFileNameSize >= 3 && strncmp(fileName + thisFileNameSize - 3, ".lo" , 3) == 0)
                 || (thisFileNameSize >= 4 && strncmp(fileName + thisFileNameSize - 4, ".p_o", 4) == 0)
@@ -468,6 +470,7 @@ static HsInt loadArchive_ (pathchar *path)
 #if defined(OBJFORMAT_PEi386)
         /*
         * Note [MSVC import files (ext .lib)]
+        * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         * MSVC compilers store the object files in
         * the import libraries with extension .dll
         * so on Windows we should look for those too.
@@ -483,13 +486,13 @@ static HsInt loadArchive_ (pathchar *path)
         DEBUG_LOG("\tisObject = %d\n", isObject);
 
         if (isObject) {
-            char *archiveMemberName;
+            pathchar *archiveMemberName;
 
             DEBUG_LOG("Member is an object file...loading...\n");
 
 #if defined(darwin_HOST_OS) || defined(ios_HOST_OS)
             if (RTS_LINKER_USE_MMAP)
-                image = mmapForLinker(memberSize, MAP_ANONYMOUS, -1, 0);
+                image = mmapAnonForLinker(memberSize);
             else {
                 /* See loadObj() */
                 misalignment = machoGetMisalignment(f);
@@ -515,13 +518,17 @@ static HsInt loadArchive_ (pathchar *path)
                 }
             }
 
-            archiveMemberName = stgMallocBytes(pathlen(path) + thisFileNameSize + 3,
-                                               "loadArchive(file)");
-            sprintf(archiveMemberName, "%" PATH_FMT "(%.*s)",
-                    path, (int)thisFileNameSize, fileName);
+            int size = pathprintf(NULL, 0, WSTR("%" PATH_FMT "(#%d:%.*s)"),
+                                  path, memberIdx, (int)thisFileNameSize, fileName);
+            // I don't understand why this extra +1 is needed here; pathprintf
+            // should have given us the correct length but in practice it seems
+            // to be one byte short on Win32.
+            archiveMemberName = stgMallocBytes((size+1+1) * sizeof(pathchar), "loadArchive(file)");
+            pathprintf(archiveMemberName, size+1, WSTR("%" PATH_FMT "(#%d:%.*s)"),
+                       path, memberIdx, (int)thisFileNameSize, fileName);
 
-            oc = mkOc(path, image, memberSize, false, archiveMemberName
-                     , misalignment);
+            ObjectCode *oc = mkOc(STATIC_OBJECT, path, image, memberSize, false, archiveMemberName,
+                                  misalignment);
 #if defined(OBJFORMAT_MACHO)
             ocInit_MachO( oc );
 #endif
@@ -536,8 +543,9 @@ static HsInt loadArchive_ (pathchar *path)
                 fclose(f);
                 return 0;
             } else {
-                oc->next = objects;
-                objects = oc;
+                insertOCSectionIndices(oc); // also adds the object to `objects` list
+                oc->next_loaded_object = loaded_objects;
+                loaded_objects = oc;
             }
         }
         else if (isGnuIndex) {
@@ -547,7 +555,7 @@ while reading filename from `%" PATH_FMT "'", path);
             }
             DEBUG_LOG("Found GNU-variant file index\n");
 #if RTS_LINKER_USE_MMAP
-            gnuFileIndex = mmapForLinker(memberSize + 1, MAP_ANONYMOUS, -1, 0);
+            gnuFileIndex = mmapAnonForLinker(memberSize + 1);
 #else
             gnuFileIndex = stgMallocBytes(memberSize + 1, "loadArchive(image)");
 #endif
@@ -600,6 +608,7 @@ while reading filename from `%" PATH_FMT "'", path);
             }
             DEBUG_LOG("successfully read one pad byte\n");
         }
+        memberIdx ++;
         DEBUG_LOG("reached end of archive loading while loop\n");
     }
     retcode = 1;
@@ -611,14 +620,11 @@ fail:
         stgFree(fileName);
     if (gnuFileIndex != NULL) {
 #if RTS_LINKER_USE_MMAP
-        munmap(gnuFileIndex, gnuFileIndexSize + 1);
+        munmapForLinker(gnuFileIndex, gnuFileIndexSize + 1, "loadArchive_");
 #else
         stgFree(gnuFileIndex);
 #endif
     }
-
-    if (RTS_LINKER_USE_MMAP)
-        m32_allocator_flush();
 
     DEBUG_LOG("done\n");
     return retcode;
@@ -631,3 +637,21 @@ HsInt loadArchive (pathchar *path)
    RELEASE_LOCK(&linker_mutex);
    return r;
 }
+
+bool isArchive (pathchar *path)
+{
+    static const char ARCHIVE_HEADER[] = "!<arch>\n";
+    char buffer[10];
+    FILE *f = pathopen(path, WSTR("rb"));
+    if (f == NULL) {
+        return false;
+    }
+
+    size_t ret = fread(buffer, 1, sizeof(buffer), f);
+    fclose(f);
+    if (ret < sizeof(buffer)) {
+        return false;
+    }
+    return strncmp(ARCHIVE_HEADER, buffer, sizeof(ARCHIVE_HEADER)-1) == 0;
+}
+

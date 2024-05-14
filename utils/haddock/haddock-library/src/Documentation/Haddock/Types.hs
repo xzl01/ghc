@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP, DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
+{-# LANGUAGE CPP, DeriveTraversable #-}
 
 -- |
 -- Module      :  Documentation.Haddock.Types
@@ -44,14 +44,17 @@ data MetaDoc mod id =
           } deriving (Eq, Show, Functor, Foldable, Traversable)
 
 #if MIN_VERSION_base(4,8,0)
+-- | __NOTE__: Only defined for @base >= 4.8.0@
 instance Bifunctor MetaDoc where
   bimap f g (MetaDoc m d) = MetaDoc m (bimap f g d)
 #endif
 
 #if MIN_VERSION_base(4,10,0)
+-- | __NOTE__: Only defined for @base >= 4.10.0@
 instance Bifoldable MetaDoc where
   bifoldr f g z d = bifoldr f g z (_doc d)
 
+-- | __NOTE__: Only defined for @base >= 4.10.0@
 instance Bitraversable MetaDoc where
   bitraverse f g (MetaDoc m d) = MetaDoc m <$> bitraverse f g d
 #endif
@@ -70,13 +73,18 @@ data Hyperlink id = Hyperlink
   , hyperlinkLabel :: Maybe id
   } deriving (Eq, Show, Functor, Foldable, Traversable)
 
+data ModLink id = ModLink
+  { modLinkName   :: String
+  , modLinkLabel :: Maybe id
+  } deriving (Eq, Show, Functor, Foldable, Traversable)
+
 data Picture = Picture
   { pictureUri   :: String
   , pictureTitle :: Maybe String
   } deriving (Eq, Show)
 
 data Header id = Header
-  { headerLevel :: Int
+  { headerLevel :: Int  -- ^ between 1 and 6 inclusive
   , headerTitle :: id
   } deriving (Eq, Show, Functor, Foldable, Traversable)
 
@@ -108,14 +116,15 @@ data DocH mod id
   | DocIdentifier id
   | DocIdentifierUnchecked mod
   -- ^ A qualified identifier that couldn't be resolved.
-  | DocModule String
+  | DocModule (ModLink (DocH mod id))
+  -- ^ A link to a module, with an optional label.
   | DocWarning (DocH mod id)
   -- ^ This constructor has no counterpart in Haddock markup.
   | DocEmphasis (DocH mod id)
   | DocMonospaced (DocH mod id)
   | DocBold (DocH mod id)
   | DocUnorderedList [DocH mod id]
-  | DocOrderedList [DocH mod id]
+  | DocOrderedList [(Int, DocH mod id)]
   | DocDefList [(DocH mod id, DocH mod id)]
   | DocCodeBlock (DocH mod id)
   | DocHyperlink (Hyperlink (DocH mod id))
@@ -123,7 +132,7 @@ data DocH mod id
   | DocMathInline String
   | DocMathDisplay String
   | DocAName String
-  -- ^ A (HTML) anchor.
+  -- ^ A (HTML) anchor. It must not contain any spaces.
   | DocProperty String
   | DocExamples [Example]
   | DocHeader (Header (DocH mod id))
@@ -131,6 +140,7 @@ data DocH mod id
   deriving (Eq, Show, Functor, Foldable, Traversable)
 
 #if MIN_VERSION_base(4,8,0)
+-- | __NOTE__: Only defined for @base >= 4.8.0@
 instance Bifunctor DocH where
   bimap _ _ DocEmpty = DocEmpty
   bimap f g (DocAppend docA docB) = DocAppend (bimap f g docA) (bimap f g docB)
@@ -138,13 +148,13 @@ instance Bifunctor DocH where
   bimap f g (DocParagraph doc) = DocParagraph (bimap f g doc)
   bimap _ g (DocIdentifier i) = DocIdentifier (g i)
   bimap f _ (DocIdentifierUnchecked m) = DocIdentifierUnchecked (f m)
-  bimap _ _ (DocModule s) = DocModule s
+  bimap f g (DocModule (ModLink m lbl)) = DocModule (ModLink m (fmap (bimap f g) lbl))
   bimap f g (DocWarning doc) = DocWarning (bimap f g doc)
   bimap f g (DocEmphasis doc) = DocEmphasis (bimap f g doc)
   bimap f g (DocMonospaced doc) = DocMonospaced (bimap f g doc)
   bimap f g (DocBold doc) = DocBold (bimap f g doc)
   bimap f g (DocUnorderedList docs) = DocUnorderedList (map (bimap f g) docs)
-  bimap f g (DocOrderedList docs) = DocOrderedList (map (bimap f g) docs)
+  bimap f g (DocOrderedList docs) = DocOrderedList (map (\(index, a) -> (index, bimap f g a)) docs)
   bimap f g (DocDefList docs) = DocDefList (map (bimap f g *** bimap f g) docs)
   bimap f g (DocCodeBlock doc) = DocCodeBlock (bimap f g doc)
   bimap f g (DocHyperlink (Hyperlink url lbl)) = DocHyperlink (Hyperlink url (fmap (bimap f g) lbl))
@@ -159,6 +169,7 @@ instance Bifunctor DocH where
 #endif
 
 #if MIN_VERSION_base(4,10,0)
+-- | __NOTE__: Only defined for @base >= 4.10.0@
 instance Bifoldable DocH where
   bifoldr f g z (DocAppend docA docB) = bifoldr f g (bifoldr f g z docA) docB
   bifoldr f g z (DocParagraph doc) = bifoldr f g z doc
@@ -169,13 +180,14 @@ instance Bifoldable DocH where
   bifoldr f g z (DocMonospaced doc) = bifoldr f g z doc
   bifoldr f g z (DocBold doc) = bifoldr f g z doc
   bifoldr f g z (DocUnorderedList docs) = foldr (flip (bifoldr f g)) z docs
-  bifoldr f g z (DocOrderedList docs) = foldr (flip (bifoldr f g)) z docs
+  bifoldr f g z (DocOrderedList docs) = foldr (flip (bifoldr f g)) z (map snd docs)
   bifoldr f g z (DocDefList docs) = foldr (\(l, r) acc -> bifoldr f g (bifoldr f g acc l) r) z docs
   bifoldr f g z (DocCodeBlock doc) = bifoldr f g z doc
   bifoldr f g z (DocHeader (Header _ title)) = bifoldr f g z title
   bifoldr f g z (DocTable (Table header body)) = foldr (\r acc -> foldr (flip (bifoldr f g)) acc r) (foldr (\r acc -> foldr (flip (bifoldr f g)) acc r) z body) header
   bifoldr _ _ z _ = z
 
+-- | __NOTE__: Only defined for @base >= 4.10.0@
 instance Bitraversable DocH where
   bitraverse _ _ DocEmpty = pure DocEmpty
   bitraverse f g (DocAppend docA docB) = DocAppend <$> bitraverse f g docA <*> bitraverse f g docB
@@ -183,13 +195,14 @@ instance Bitraversable DocH where
   bitraverse f g (DocParagraph doc) = DocParagraph <$> bitraverse f g doc
   bitraverse _ g (DocIdentifier i) = DocIdentifier <$> g i
   bitraverse f _ (DocIdentifierUnchecked m) = DocIdentifierUnchecked <$> f m
-  bitraverse _ _ (DocModule s) = pure (DocModule s)
+  bitraverse f g (DocModule (ModLink m lbl)) = DocModule <$> (ModLink m <$> traverse (bitraverse f g) lbl)
   bitraverse f g (DocWarning doc) = DocWarning <$> bitraverse f g doc
   bitraverse f g (DocEmphasis doc) = DocEmphasis <$> bitraverse f g doc
   bitraverse f g (DocMonospaced doc) = DocMonospaced <$> bitraverse f g doc
   bitraverse f g (DocBold doc) = DocBold <$> bitraverse f g doc
   bitraverse f g (DocUnorderedList docs) = DocUnorderedList <$> traverse (bitraverse f g) docs
-  bitraverse f g (DocOrderedList docs) = DocOrderedList <$> traverse (bitraverse f g) docs
+  bitraverse f g (DocOrderedList docs) = DocOrderedList <$> traverseSnd (bitraverse f g) docs
+    where traverseSnd f' = traverse (\(x, a) -> (\b -> (x, b)) <$> f' a)
   bitraverse f g (DocDefList docs) = DocDefList <$> traverse (bitraverse (bitraverse f g) (bitraverse f g)) docs
   bitraverse f g (DocCodeBlock doc) = DocCodeBlock <$> bitraverse f g doc
   bitraverse f g (DocHyperlink (Hyperlink url lbl)) = DocHyperlink <$> (Hyperlink url <$> traverse (bitraverse f g) lbl)
@@ -228,13 +241,13 @@ data DocMarkupH mod id a = Markup
   , markupAppend               :: a -> a -> a
   , markupIdentifier           :: id -> a
   , markupIdentifierUnchecked  :: mod -> a
-  , markupModule               :: String -> a
+  , markupModule               :: ModLink a -> a
   , markupWarning              :: a -> a
   , markupEmphasis             :: a -> a
   , markupBold                 :: a -> a
   , markupMonospaced           :: a -> a
   , markupUnorderedList        :: [a] -> a
-  , markupOrderedList          :: [a] -> a
+  , markupOrderedList          :: [(Int,a)] -> a
   , markupDefList              :: [(a,a)] -> a
   , markupCodeBlock            :: a -> a
   , markupHyperlink            :: Hyperlink a -> a

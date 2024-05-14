@@ -6,7 +6,7 @@ Before release:
 
 2. Pull upstream changes
 
-    git checkout master
+    git switch master
     git pull
 
 3. Update version numbers
@@ -15,81 +15,101 @@ Before release:
     time.cabal
     configure.ac
 
-4. Update changelog
+4. Update changelog, add current UTC date
 
+    date -u
     changelog.md
 
 5. Use latest LTS resolver
 
     https://www.stackage.org/lts
     stack.yaml
-    fullcheck
-    (not necessarily benchmark/stack.yaml)
-    .travis.yml (if present)
 
-6. Use latest stack
+6. Use correct & latest GHC versions
+
+    https://www.haskell.org/ghc/download.html
+    fullcheck
+    fullcheck.ps1
+    time.cabal
+        - tested-with
+        - base dependency lower bound
+    .github/workflows/ci.yml
+
+7. Use latest stack
 
     stack upgrade
     stack --version
 
-7. Build & test
+8. Format source
+
+    ./format-all -b
+
+9. Build & test
 
     ./fullcheck
 
-8. Build benchmark
+10. Run benchmarks
 
-    cd benchmark
-    stack build
-        (ignore missing modules warning)
-    stack exec -- time-bench
+    stack bench
 
-9. Inspect generated haddock
+11. Inspect generated haddock, if necessary
 
-    `stack path --local-doc-root`/index.html
+    dist/doc/html/time/index.html
 
-10. Commit and push changes to repo
+12. Commit and push changes to repo
 
     git commit -a
     git push
 
-11. Check Travis build
+13. Check builds (these can be done in parallel)
 
-    https://travis-ci.org/haskell/time
+13a. Check GitHub build
 
-12. Build and test on 32-bit Linux machine
+    https://github.com/haskell/time/actions
 
-    stack upgrade
-    stack --version
-    git pull
+13b. Build and test on 32-bit Linux machine
+
+    git switch master
     ./fullcheck
 
-13. Build and test on Windows
+13c. Build and test on FreeBSD machine
 
-    stack upgrade
-    stack --version
-    git pull
+    git switch master
     ./fullcheck
 
-14. Upload to Hackage
+13d. Build and test on Windows
 
+    (in PowerShell)
+    Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+    git switch master
+    .\fullcheck
+
+14.  Upload to Hackage
+
+    git clean -dXf
+    autoreconf -i
     stack upload .
     http://hackage.haskell.org/package/time
 
-15. Tag commit
+15.  Tag commit
 
-    git tag -a -s [TAG]
+    git tag -a -s VERSION -m "Version VERSION"
     git push --tags
 
-16. Update ghc branch
+16.  Update ghc branch
 
-    git checkout ghc
+    git switch ghc
     git merge master
     git push
 
-17. Restore local branch for next development
+17.  Restore local branch for next development
 
-    git checkout master
+    git switch master
 
-18. Delete completed milestone
+18.  Close completed milestone
 
     https://github.com/haskell/time/milestones
+
+19.  Inform GHC team
+
+    https://gitlab.haskell.org/ghc/ghc/-/issues

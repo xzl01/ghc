@@ -1,5 +1,7 @@
 ------------------------------------------------------------------
 -- A primop-table mangling program                              --
+--
+-- See Note [GHC.Prim] in primops.txt.pp for details.
 ------------------------------------------------------------------
 
 module Main where
@@ -8,7 +10,7 @@ import Parser
 import Syntax
 
 import Data.Char
-import Data.List
+import Data.List (union, intersperse, intercalate, nub)
 import Data.Maybe ( catMaybes )
 import System.Environment ( getArgs )
 
@@ -30,7 +32,7 @@ desugarVectorSpec i              = case vecOptions i of
                             , name    = name'
                             , prefix  = pfx
                             , veclen  = n
-                            , elemrep = con ++ "ElemRep"
+                            , elemrep = map toLower con ++ "ElemRepDataConTy"
                             , ty      = desugarTy (ty i)
                             , cat     = cat i
                             , desc    = desc i
@@ -40,7 +42,7 @@ desugarVectorSpec i              = case vecOptions i of
               PrimVecTypeSpec { ty      = desugarTy (ty i)
                               , prefix  = pfx
                               , veclen  = n
-                              , elemrep = con ++ "ElemRep"
+                              , elemrep = map toLower con ++ "ElemRepDataConTy"
                               , desc    = desc i
                               , opts    = opts i
                               }
@@ -189,6 +191,9 @@ main = getArgs >>= \args ->
                       "--make-latex-doc"
                          -> putStr (gen_latex_doc p_o_specs)
 
+                      "--wired-in-docs"
+                         -> putStr (gen_wired_in_docs p_o_specs)
+
                       _ -> error "Should not happen, known_args out of sync?"
                    )
 
@@ -211,7 +216,8 @@ known_args
        "--primop-vector-tycons",
        "--make-haskell-wrappers",
        "--make-haskell-source",
-       "--make-latex-doc"
+       "--make-latex-doc",
+       "--wired-in-docs"
      ]
 
 ------------------------------------------------------------------
@@ -253,6 +259,7 @@ gen_hs_source (Info defaults entries) =
                 -- and we don't want a complaint that the constraint is redundant
                 -- Remember, this silly file is only for Haddock's consumption
 
+        ++ "{-# OPTIONS_HADDOCK print-explicit-runtime-reps #-}"
         ++ "module GHC.Prim (\n"
         ++ unlines (map (("        " ++) . hdr) entries')
         ++ ") where\n"
@@ -268,7 +275,7 @@ gen_hs_source (Info defaults entries) =
                      -- with Declaration for $fEqMaybe:
                      --       attempting to use module ‘GHC.Classes’
                      --       (libraries/ghc-prim/./GHC/Classes.hs) which is not loaded
-                     -- coming from LoadIface.homeModError
+                     -- coming from GHC.Iface.Load.homeModError
                      -- I'm not sure precisely why; but I *am* sure that we don't need
                      -- any type-class defaulting; and it's clearly wrong to need
                      -- the base package when haddocking ghc-prim
@@ -289,8 +296,6 @@ gen_hs_source (Info defaults entries) =
            hdr (PrimOpSpec { name = n })                         = wrapOp n ++ ","
            hdr (PrimVecOpSpec { name = n })                      = wrapOp n ++ ","
            hdr (PseudoOpSpec { name = n })                       = wrapOp n ++ ","
-           hdr (PrimTypeSpec { ty = TyApp (TyCon "->") _ })      = ""
-                  -- GHC lacks the syntax to explicitly export "->"
            hdr (PrimTypeSpec { ty = TyApp (TyCon n) _ })         = wrapOp n ++ ","
            hdr (PrimTypeSpec {})                                 = error $ "Illegal type spec"
            hdr (PrimVecTypeSpec { ty = TyApp (VecTyCon n _) _ }) = wrapOp n ++ ","
@@ -360,21 +365,23 @@ gen_hs_source (Info defaults entries) =
 
            prim_data t = [ "data " ++ pprTy t ]
 
-           unlatex s = case s of
-                '\\':'t':'e':'x':'t':'t':'t':'{':cs -> markup "@" "@" cs
-                '{':'\\':'t':'e':'x':'t':'t':'t':' ':cs -> markup "@" "@" cs
-                '{':'\\':'t':'t':cs -> markup "@" "@" cs
-                '{':'\\':'i':'t':cs -> markup "/" "/" cs
-                '{':'\\':'e':'m':cs -> markup "/" "/" cs
-                c : cs -> c : unlatex cs
-                "" -> ""
-           markup s t xs = s ++ mk (dropWhile isSpace xs)
-                where mk ""        = t
-                      mk ('\n':cs) = ' ' : mk cs
-                      mk ('}':cs)  = t ++ unlatex cs
-                      mk (c:cs)    = c : mk cs
            escape = concatMap (\c -> if c `elem` special then '\\':c:[] else c:[])
                 where special = "/'`\"@<"
+
+unlatex :: String -> String
+unlatex s = case s of
+  '\\':'t':'e':'x':'t':'t':'t':'{':cs -> markup "@" "@" cs
+  '{':'\\':'t':'e':'x':'t':'t':'t':' ':cs -> markup "@" "@" cs
+  '{':'\\':'t':'t':cs -> markup "@" "@" cs
+  '{':'\\':'i':'t':cs -> markup "/" "/" cs
+  '{':'\\':'e':'m':cs -> markup "/" "/" cs
+  c : cs -> c : unlatex cs
+  "" -> ""
+  where markup b e xs = b ++ mk (dropWhile isSpace xs)
+          where mk ""        = e
+                mk ('\n':cs) = ' ' : mk cs
+                mk ('}':cs)  = e ++ unlatex cs
+                mk (c:cs)    = c : mk cs
 
 -- | Extract a string representation of the name
 getName :: Entry -> Maybe String
@@ -382,6 +389,7 @@ getName PrimOpSpec{ name = n } = Just n
 getName PrimVecOpSpec{ name = n } = Just n
 getName PseudoOpSpec{ name = n } = Just n
 getName PrimTypeSpec{ ty = TyApp tc _ } = Just (show tc)
+getName PrimVecTypeSpec{ ty = TyApp tc _ } = Just (show tc)
 getName _ = Nothing
 
 {- Note [Placeholder declarations]
@@ -391,8 +399,6 @@ keep GHC's renamer and typechecker happy enough for what Haddock
 needs.  Our main plan is to say
         foo :: <type>
         foo = foo
-We have to silence GHC's complaints about unboxed-top-level declarations
-with an ad-hoc fix in TcBinds: see Note [Compiling GHC.Prim] in TcBinds.
 
 That works for all the primitive functions except tagToEnum#.
 If we generate the binding
@@ -427,7 +433,7 @@ wrapOp :: String -> String
 wrapOp nm | isAlpha (head nm) = nm
           | otherwise         = "(" ++ nm ++ ")"
 
--- | Turn an identifer or operator into its infix form
+-- | Turn an identifier or operator into its infix form
 asInfix :: String -> String
 asInfix nm | isAlpha (head nm) = "`" ++ nm ++ "`"
            | otherwise         = nm
@@ -497,7 +503,10 @@ gen_latex_doc (Info defaults entries)
                    foralls = if tvars == [] then "" else "%forall " ++ (tbinds tvars)
                    tvars = tvars_of typ
                    tbinds [] = ". "
-                   tbinds ("o":tbs) = "(o::?) " ++ (tbinds tbs)
+                   tbinds ("o":tbs) = "(o::TYPE q) " ++ (tbinds tbs)
+                   tbinds ("p":tbs) = "(p::TYPE r) " ++ (tbinds tbs)
+                   tbinds ("v":tbs) = "(v::TYPE (BoxedRep l)) " ++ (tbinds tbs)
+                   tbinds ("w":tbs) = "(w::TYPE (BoxedRep k)) " ++ (tbinds tbs)
                    tbinds (tv:tbs) = tv ++ " " ++ (tbinds tbs)
            tvars_of (TyF t1 t2) = tvars_of t1 `union` tvars_of t2
            tvars_of (TyC t1 t2) = tvars_of t1 `union` tvars_of t2
@@ -611,7 +620,13 @@ gen_wrappers (Info _ entries)
    =    "{-# LANGUAGE MagicHash, NoImplicitPrelude, UnboxedTuples #-}\n"
         -- Dependencies on Prelude must be explicit in libraries/base, but we
         -- don't need the Prelude here so we add NoImplicitPrelude.
-     ++ "{-# OPTIONS_GHC -Wno-deprecations #-}\n"
+     ++ "{-# OPTIONS_GHC -Wno-deprecations -O0 #-}\n"
+        -- No point in optimising this at all.
+        -- Performing WW on this module is harmful even, two reasons:
+        --   1. Inferred strictness signatures are all bottom, which is a lie
+        --   2. Doing the worker/wrapper split based on that information will
+        --      introduce references to absentError,
+        --      which isn't available at this point.
      ++ "module GHC.PrimopWrappers where\n"
      ++ "import qualified GHC.Prim\n"
      ++ "import GHC.Tuple ()\n"
@@ -627,12 +642,14 @@ gen_wrappers (Info _ entries)
         f spec = let args = map (\n -> "a" ++ show n) [1 .. arity (ty spec)]
                      src_name = wrap (name spec)
                      lhs = src_name ++ " " ++ unwords args
-                     rhs = "(GHC.Prim." ++ name spec ++ ") " ++ unwords args
+                     rhs = wrapQual (name spec) ++ " " ++ unwords args
                  in ["{-# NOINLINE " ++ src_name ++ " #-}",
                      src_name ++ " :: " ++ pprTy (ty spec),
                      lhs ++ " = " ++ rhs]
         wrap nm | isLower (head nm) = nm
                 | otherwise = "(" ++ nm ++ ")"
+        wrapQual nm | isLower (head nm) = "GHC.Prim." ++ nm
+                    | otherwise         = "(GHC.Prim." ++ nm ++ ")"
 
         dodgy spec
            = name spec `elem`
@@ -656,7 +673,11 @@ gen_primop_list (Info _ entries)
         map (\p -> "   , " ++ cons p) rest
         ++
         [     "   ]"     ]
-     ) where (first:rest) = concatMap desugarVectorSpec (filter is_primop entries)
+     ) where
+         (first,rest) =
+           case concatMap desugarVectorSpec (filter is_primop entries) of
+             x:xs -> (x,xs)
+             [] -> error "gen_primop_list: no primops"
 
 mIN_VECTOR_UNIQUE :: Int
 mIN_VECTOR_UNIQUE = 300
@@ -691,7 +712,7 @@ gen_primop_vector_tys (Info _ entries)
         , ty_id ++ " = mkTyConTy " ++ tycon_id
         , tycon_id ++ " :: TyCon"
         , tycon_id ++ " = pcPrimTyCon0 " ++ name_id ++
-                      " (VecRep " ++ show (veclen i) ++ " " ++ elemrep i ++ ")"
+                      " (TyConApp vecRepDataConTyCon [vec" ++ show (veclen i) ++ "DataConTy, " ++ elemrep i ++ "])"
         ]
       where
         key_id   = prefix i ++ "PrimTyConKey"
@@ -729,13 +750,13 @@ gen_primop_vector_tycons (Info _ entries)
 gen_primop_tag :: Info -> String
 gen_primop_tag (Info _ entries)
    = unlines (max_def_type : max_def :
-              tagOf_type : zipWith f primop_entries [1 :: Int ..])
+              tagOf_type : zipWith f primop_entries [0 :: Int ..])
      where
         primop_entries = concatMap desugarVectorSpec $ filter is_primop entries
         tagOf_type = "primOpTag :: PrimOp -> Int"
         f i n = "primOpTag " ++ cons i ++ " = " ++ show n
         max_def_type = "maxPrimOpTag :: Int"
-        max_def      = "maxPrimOpTag = " ++ show (length primop_entries)
+        max_def      = "maxPrimOpTag = " ++ show (length primop_entries - 1)
 
 gen_data_decl :: Info -> String
 gen_data_decl (Info _ entries) =
@@ -776,6 +797,30 @@ gen_switch_from_attribs attrib_name fn_name (Info defaults entries)
                -> unlines alternatives
                   ++ fn_name ++ " _ = " ++ getAltRhs xx ++ "\n"
 
+{-
+Note [GHC.Prim Docs]
+~~~~~~~~~~~~~~~~~~~~
+For haddocks of GHC.Prim we generate a dummy haskell file (gen_hs_source) that
+contains the type signatures and the commends (but no implementations)
+specifically for consumption by haddock.
+
+GHCi's :doc command reads directly from ModIface's though, and GHC.Prim has a
+wired-in iface that has nothing to do with the above haskell file. The code
+below converts primops.txt into an intermediate form that would later be turned
+into a proper DeclDocMap.
+
+We output the docs as a list of pairs (name, docs). We use stringy names here
+because mapping names to "Name"s is difficult for things like primtypes and
+pseudoops.
+-}
+gen_wired_in_docs :: Info -> String
+gen_wired_in_docs (Info _ entries)
+  = "primOpDocs =\n  [ " ++ intercalate "\n  , " (catMaybes $ map mkDoc $ concatMap desugarVectorSpec entries) ++ "\n  ]\n"
+    where
+      mkDoc po | Just poName <- getName po
+               , not $ null $ desc po = Just $ show (poName, unlatex $ desc po)
+               | otherwise = Nothing
+
 ------------------------------------------------------------------
 -- Create PrimOpInfo text from PrimOpSpecs -----------------------
 ------------------------------------------------------------------
@@ -799,35 +844,79 @@ mkPOI_RHS_text i
                  TyF t1 (TyF _ _)
                     -> "mkCompare " ++ sl_name i ++ ppType t1
                  _ -> error "Type error in comparison op"
-        Monadic
-           -> case ty i of
-                 TyF t1 _
-                    -> "mkMonadic " ++ sl_name i ++ ppType t1
-                 _ -> error "Type error in monadic op"
-        Dyadic
-           -> case ty i of
-                 TyF t1 (TyF _ _)
-                    -> "mkDyadic " ++ sl_name i ++ ppType t1
-                 _ -> error "Type error in dyadic op"
         GenPrimOp
            -> let (argTys, resTy) = flatTys (ty i)
-                  tvs = nub (tvsIn (ty i))
+                  tvs = tvsIn (ty i)
+                  (infBndrs,bndrs) = ppTyVarBinders tvs
               in
                   "mkGenPrimOp " ++ sl_name i ++ " "
-                      ++ listify (map ppTyVar tvs) ++ " "
+                      ++ listify (infBndrs ++ bndrs) ++ " "
                       ++ listify (map ppType argTys) ++ " "
                       ++ "(" ++ ppType resTy ++ ")"
 
 sl_name :: Entry -> String
 sl_name i = "(fsLit \"" ++ name i ++ "\") "
 
-ppTyVar :: String -> String
-ppTyVar "a" = "alphaTyVar"
-ppTyVar "b" = "betaTyVar"
-ppTyVar "c" = "gammaTyVar"
-ppTyVar "s" = "deltaTyVar"
-ppTyVar "o" = "runtimeRep1TyVar, openAlphaTyVar"
+
+-- | A 'PrimOpTyVarBndr' specifies the textual name of a built-in 'TyVarBinder'
+-- (usually from "GHC.Builtin.Types.Prim"), in the 'primOpTyVarBinder' field.
+--
+-- The kind of the type variable stored in the 'primOpTyVarBinder' field
+-- might also depend on some other type variables, for example in
+-- @a :: TYPE r@, the kind of @a@ depends on @r@.
+--
+-- Invariant: if the kind of the type variable stored in the 'primOpTyyVarBinder'
+-- field depends on other type variables, such variables must be inferred type variables
+-- and they must be stored in the associated 'inferredTyVarBinders' field.
+data PrimOpTyVarBinder
+   = PrimOpTyVarBinder
+   { inferredTyVarBinders :: [TyVarBinder]
+   , primOpTyVarBinder    :: TyVarBinder }
+
+nonDepTyVarBinder :: TyVarBinder -> PrimOpTyVarBinder
+nonDepTyVarBinder bndr
+  = PrimOpTyVarBinder
+    { inferredTyVarBinders = []
+    , primOpTyVarBinder    = bndr }
+
+-- | Pretty-print a collection of type variables,
+-- putting all the inferred type variables first,
+-- and removing any duplicate type variables.
+--
+-- This assumes that such a re-ordering makes sense: the kinds of the inferred
+-- type variables may not depend on any of the other type variables.
+ppTyVarBinders :: [TyVar] -> ([TyVarBinder], [TyVarBinder])
+ppTyVarBinders names = case go names of { (infs, bndrs) -> (nub infs, nub bndrs) }
+  where
+     go [] = ([], [])
+     go (tv:tvs)
+       | PrimOpTyVarBinder
+          { inferredTyVarBinders = infs
+          , primOpTyVarBinder    = bndr }
+            <- ppTyVar tv
+       , (other_infs, bndrs) <- ppTyVarBinders tvs
+       = (infs ++ other_infs, bndr : bndrs)
+
+ppTyVar :: TyVar -> PrimOpTyVarBinder
+ppTyVar "a" = nonDepTyVarBinder "alphaTyVarSpec"
+ppTyVar "b" = nonDepTyVarBinder "betaTyVarSpec"
+ppTyVar "c" = nonDepTyVarBinder "gammaTyVarSpec"
+ppTyVar "s" = nonDepTyVarBinder "deltaTyVarSpec"
+ppTyVar "o" = PrimOpTyVarBinder
+              { inferredTyVarBinders = ["runtimeRep1TyVarInf"]
+              , primOpTyVarBinder    = "openAlphaTyVarSpec" }
+ppTyVar "p" = PrimOpTyVarBinder
+              { inferredTyVarBinders = ["runtimeRep2TyVarInf"]
+              , primOpTyVarBinder    = "openBetaTyVarSpec" }
+ppTyVar "v" = PrimOpTyVarBinder
+              { inferredTyVarBinders = ["levity1TyVarInf"]
+              , primOpTyVarBinder    = "levPolyAlphaTyVarSpec" }
+ppTyVar "w" = PrimOpTyVarBinder
+              { inferredTyVarBinders = ["levity2TyVarInf"]
+              , primOpTyVarBinder    = "levPolyBetaTyVarSpec" }
 ppTyVar _   = error "Unknown type var"
+-- o, p, v and w have a special meaning. See primops.txt.pp
+-- Note [Levity and representation polymorphic primops]
 
 ppType :: Ty -> String
 ppType (TyApp (TyCon "Any")         []) = "anyTy"
@@ -851,15 +940,21 @@ ppType (TyApp (TyCon "ByteArray#")  []) = "byteArrayPrimTy"
 ppType (TyApp (TyCon "RealWorld")   []) = "realWorldTy"
 ppType (TyApp (TyCon "ThreadId#")   []) = "threadIdPrimTy"
 ppType (TyApp (TyCon "ForeignObj#") []) = "foreignObjPrimTy"
-ppType (TyApp (TyCon "BCO#")        []) = "bcoPrimTy"
+ppType (TyApp (TyCon "BCO")         []) = "bcoPrimTy"
 ppType (TyApp (TyCon "Compact#")    []) = "compactPrimTy"
-ppType (TyApp (TyCon "()")          []) = "unitTy"      -- unitTy is TysWiredIn's name for ()
+ppType (TyApp (TyCon "StackSnapshot#") []) = "stackSnapshotPrimTy"
+ppType (TyApp (TyCon "()")          []) = "unitTy"      -- unitTy is GHC.Builtin.Types's name for ()
 
 ppType (TyVar "a")                      = "alphaTy"
 ppType (TyVar "b")                      = "betaTy"
 ppType (TyVar "c")                      = "gammaTy"
 ppType (TyVar "s")                      = "deltaTy"
 ppType (TyVar "o")                      = "openAlphaTy"
+ppType (TyVar "p")                      = "openBetaTy"
+ppType (TyVar "v")                      = "levPolyAlphaTy"
+ppType (TyVar "w")                      = "levPolyBetaTy"
+-- o, p, v and w have a special meaning. See primops.txt.pp
+-- Note [Levity and representation polymorphic primops]
 
 ppType (TyApp (TyCon "State#") [x])             = "mkStatePrimTy " ++ ppType x
 ppType (TyApp (TyCon "MutVar#") [x,y])          = "mkMutVarPrimTy " ++ ppType x
@@ -882,16 +977,17 @@ ppType (TyApp (TyCon "StableName#") [x]) = "mkStableNamePrimTy " ++ ppType x
 
 ppType (TyApp (TyCon "MVar#") [x,y])     = "mkMVarPrimTy " ++ ppType x
                                            ++ " " ++ ppType y
+ppType (TyApp (TyCon "IOPort#") [x,y])   = "mkIOPortPrimTy " ++ ppType x
+                                           ++ " " ++ ppType y
 ppType (TyApp (TyCon "TVar#") [x,y])     = "mkTVarPrimTy " ++ ppType x
                                            ++ " " ++ ppType y
-
 ppType (TyApp (VecTyCon _ pptc) [])      = pptc
 
 ppType (TyUTup ts) = "(mkTupleTy Unboxed "
                      ++ listify (map ppType ts) ++ ")"
 
-ppType (TyF s d) = "(mkFunTy (" ++ ppType s ++ ") (" ++ ppType d ++ "))"
-ppType (TyC s d) = "(mkFunTy (" ++ ppType s ++ ") (" ++ ppType d ++ "))"
+ppType (TyF s d) = "(mkVisFunTyMany ("   ++ ppType s ++ ") (" ++ ppType d ++ "))"
+ppType (TyC s d) = "(mkInvisFunTyMany (" ++ ppType s ++ ") (" ++ ppType d ++ "))"
 
 ppType other
    = error ("ppType: can't handle: " ++ show other ++ "\n")

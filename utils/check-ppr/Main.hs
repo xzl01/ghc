@@ -1,16 +1,23 @@
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-import Data.List
-import SrcLoc
+import Data.List (sortBy, intercalate, isPrefixOf)
+import Data.Data
+import Control.Monad.IO.Class
+import GHC.Types.SrcLoc
 import GHC hiding (moduleName)
-import HsDumpAst
-import DynFlags
-import Outputable hiding (space)
+import GHC.Hs.Dump
+import GHC.Driver.Env
+import GHC.Driver.Session
+import GHC.Driver.Ppr
+import GHC.Driver.Make
+import GHC.Utils.Outputable hiding (space)
 import System.Environment( getArgs )
 import System.Exit
 import System.FilePath
-
-import qualified Data.Map        as Map
+import System.IO
 
 usage :: String
 usage = unlines
@@ -27,36 +34,43 @@ main = do
    [libdir,fileName] -> testOneFile libdir fileName
    _ -> putStrLn usage
 
+-- | N.B. It's important that we write our output as binary lest Windows will
+-- change our LF line endings to CRLF, which will show up in the AST when we
+-- re-parse.
+writeBinFile :: FilePath -> String -> IO()
+writeBinFile fpath x = withBinaryFile fpath WriteMode (\h -> hSetEncoding h utf8 >> hPutStr h x)
+
 testOneFile :: FilePath -> String -> IO ()
 testOneFile libdir fileName = do
        p <- parseOneFile libdir fileName
        let
-         origAst = showSDoc unsafeGlobalDynFlags
-                     $ showAstData BlankSrcSpan (pm_parsed_source p)
+         origAst = showPprUnsafe
+                     $ showAstData BlankSrcSpan BlankEpAnnotations
+                     $ eraseLayoutInfo (pm_parsed_source p)
          pped    = pragmas ++ "\n" ++ pp (pm_parsed_source p)
-         anns    = pm_annotations p
-         pragmas = getPragmas anns
+         pragmas = getPragmas (pm_parsed_source p)
 
          newFile = dropExtension fileName <.> "ppr" <.> takeExtension fileName
          astFile = fileName <.> "ast"
          newAstFile = fileName <.> "ast.new"
 
-       writeFile astFile origAst
-       writeFile newFile pped
+       writeBinFile astFile origAst
+       writeBinFile newFile pped
 
        p' <- parseOneFile libdir newFile
 
        let newAstStr :: String
-           newAstStr = showSDoc unsafeGlobalDynFlags
-                         $ showAstData BlankSrcSpan (pm_parsed_source p')
-       writeFile newAstFile newAstStr
+           newAstStr = showPprUnsafe
+                         $ showAstData BlankSrcSpan BlankEpAnnotations
+                         $ eraseLayoutInfo (pm_parsed_source p')
+       writeBinFile newAstFile newAstStr
 
        if origAst == newAstStr
          then do
            -- putStrLn "ASTs matched"
            exitSuccess
          else do
-           putStrLn "AST Match Failed"
+           putStrLn "ppr AST Match Failed"
            putStrLn "\n===================================\nOrig\n\n"
            putStrLn origAst
            putStrLn "\n===================================\nNew\n\n"
@@ -66,40 +80,47 @@ testOneFile libdir fileName = do
 
 parseOneFile :: FilePath -> FilePath -> IO ParsedModule
 parseOneFile libdir fileName = do
-       let modByFile m =
-             case ml_hs_file $ ms_location m of
-               Nothing -> False
-               Just fn -> fn == fileName
        runGhc (Just libdir) $ do
          dflags <- getSessionDynFlags
          let dflags2 = dflags `gopt_set` Opt_KeepRawTokenStream
          _ <- setSessionDynFlags dflags2
-         addTarget Target { targetId = TargetFile fileName Nothing
-                          , targetAllowObjCode = True
-                          , targetContents = Nothing }
-         _ <- load LoadAllTargets
-         graph <- getModuleGraph
-         let
-           modSum = case filter modByFile (mgModSummaries graph) of
-                     [x] -> x
-                     xs -> error $ "Can't find module, got:"
-                              ++ show (map (ml_hs_file . ms_location) xs)
-         parseModule modSum
+         hsc_env <- getSession
+         mms <- liftIO $ summariseFile hsc_env (hsc_home_unit hsc_env) mempty fileName Nothing Nothing
+         case mms of
+           Left _err -> error "parseOneFile"
+           Right ms -> parseModule ms
 
-getPragmas :: ApiAnns -> String
-getPragmas anns = pragmaStr
+getPragmas :: Located HsModule -> String
+getPragmas (L _ (HsModule { hsmodAnn = anns'})) = pragmaStr
   where
-    tokComment (L _ (AnnBlockComment s)) = s
-    tokComment (L _ (AnnLineComment  s)) = s
+    tokComment (L _ (EpaComment (EpaBlockComment s) _)) = s
+    tokComment (L _ (EpaComment (EpaLineComment  s) _)) = s
     tokComment _ = ""
 
-    comments = case Map.lookup noSrcSpan (snd anns) of
-      Nothing -> []
-      Just cl -> map tokComment $ sortLocated cl
-    pragmas = filter (\c -> isPrefixOf "{-#" c ) comments
+    cmp (L l1 _) (L l2 _) = compare (anchor l1) (anchor l2)
+    comments' = map tokComment $ sortBy cmp $ priorComments $ epAnnComments anns'
+    pragmas = filter (\c -> isPrefixOf "{-#" c ) comments'
     pragmaStr = intercalate "\n" pragmas
 
 pp :: (Outputable a) => a -> String
-pp a = showPpr unsafeGlobalDynFlags a
+pp a = showPprUnsafe a
 
+eraseLayoutInfo :: ParsedSource -> ParsedSource
+eraseLayoutInfo = everywhere go
+  where
+    go :: forall a. Typeable a => a -> a
+    go x =
+      case eqT @a @LayoutInfo of
+        Nothing -> x
+        Just Refl -> NoLayoutInfo
 
+-- ---------------------------------------------------------------------
+
+-- Copied from syb for the test
+
+everywhere :: (forall a. Data a => a -> a)
+           -> (forall a. Data a => a -> a)
+everywhere f = go
+  where
+    go :: forall a. Data a => a -> a
+    go = f . gmapT go

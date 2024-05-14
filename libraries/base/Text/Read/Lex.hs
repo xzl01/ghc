@@ -26,6 +26,7 @@ module Text.Read.Lex
   , hsLex
   , lexChar
 
+  , readBinP
   , readIntP
   , readOctP
   , readDecP
@@ -273,7 +274,7 @@ lexCharE =
   do c1 <- get
      if c1 == '\\'
        then do c2 <- lexEsc; return (c2, True)
-       else do return (c1, False)
+       else return (c1, False)
  where
   lexEsc =
     lexEscChar
@@ -341,7 +342,7 @@ lexCharE =
          _    -> pfail
 
   lexAscii =
-    do choice
+     choice
          [ (string "SOH" >> return '\SOH') <++
            (string "SO"  >> return '\SO')
                 -- \SO and \SOH need maximal-munch treatment
@@ -404,9 +405,9 @@ lexString =
     do _ <- char '\\'
        c <- get
        case c of
-         '&'           -> do return ()
+         '&'           -> return ()
          _ | isSpace c -> do skipSpaces; _ <- char '\\'; return ()
-         _             -> do pfail
+         _             -> pfail
 
 -- ---------------------------------------------------------------------------
 --  Lexing numbers
@@ -429,13 +430,14 @@ lexHexOct
 
 lexBaseChar :: ReadP Int
 -- Lex a single character indicating the base; fail if not there
-lexBaseChar = do { c <- get;
-                   case c of
-                        'o' -> return 8
-                        'O' -> return 8
-                        'x' -> return 16
-                        'X' -> return 16
-                        _   -> pfail }
+lexBaseChar = do
+  c <- get
+  case c of
+    'o' -> return 8
+    'O' -> return 8
+    'x' -> return 16
+    'X' -> return 16
+    _   -> pfail
 
 lexDecNumber :: ReadP Lexeme
 lexDecNumber =
@@ -471,8 +473,8 @@ lexDigits base =
  where
   scan (c:cs) f = case valDig base c of
                     Just n  -> do _ <- get; scan cs (f.(n:))
-                    Nothing -> do return (f [])
-  scan []     f = do return (f [])
+                    Nothing -> return (f [])
+  scan []     f = return (f [])
 
 lexInteger :: Base -> ReadP Integer
 lexInteger base =
@@ -540,6 +542,10 @@ fracExp exp mant (d:ds) = exp' `seq` mant' `seq` fracExp exp' mant' ds
     mant' = mant * 10 + fromIntegral d
 
 valDig :: (Eq a, Num a) => a -> Char -> Maybe Int
+valDig 2 c
+  | '0' <= c && c <= '1' = Just (ord c - ord '0')
+  | otherwise            = Nothing
+
 valDig 8 c
   | '0' <= c && c <= '7' = Just (ord c - ord '0')
   | otherwise            = Nothing
@@ -576,10 +582,12 @@ readIntP' base = readIntP base isDigit valDigit
   valDigit c = maybe 0     id           (valDig base c)
 {-# SPECIALISE readIntP' :: Integer -> ReadP Integer #-}
 
-readOctP, readDecP, readHexP :: (Eq a, Num a) => ReadP a
+readBinP, readOctP, readDecP, readHexP :: (Eq a, Num a) => ReadP a
+readBinP = readIntP' 2
 readOctP = readIntP' 8
 readDecP = readIntP' 10
 readHexP = readIntP' 16
+{-# SPECIALISE readBinP :: ReadP Integer #-}
 {-# SPECIALISE readOctP :: ReadP Integer #-}
 {-# SPECIALISE readDecP :: ReadP Integer #-}
 {-# SPECIALISE readHexP :: ReadP Integer #-}

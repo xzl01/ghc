@@ -7,7 +7,7 @@
  * ---------------------------------------------------------------------------*/
 
 // This is non-posix compliant.
-// #include "PosixSource.h"
+// #include "rts/PosixSource.h"
 
 #include "Rts.h"
 
@@ -39,6 +39,7 @@
 #if defined(HAVE_SYS_RESOURCE_H) && defined(HAVE_SYS_TIME_H)
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <pthread.h>
 #endif
 
 #include <errno.h>
@@ -49,17 +50,17 @@
 #include <sys/sysctl.h>
 #endif
 
-#ifndef MAP_FAILED
+#if !defined(MAP_FAILED)
 # define MAP_FAILED ((void *)-1)
 #endif
 
 #if defined(hpux_HOST_OS)
-# ifndef MAP_ANON
+# if !defined(MAP_ANON)
 #  define MAP_ANON MAP_ANONYMOUS
 # endif
 #endif
 
-#ifndef darwin_HOST_OS
+#if !defined(darwin_HOST_OS)
 # undef RESERVE_FLAGS
 # if defined(MAP_GUARD)
 #  define RESERVE_FLAGS  MAP_GUARD /* FreeBSD */
@@ -183,7 +184,7 @@ my_mmap (void *addr, W_ size, int operation)
 
 #if defined(darwin_HOST_OS)
     // Without MAP_FIXED, Apple's mmap ignores addr.
-    // With MAP_FIXED, it overwrites already mapped regions, whic
+    // With MAP_FIXED, it overwrites already mapped regions, which
     // mmap(0, ... MAP_FIXED ...) is worst of all: It unmaps the program text
     // and replaces it with zeroes, causing instant death.
     // This behaviour seems to be conformant with IEEE Std 1003.1-2001.
@@ -242,7 +243,7 @@ my_mmap (void *addr, W_ size, int operation)
     if (ret == MAP_FAILED && errno == EPERM) {
         // Linux may return EPERM if it tried to give us
         // a chunk of address space below mmap_min_addr,
-        // See Trac #7500.
+        // See #7500.
         ret = linux_retry_mmap(operation, size, ret, addr, prot, flags);
     }
 # endif
@@ -363,7 +364,7 @@ void osBindMBlocksToNode(
 {
 #if HAVE_LIBNUMA
     int ret;
-    StgWord mask = 0;
+    unsigned long mask = 0;
     mask |= 1 << node;
     if (RtsFlags.GcFlags.numa) {
         ret = mbind(addr, (unsigned long)size,
@@ -545,13 +546,57 @@ void *osReserveHeapMemory(void *startAddressPtr, W_ *len)
     }
 
 #if defined(HAVE_SYS_RESOURCE_H) && defined(HAVE_SYS_TIME_H)
-    struct rlimit limit;
+    struct rlimit asLimit;
     /* rlim_t is signed on some platforms, including FreeBSD;
      * explicitly cast to avoid sign compare error */
-    if (!getrlimit(RLIMIT_AS, &limit)
-        && limit.rlim_cur > 0
-        && *len > (W_) limit.rlim_cur) {
-        *len = (W_) limit.rlim_cur;
+    if (!getrlimit(RLIMIT_AS, &asLimit)
+        && asLimit.rlim_cur > 0
+        && *len > (W_) asLimit.rlim_cur) {
+
+        /* In case address space/virtual memory was limited by rlimit (ulimit),
+           we try to reserver 2/3 of that limit. If we take all, there'll be
+           nothing left for spawning system threads etc. and we'll crash
+           (See #18623)
+        */
+
+        pthread_attr_t threadAttr;
+        if (pthread_attr_init(&threadAttr)) {
+            // Never fails on Linux
+            sysErrorBelch("failed to initialize thread attributes");
+            stg_exit(EXIT_FAILURE);
+        }
+
+        size_t stacksz = 0;
+        if (pthread_attr_getstacksize(&threadAttr, &stacksz)) {
+            // Should never fail
+            sysErrorBelch("failed to read default thread stack size");
+            stg_exit(EXIT_FAILURE);
+        }
+
+        // Cleanup
+        if (pthread_attr_destroy(&threadAttr)) {
+            // Should never fail
+            sysErrorBelch("failed to destroy thread attributes");
+            stg_exit(EXIT_FAILURE);
+        }
+
+        size_t pageSize = getPageSize();
+        // 2/3rds of limit, round down to multiple of PAGE_SIZE
+        *len = (W_) (asLimit.rlim_cur * 0.666) & ~(pageSize - 1);
+
+        // debugBelch("New len: %zu, pageSize: %zu\n", *len, pageSize);
+
+        /* Make sure we leave enough vmem for at least three threads.
+           This number was found through trial and error. We're at least launching
+           that many threads (e.g., itimer/ticker). We can't know for sure how much we need,
+           but at least we can fail early and give a useful error message in this case. */
+        if (((W_) (asLimit.rlim_cur - *len )) < ((W_) (stacksz * 3))) {
+            // Three stacks is 1/3 of needed, then convert to Megabyte
+            size_t needed = (stacksz * 3 * 3) / (1024 * 1024);
+            errorBelch("the current resource limit for virtual memory ('ulimit -v' or RLIMIT_AS) is too low.\n"
+                "Please make sure that at least %zuMiB of virtual memory are available.", needed);
+            stg_exit(EXIT_FAILURE);
+        }
     }
 #endif
 
@@ -577,9 +622,11 @@ void *osReserveHeapMemory(void *startAddressPtr, W_ *len)
             // of memory will be wasted (e.g. imagine a machine with 512GB of
             // physical memory but a 511GB ulimit). See #14492.
             *len -= *len / 8;
+            // debugBelch("Limit hit, reduced len: %zu\n", *len);
         } else if ((W_)at >= minimumAddress) {
             // Success! We were given a block of memory starting above the 8 GB
             // mark, which is what we were looking for.
+
             break;
         } else {
             // We got addressing space but it wasn't above the 8GB mark.
@@ -598,9 +645,31 @@ void osCommitMemory(void *at, W_ size)
 {
     void *r = my_mmap(at, size, MEM_COMMIT);
     if (r == NULL) {
-        barf("Unable to commit %" FMT_Word " bytes of memory", size);
+        errorBelch("Unable to commit %" FMT_Word " bytes of memory", size);
+        errorBelch("Exiting. The system might be out of memory.");
+        stg_exit(EXIT_FAILURE);
     }
 }
+
+/* Note [MADV_FREE and MADV_DONTNEED]
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * madvise() provides flags with which one can release no longer needed pages
+ * back to the kernel without having to munmap() (which is expensive).
+ *
+ * On Linux, MADV_FREE is newer and faster because it can avoid zeroing
+ * pages if they are re-used by the process later (see `man 2 madvise`),
+ * but for the trade-off that memory inspection tools like `top` will
+ * not immediately reflect the freeing in their display of resident memory
+ * (RSS column): Only under memory pressure will Linux actually remove
+ * the freed pages from the process and update its RSS statistics.
+ * Until then, the pages show up as `LazyFree` in `/proc/PID/smaps`
+ * (see `man 5 proc`).
+ * The delayed RSS update can confuse programmers debugging memory issues,
+ * production memory monitoring tools, and end users who may complain about
+ * undue memory usage shown in reporting tools, so with
+ * `disableDelayedOsMemoryReturn` we provide an RTS flag that allows forcing
+ * usage of MADV_DONTNEED instead of MADV_FREE.
+ */
 
 void osDecommitMemory(void *at, W_ size)
 {
@@ -618,21 +687,25 @@ void osDecommitMemory(void *at, W_ size)
 #endif
 
 #if defined(MADV_FREE)
-    // Try MADV_FREE first, FreeBSD has both and MADV_DONTNEED
-    // just swaps memory out. Linux >= 4.5 has both DONTNEED and FREE; either
-    // will work as they both allow the system to free anonymous pages.
-    // It is important that we try both methods as the kernel which we were
-    // built on may differ from the kernel we are now running on.
-    r = madvise(at, size, MADV_FREE);
-    if(r < 0) {
-        if (errno == EINVAL) {
-            // Perhaps the system doesn't support MADV_FREE; fall-through and
-            // try MADV_DONTNEED.
+    // See Note [MADV_FREE and MADV_DONTNEED].
+    // If MADV_FREE is disabled, fall-through to MADV_DONTNEED.
+    if (!RtsFlags.MiscFlags.disableDelayedOsMemoryReturn) {
+        // Try MADV_FREE first, FreeBSD has both and MADV_DONTNEED
+        // just swaps memory out. Linux >= 4.5 has both DONTNEED and FREE; either
+        // will work as they both allow the system to free anonymous pages.
+        // It is important that we try both methods as the kernel which we were
+        // built on may differ from the kernel we are now running on.
+        r = madvise(at, size, MADV_FREE);
+        if(r < 0) {
+            if (errno == EINVAL) {
+                // Perhaps the system doesn't support MADV_FREE; fall-through and
+                // try MADV_DONTNEED.
+            } else {
+                sysErrorBelch("unable to decommit memory");
+            }
         } else {
-            sysErrorBelch("unable to decommit memory");
+            return;
         }
-    } else {
-        return;
     }
 #endif
 

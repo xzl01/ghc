@@ -334,7 +334,7 @@ createDirectoryIfMissing create_parents path0
           -- createDirectory (and indeed POSIX mkdir) does not distinguish
           -- between a dir already existing and a file already existing. So we
           -- check for it here. Unfortunately there is a slight race condition
-          -- here, but we think it is benign. It could report an exeption in
+          -- here, but we think it is benign. It could report an exception in
           -- the case that the dir did exist but another process deletes the
           -- directory and creates a file in its place before we can check
           -- that the directory did indeed exist.
@@ -402,6 +402,9 @@ removeDirectory = removePathInternal True
 -- symbolic links are removed without affecting their targets.
 --
 -- On Windows, the operation fails if /dir/ is a directory symbolic link.
+--
+-- This operation is reported to be flaky on Windows so retry logic may
+-- be advisable. See: https://github.com/haskell/directory/pull/108
 removeDirectoryRecursive :: FilePath -> IO ()
 removeDirectoryRecursive path =
   (`ioeAddLocation` "removeDirectoryRecursive") `modifyIOError` do
@@ -418,6 +421,9 @@ removeDirectoryRecursive path =
 -- | @removePathRecursive path@ removes an existing file or directory at
 -- /path/ together with its contents and subdirectories. Symbolic links are
 -- removed without affecting their the targets.
+--
+-- This operation is reported to be flaky on Windows so retry logic may
+-- be advisable. See: https://github.com/haskell/directory/pull/108
 removePathRecursive :: FilePath -> IO ()
 removePathRecursive path =
   (`ioeAddLocation` "removePathRecursive") `modifyIOError` do
@@ -430,6 +436,9 @@ removePathRecursive path =
 -- | @removeContentsRecursive dir@ removes the contents of the directory
 -- /dir/ recursively. Symbolic links are removed without affecting their the
 -- targets.
+--
+-- This operation is reported to be flaky on Windows so retry logic may
+-- be advisable. See: https://github.com/haskell/directory/pull/108
 removeContentsRecursive :: FilePath -> IO ()
 removeContentsRecursive path =
   (`ioeAddLocation` "removeContentsRecursive") `modifyIOError` do
@@ -579,12 +588,17 @@ renameDirectory opath npath =
      renamePath opath npath
 
 {- |@'renameFile' old new@ changes the name of an existing file system
-object from /old/ to /new/.  If the /new/ object already
-exists, it is atomically replaced by the /old/ object.  Neither
-path may refer to an existing directory.  A conformant implementation
-need not support renaming files in all situations (e.g. renaming
-across different physical devices), but the constraints must be
-documented.
+object from /old/ to /new/.  If the /new/ object already exists, it is
+replaced by the /old/ object.  Neither path may refer to an existing
+directory.  A conformant implementation need not support renaming files
+in all situations (e.g. renaming across different physical devices), but
+the constraints must be documented.
+
+On Windows, this calls @MoveFileEx@ with @MOVEFILE_REPLACE_EXISTING@ set,
+which is not guaranteed to be atomic
+(<https://github.com/haskell/directory/issues/109>).
+
+On other platforms, this operation is atomic.
 
 The operation may fail with:
 
@@ -971,7 +985,7 @@ findExecutable binary =
 -- | Search for executable files in a list of system-defined locations, which
 -- generally includes @PATH@ and possibly more.
 --
--- On Windows, this /only returns the first ocurrence/, if any.  Its behavior
+-- On Windows, this /only returns the first occurrence/, if any.  Its behavior
 -- is therefore equivalent to 'findExecutable'.
 --
 -- On non-Windows platforms, the behavior is equivalent to
@@ -1041,7 +1055,7 @@ findFileWith f ds name = listTHead (findFilesWithLazy f ds name)
 
 -- | @findFilesWith predicate dirs name@ searches through the list of
 -- directories (@dirs@) for files that have the given @name@ and satisfy the
--- given @predicate@ ands return the paths of those files.  The directories
+-- given @predicate@ and returns the paths of those files.  The directories
 -- are checked in a left-to-right order and the paths are returned in the same
 -- order.
 --
@@ -1136,6 +1150,12 @@ listDirectory path = filter f <$> getDirectoryContents path
 -- shared among all threads of the process.  Therefore, when performing
 -- filesystem operations from multiple threads, it is highly recommended to
 -- use absolute rather than relative paths (see: 'makeAbsolute').
+--
+-- Note that 'getCurrentDirectory' is not guaranteed to return the same path
+-- received by 'setCurrentDirectory'. On POSIX systems, the path returned will
+-- always be fully dereferenced (not contain any symbolic links). For more
+-- information, refer to the documentation of
+-- <https://pubs.opengroup.org/onlinepubs/9699919799/functions/getcwd.html getcwd>.
 --
 -- The operation may fail with:
 --
@@ -1555,6 +1575,7 @@ getXdgDirectory xdgDir suffix =
         XdgData   -> "XDG_DATA_HOME"
         XdgConfig -> "XDG_CONFIG_HOME"
         XdgCache  -> "XDG_CACHE_HOME"
+        XdgState  -> "XDG_STATE_HOME"
       case env of
         Just path | isAbsolute path -> pure path
         _                           -> getXdgDirectoryFallback getHomeDirectory xdgDir

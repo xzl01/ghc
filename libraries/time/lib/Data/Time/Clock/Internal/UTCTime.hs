@@ -1,6 +1,8 @@
-module Data.Time.Clock.Internal.UTCTime
-(
+{-# LANGUAGE Safe #-}
+
+module Data.Time.Clock.Internal.UTCTime (
     -- * UTC
+
     -- | UTC is time as measured by a clock, corrected to keep pace with the earth by adding or removing
     -- occasional seconds, known as \"leap seconds\".
     -- These corrections are not predictable and are announced with six month's notice.
@@ -9,25 +11,24 @@ module Data.Time.Clock.Internal.UTCTime
     --
     -- If you don't care about leap seconds, use 'UTCTime' and 'NominalDiffTime' for your clock calculations,
     -- and you'll be fine.
-    UTCTime(..),
+    UTCTime (..),
 ) where
 
-import Data.Typeable
-import Data.Data
 import Control.DeepSeq
+import Data.Data
 import Data.Time.Calendar.Days
 import Data.Time.Clock.Internal.DiffTime
-
 
 -- | This is the simplest representation of UTC.
 -- It consists of the day number, and a time offset from midnight.
 -- Note that if a day has a leap second added to it, it will have 86401 seconds.
-data UTCTime = UTCTime {
-    -- | the day
-    utctDay :: Day,
-    -- | the time from midnight, 0 <= t < 86401s (because of leap-seconds)
-    utctDayTime :: DiffTime
-} deriving (Data, Typeable)
+data UTCTime = UTCTime
+    { utctDay :: Day
+    -- ^ the day
+    , utctDayTime :: DiffTime
+    -- ^ the time from midnight, 0 <= t < 86401s (because of leap-seconds)
+    }
+    deriving (Data, Typeable)
 
 instance NFData UTCTime where
     rnf (UTCTime d t) = rnf d `seq` rnf t `seq` ()
@@ -36,6 +37,7 @@ instance Eq UTCTime where
     (UTCTime da ta) == (UTCTime db tb) = (da == db) && (ta == tb)
 
 instance Ord UTCTime where
-    compare (UTCTime da ta) (UTCTime db tb) = case (compare da db) of
-        EQ -> compare ta tb
-        cmp -> cmp
+    compare (UTCTime da ta) (UTCTime db tb) =
+        case (compare da db) of
+            EQ -> compare ta tb
+            cmp -> cmp

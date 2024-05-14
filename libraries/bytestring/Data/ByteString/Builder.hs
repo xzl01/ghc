@@ -1,8 +1,7 @@
-{-# LANGUAGE CPP, BangPatterns #-}
-{-# OPTIONS_GHC -fno-warn-unused-imports -fno-warn-orphans #-}
-#if __GLASGOW_HASKELL__ >= 701
+{-# LANGUAGE MagicHash #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE Trustworthy #-}
-#endif
+{-# OPTIONS_GHC -fno-warn-unused-imports -fno-warn-orphans #-}
 {- | Copyright   : (c) 2010 Jasper Van der Jeugt
                    (c) 2010 - 2011 Simon Meier
 License     : BSD3-style (see LICENSE)
@@ -58,8 +57,8 @@ We use the following imports and abbreviate 'mappend' to simplify reading.
 import qualified "Data.ByteString.Lazy"               as L
 import           "Data.ByteString.Builder"
 import           Data.Monoid
-import           Data.Foldable                        ('foldMap')
-import           Data.List                            ('intersperse')
+import           Data.Foldable                        ('Data.Foldable.foldMap')
+import           Data.List                            ('Data.List.intersperse')
 
 infixr 4 \<\>
 (\<\>) :: 'Monoid' m => m -> m -> m
@@ -67,12 +66,12 @@ infixr 4 \<\>
 @
 
 CSV is a character-based representation of tables. For maximal modularity,
-we could first render 'Table's as 'String's and then encode this 'String'
+we could first render @Table@s as 'String's and then encode this 'String'
 using some Unicode character encoding. However, this sacrifices performance
 due to the intermediate 'String' representation being built and thrown away
 right afterwards. We get rid of this intermediate 'String' representation by
 fixing the character encoding to UTF-8 and using 'Builder's to convert
-'Table's directly to UTF-8 encoded CSV tables represented as lazy
+@Table@s directly to UTF-8 encoded CSV tables represented as lazy
 'L.ByteString's.
 
 @
@@ -105,10 +104,10 @@ Note that the ASCII encoding is a subset of the UTF-8 encoding,
 Using 'intDec' is more efficient than @'stringUtf8' . 'show'@,
   as it avoids constructing an intermediate 'String'.
 Avoiding this intermediate data structure significantly improves
-  performance because encoding 'Cell's is the core operation
+  performance because encoding @Cell@s is the core operation
   for rendering CSV-tables.
 See "Data.ByteString.Builder.Prim" for further
-  information on how to improve the performance of 'renderString'.
+  information on how to improve the performance of @renderString@.
 
 We demonstrate our UTF-8 CSV encoding function on the following table.
 
@@ -149,14 +148,14 @@ Looking again at the definitions above,
   we see that we took care to avoid intermediate data structures,
   as otherwise we would sacrifice performance.
 For example,
-  the following (arguably simpler) definition of 'renderRow' is about 20% slower.
+  the following (arguably simpler) definition of @renderRow@ is about 20% slower.
 
 >renderRow :: Row -> Builder
 >renderRow  = mconcat . intersperse (charUtf8 ',') . map renderCell
 
-Similarly, using /O(n)/ concatentations like '++' or the equivalent 'S.concat'
+Similarly, using /O(n)/ concatentations like '++' or the equivalent 'Data.ByteString.concat'
   operations on strict and lazy 'L.ByteString's should be avoided.
-The following definition of 'renderString' is also about 20% slower.
+The following definition of @renderString@ is also about 20% slower.
 
 >renderString :: String -> Builder
 >renderString cs = charUtf8 $ "\"" ++ concatMap escape cs ++ "\""
@@ -185,12 +184,13 @@ module Data.ByteString.Builder
       -- signal to the driver telling it that it is either done, has filled the
       -- current buffer, or wants to directly insert a reference to a chunk of
       -- memory. In the last two cases, the 'Builder' also returns a
-      -- continutation 'Builder' that the driver can call to fill the next
+      -- continuation 'Builder' that the driver can call to fill the next
       -- buffer. Here, we provide the two drivers that satisfy almost all use
       -- cases. See "Data.ByteString.Builder.Extra", for information
       -- about fine-tuning them.
     , toLazyByteString
     , hPutBuilder
+    , writeFile
 
       -- * Creating Builders
 
@@ -252,26 +252,23 @@ module Data.ByteString.Builder
     , stringUtf8
 
     , module Data.ByteString.Builder.ASCII
+    , module Data.ByteString.Builder.RealFloat
 
     ) where
+
+import           Prelude hiding (writeFile)
 
 import           Data.ByteString.Builder.Internal
 import qualified Data.ByteString.Builder.Prim  as P
 import qualified Data.ByteString.Lazy.Internal as L
 import           Data.ByteString.Builder.ASCII
+import           Data.ByteString.Builder.RealFloat
 
 import           Data.String (IsString(..))
-import           System.IO (Handle)
+import           System.IO (Handle, IOMode(..), withBinaryFile)
 import           Foreign
-
--- HADDOCK only imports
-import qualified Data.ByteString               as S (concat)
-#if !(MIN_VERSION_base(4,8,0))
-import           Data.Monoid (Monoid(..))
-#endif
-import           Data.Foldable                      (foldMap)
-import           Data.List                          (intersperse)
-
+import           GHC.Base (unpackCString#, unpackCStringUtf8#,
+                           unpackFoldrCString#, build)
 
 -- | Execute a 'Builder' and return the generated chunks as a lazy 'L.ByteString'.
 -- The work is performed lazy, i.e., only when a chunk of the lazy 'L.ByteString'
@@ -291,7 +288,8 @@ toLazyByteString = toLazyByteStringWith
 -- enough buffer.
 --
 -- It is recommended that the 'Handle' is set to binary and
--- 'BlockBuffering' mode. See 'hSetBinaryMode' and 'hSetBuffering'.
+-- 'System.IO.BlockBuffering' mode. See 'System.IO.hSetBinaryMode' and
+-- 'System.IO.hSetBuffering'.
 --
 -- This function is more efficient than @hPut . 'toLazyByteString'@ because in
 -- many cases no buffer allocation has to be done. Moreover, the results of
@@ -300,6 +298,17 @@ toLazyByteString = toLazyByteStringWith
 hPutBuilder :: Handle -> Builder -> IO ()
 hPutBuilder h = hPut h . putBuilder
 
+modifyFile :: IOMode -> FilePath -> Builder -> IO ()
+modifyFile mode f bld = withBinaryFile f mode (`hPutBuilder` bld)
+
+-- | Write a 'Builder' to a file.
+--
+-- Similarly to 'hPutBuilder', this function is more efficient than
+-- using 'Data.ByteString.Lazy.hPut' . 'toLazyByteString' with a file handle.
+--
+-- @since 0.11.2.0
+writeFile :: FilePath -> Builder -> IO ()
+writeFile = modifyFile WriteMode
 
 ------------------------------------------------------------------------------
 -- Binary encodings
@@ -431,9 +440,19 @@ char8 :: Char -> Builder
 char8 = P.primFixed P.char8
 
 -- | Char8 encode a 'String'.
-{-# INLINE string8 #-}
+{-# INLINE [1] string8 #-} -- phased to allow P.cstring rewrite
 string8 :: String -> Builder
 string8 = P.primMapListFixed P.char8
+
+-- GHC desugars string literals with unpackCString# which the simplifier tends
+-- to promptly turn into build (unpackFoldrCString# s), so we match on both.
+{-# RULES
+"string8/unpackCString#" forall s.
+  string8 (unpackCString# s) = P.cstring s
+
+"string8/unpackFoldrCString#" forall s.
+  string8 (build (unpackFoldrCString# s)) = P.cstring s
+ #-}
 
 ------------------------------------------------------------------------------
 -- UTF-8 encoding
@@ -445,9 +464,27 @@ charUtf8 :: Char -> Builder
 charUtf8 = P.primBounded P.charUtf8
 
 -- | UTF-8 encode a 'String'.
-{-# INLINE stringUtf8 #-}
+--
+-- Note that 'stringUtf8' performs no codepoint validation and consequently may
+-- emit invalid UTF-8 if asked (e.g. single surrogates).
+{-# INLINE [1] stringUtf8 #-} -- phased to allow P.cstring rewrite
 stringUtf8 :: String -> Builder
 stringUtf8 = P.primMapListBounded P.charUtf8
 
+{-# RULES
+"stringUtf8/unpackCStringUtf8#" forall s.
+  stringUtf8 (unpackCStringUtf8# s) = P.cstringUtf8 s
+
+"stringUtf8/unpackCString#" forall s.
+  stringUtf8 (unpackCString# s) = P.cstring s
+
+"stringUtf8/unpackFoldrCString#" forall s.
+  stringUtf8 (build (unpackFoldrCString# s)) = P.cstring s
+ #-}
+
 instance IsString Builder where
     fromString = stringUtf8
+
+-- | @since 0.11.1.0
+instance Show Builder where
+    show = show . toLazyByteString

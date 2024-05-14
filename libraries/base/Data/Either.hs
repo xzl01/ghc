@@ -1,8 +1,10 @@
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE Trustworthy #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE PolyKinds, DataKinds, TypeFamilies, TypeOperators, UndecidableInstances #-}
+{-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE Trustworthy #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 -----------------------------------------------------------------------------
 -- |
@@ -11,7 +13,7 @@
 -- License     :  BSD-style (see the file libraries/base/LICENSE)
 --
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  portable
 --
 -- The Either type, and associated operations.
@@ -36,7 +38,7 @@ import GHC.Read
 
 -- $setup
 -- Allow the use of some Prelude functions in doctests.
--- >>> import Prelude ( (+), (*), length, putStrLn )
+-- >>> import Prelude
 
 {-
 -- just for testing

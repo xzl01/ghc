@@ -28,6 +28,7 @@ case "$1" in
 	    /usr/share/doc/ghc-doc/html/libraries/ocean.css \
 	    /usr/share/doc/ghc-doc/html/libraries/haddock-bundle.min.js \
 	    /usr/share/doc/ghc-doc/html/libraries/quick-jump.css \
+	    /usr/share/doc/ghc-doc/html/libraries/linuwial.css \
 	    /usr/share/doc/ghc-doc/html/libraries/synopsis.png
     ;;
     *)

@@ -10,7 +10,7 @@
 -- License     :  BSD-style (see the LICENSE file in the distribution)
 --
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  portable
 --
 -- This module describes a structure intermediate between a functor and
@@ -45,6 +45,7 @@ module Control.Applicative (
     (<$>), (<$), (<**>),
     liftA, liftA3,
     optional,
+    asum,
     ) where
 
 import Control.Category hiding ((.), id)
@@ -53,15 +54,18 @@ import Data.Maybe
 import Data.Tuple
 import Data.Eq
 import Data.Ord
-import Data.Foldable (Foldable(..))
+import Data.Foldable (Foldable(..), asum)
 import Data.Functor ((<$>))
 import Data.Functor.Const (Const(..))
 
 import GHC.Base
 import GHC.Generics
-import GHC.List (repeat, zipWith, drop)
+import GHC.List (repeat, zipWith)
 import GHC.Read (Read)
 import GHC.Show (Show)
+
+-- $setup
+-- >>> import Prelude
 
 newtype WrappedMonad m a = WrapMonad { unwrapMonad :: m a }
                          deriving ( Generic  -- ^ @since 4.7.0.0
@@ -136,10 +140,33 @@ instance Applicative ZipList where
 -- | @since 4.11.0.0
 instance Alternative ZipList where
    empty = ZipList []
-   ZipList xs <|> ZipList ys = ZipList (xs ++ drop (length xs) ys)
+   ZipList xs0 <|> ZipList ys0 = ZipList $ go xs0 ys0
+     where
+       go (x:xs) (_:ys) = x : go xs ys
+       go    []     ys  = ys
+       go    xs      _  = xs
 
 -- extra functions
 
 -- | One or none.
+--
+-- It is useful for modelling any computation that is allowed to fail.
+--
+-- ==== __Examples__
+--
+-- Using the 'Alternative' instance of "Control.Monad.Except", the following functions:
+--
+-- >>> import Control.Monad.Except
+--
+-- >>> canFail = throwError "it failed" :: Except String Int
+-- >>> final = return 42                :: Except String Int
+--
+-- Can be combined by allowing the first function to fail:
+--
+-- >>> runExcept $ canFail *> final
+-- Left "it failed"
+-- >>> runExcept $ optional canFail *> final
+-- Right 42
+
 optional :: Alternative f => f a -> f (Maybe a)
 optional v = Just <$> v <|> pure Nothing

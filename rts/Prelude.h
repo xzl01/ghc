@@ -19,6 +19,12 @@
 #define PRELUDE_CLOSURE(i)    extern StgClosure DLL_IMPORT_DATA_VARNAME(i)
 #endif
 
+/* See Note [Wired-in exceptions are not CAFfy] in GHC.Core.Make. */
+PRELUDE_CLOSURE(ghczmprim_GHCziPrimziPanic_absentSumFieldError_closure);
+PRELUDE_CLOSURE(ghczmprim_GHCziPrimziException_raiseUnderflow_closure);
+PRELUDE_CLOSURE(ghczmprim_GHCziPrimziException_raiseOverflow_closure);
+PRELUDE_CLOSURE(ghczmprim_GHCziPrimziException_raiseDivZZero_closure);
+
 /* Define canonical names so we can abstract away from the actual
  * modules these names are defined in.
  */
@@ -43,15 +49,22 @@ PRELUDE_CLOSURE(base_GHCziIOziException_blockedIndefinitelyOnSTM_closure);
 PRELUDE_CLOSURE(base_GHCziIOziException_cannotCompactFunction_closure);
 PRELUDE_CLOSURE(base_GHCziIOziException_cannotCompactPinned_closure);
 PRELUDE_CLOSURE(base_GHCziIOziException_cannotCompactMutable_closure);
+PRELUDE_CLOSURE(base_GHCziIOPort_doubleReadException_closure);
 PRELUDE_CLOSURE(base_ControlziExceptionziBase_nonTermination_closure);
 PRELUDE_CLOSURE(base_ControlziExceptionziBase_nestedAtomically_closure);
-PRELUDE_CLOSURE(base_ControlziExceptionziBase_absentSumFieldError_closure);
 PRELUDE_CLOSURE(base_GHCziEventziThread_blockedOnBadFD_closure);
+PRELUDE_CLOSURE(base_GHCziExceptionziType_divZZeroException_closure);
+PRELUDE_CLOSURE(base_GHCziExceptionziType_underflowException_closure);
+PRELUDE_CLOSURE(base_GHCziExceptionziType_overflowException_closure);
 
 PRELUDE_CLOSURE(base_GHCziConcziSync_runSparks_closure);
 PRELUDE_CLOSURE(base_GHCziConcziIO_ensureIOManagerIsRunning_closure);
+PRELUDE_CLOSURE(base_GHCziConcziIO_interruptIOManager_closure);
 PRELUDE_CLOSURE(base_GHCziConcziIO_ioManagerCapabilitiesChanged_closure);
 PRELUDE_CLOSURE(base_GHCziConcziSignal_runHandlersPtr_closure);
+#if defined(mingw32_HOST_OS)
+PRELUDE_CLOSURE(base_GHCziEventziWindows_processRemoteCompletion_closure);
+#endif
 
 PRELUDE_CLOSURE(base_GHCziTopHandler_flushStdHandles_closure);
 PRELUDE_CLOSURE(base_GHCziTopHandler_runMainIO_closure);
@@ -83,8 +96,12 @@ PRELUDE_INFO(base_GHCziStable_StablePtr_con_info);
 
 #define runSparks_closure         DLL_IMPORT_DATA_REF(base_GHCziConcziSync_runSparks_closure)
 #define ensureIOManagerIsRunning_closure DLL_IMPORT_DATA_REF(base_GHCziConcziIO_ensureIOManagerIsRunning_closure)
+#define interruptIOManager_closure DLL_IMPORT_DATA_REF(base_GHCziConcziIO_interruptIOManager_closure)
 #define ioManagerCapabilitiesChanged_closure DLL_IMPORT_DATA_REF(base_GHCziConcziIO_ioManagerCapabilitiesChanged_closure)
 #define runHandlersPtr_closure       DLL_IMPORT_DATA_REF(base_GHCziConcziSignal_runHandlersPtr_closure)
+#if defined(mingw32_HOST_OS)
+#define processRemoteCompletion_closure DLL_IMPORT_DATA_REF(base_GHCziEventziWindows_processRemoteCompletion_closure)
+#endif
 
 #define flushStdHandles_closure   DLL_IMPORT_DATA_REF(base_GHCziTopHandler_flushStdHandles_closure)
 #define runMainIO_closure   DLL_IMPORT_DATA_REF(base_GHCziTopHandler_runMainIO_closure)
@@ -99,8 +116,13 @@ PRELUDE_INFO(base_GHCziStable_StablePtr_con_info);
 #define cannotCompactMutable_closure DLL_IMPORT_DATA_REF(base_GHCziIOziException_cannotCompactMutable_closure)
 #define nonTermination_closure    DLL_IMPORT_DATA_REF(base_ControlziExceptionziBase_nonTermination_closure)
 #define nestedAtomically_closure  DLL_IMPORT_DATA_REF(base_ControlziExceptionziBase_nestedAtomically_closure)
+#define doubleReadException  DLL_IMPORT_DATA_REF(base_GHCziIOPort_doubleReadException_closure)
+#define absentSumFieldError_closure DLL_IMPORT_DATA_REF(ghczmprim_GHCziPrimziPanic_absentSumFieldError_closure)
+#define raiseUnderflowException_closure DLL_IMPORT_DATA_REF(ghczmprim_GHCziPrimziException_raiseUnderflow_closure)
+#define raiseOverflowException_closure DLL_IMPORT_DATA_REF(ghczmprim_GHCziPrimziException_raiseOverflow_closure)
+#define raiseDivZeroException_closure DLL_IMPORT_DATA_REF(ghczmprim_GHCziPrimziException_raiseDivZZero_closure)
+
 #define blockedOnBadFD_closure    DLL_IMPORT_DATA_REF(base_GHCziEventziThread_blockedOnBadFD_closure)
-#define absentSumFieldError_closure DLL_IMPORT_DATA_REF(base_ControlziExceptionziBase_absentSumFieldError_closure)
 
 #define Czh_con_info              DLL_IMPORT_DATA_REF(ghczmprim_GHCziTypes_Czh_con_info)
 #define Izh_con_info              DLL_IMPORT_DATA_REF(ghczmprim_GHCziTypes_Izh_con_info)

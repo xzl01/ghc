@@ -10,7 +10,7 @@ A package is a library of Haskell modules known to the compiler. GHC
 comes with several packages: see the accompanying `library
 documentation <../libraries/index.html>`__. More packages to install can
 be obtained from
-`HackageDB <http://hackage.haskell.org/packages/hackage.html>`__.
+`HackageDB <https://hackage.haskell.org/>`__.
 
 Using a package couldn't be simpler: if you're using ``--make`` or GHCi,
 then most of the installed packages will be automatically available to
@@ -18,11 +18,11 @@ your program without any further options. The exceptions to this rule
 are covered below in :ref:`using-packages`.
 
 Building your own packages is also quite straightforward: we provide the
-`Cabal <http://www.haskell.org/cabal/>`__ infrastructure which automates
+`Cabal <https://www.haskell.org/cabal/>`__ infrastructure which automates
 the process of configuring, building, installing and distributing a
 package. All you need to do is write a simple configuration file, put a
 few files in the right places, and you have a package. See the `Cabal
-documentation <http://www.haskell.org/cabal/users-guide/>`__ for
+documentation <https://www.haskell.org/cabal/users-guide/>`__ for
 details, and also the Cabal libraries
 (:cabal-ref:`Distribution.Simple.`, for example).
 
@@ -75,7 +75,7 @@ To see which packages are currently available, use the ``ghc-pkg list`` command:
         pretty-1.0.1.0
         process-1.0.1.1
         random-1.0.0.1
-        rts-1.0
+        rts-1.0.1
         syb-0.1.0.0
         template-haskell-2.4.0.0
         terminfo-0.3.1
@@ -393,7 +393,7 @@ GHC knows about two package databases in particular:
    e.g. ``/usr/lib/ghc-6.12.1/package.conf.d``.
 
 -  The *user package database* private to each user. On Unix systems this will
-   be ``$HOME/.ghc/arch-os-version/package.conf.d``, and on Windows it will
+   be ``$XDG_DATA_HOME/ghc/arch-os-version/package.conf.d``, and on Windows it will
    be something like
    ``C:\Documents And Settings\user\ghc\package.conf.d``. The
    ``ghc-pkg`` tool knows where this file should be located, and will
@@ -515,7 +515,7 @@ The ``GHC_PACKAGE_PATH`` environment variable
 
     .. code-block:: none
 
-        $ export GHC_PACKAGE_PATH=$HOME/.my-ghc-packages.conf:
+        $ export GHC_PACKAGE_PATH=$XDG_DATA_HOME/.my-ghc-packages.conf:
 
     To check whether your `GHC_PACKAGE_PATH` setting is doing the right
     thing, ``ghc-pkg list`` will list all the databases in use, in the
@@ -535,6 +535,10 @@ packages should be visible. It can be used to create environments for ``ghc``
 or ``ghci`` that are local to a shell session or to some file system location.
 They are intended to be managed by build/package tools, to enable ``ghc`` and
 ``ghci`` to automatically use an environment created by the tool.
+
+In the case of ``ghci``, the environment file will be read once, during
+initialisation. If the file changes then you have to restart GHCi to reflect
+the updated file.
 
 The file contains package IDs and optionally package databases, one directive
 per line:
@@ -578,7 +582,7 @@ must be relative to the location of the package environment file.
     :category:
 
     Use the package environment in ⟨file⟩, or in
-    ``$HOME/.ghc/arch-os-version/environments/⟨name⟩``
+    ``$XDG_DATA_HOME/ghc/arch-os-version/environments/⟨name⟩``
     If set to ``-`` no package environment is read.
 
 .. envvar:: GHC_ENVIRONMENT
@@ -591,13 +595,13 @@ locations:
 
 -  File ⟨file⟩ if you pass the option :ghc-flag:`-package-env ⟨file⟩|⟨name⟩`.
 
--  File ``$HOME/.ghc/arch-os-version/environments/name`` if you pass the
+-  File ``$XDG_DATA_HOME/ghc/arch-os-version/environments/name`` if you pass the
    option ``-package-env ⟨name⟩``.
 
 -  File ⟨file⟩ if the environment variable :envvar:`GHC_ENVIRONMENT` is set to
    ⟨file⟩.
 
--  File ``$HOME/.ghc/arch-os-version/environments/name`` if the
+-  File ``$XDG_DATA_HOME/ghc/arch-os-version/environments/name`` if the
    environment variable :envvar:`GHC_ENVIRONMENT` is set to ⟨name⟩.
 
 Additionally, unless ``-hide-all-packages`` is specified ``ghc`` will also
@@ -606,7 +610,7 @@ look for the package environment in the following locations:
 -  File ``.ghc.environment.arch-os-version`` if it exists in the current
    directory or any parent directory (but not the user's home directory).
 
--  File ``$HOME/.ghc/arch-os-version/environments/default`` if it
+-  File ``$XDG_DATA_HOME/ghc/arch-os-version/environments/default`` if it
    exists.
 
 Package environments can be modified by further command line arguments;
@@ -709,7 +713,7 @@ about the nature of the failure:
 To fix the problem, you need to recompile the broken packages against
 the new dependencies. The easiest way to do this is to use
 ``cabal-install``, or download the packages from
-`HackageDB <http://hackage.haskell.org/packages/hackage.html>`__ and
+`HackageDB <https://hackage.haskell.org/>`__ and
 build and install them as normal.
 
 Be careful not to recompile any packages that GHC itself depends on, as
@@ -849,7 +853,7 @@ instead of just package name and version, pass the ``--ipid`` flag.
 
 ``ghc-pkg dot``
     Generate a graph of the package dependencies in a form suitable for
-    input for the `graphviz <http://www.graphviz.org/>`__ tools. For
+    input for the `graphviz <https://www.graphviz.org/>`__ tools. For
     example, to generate a PDF of the dependency graph:
 
     ::
@@ -965,27 +969,17 @@ Additionally, the following flags are accepted by ``ghc-pkg``:
 
     Output the ``ghc-pkg`` version number.
 
-``--ipid``
+``--ipid``, ``--unit-id``
     .. index::
        single: --ipid; ghc-pkg option
+       single: --unit-id; ghc-pkg option
 
-    Causes ``ghc-pkg`` to interpret arguments as installed package IDs
+    Causes ``ghc-pkg`` to interpret arguments as installed unit IDs
     (e.g., an identifier like
     ``unix-2.3.1.0-de7803f1a8cd88d2161b29b083c94240``). This is useful
     if providing just the package name and version are ambiguous (in old
     versions of GHC, this was guaranteed to be unique, but this
     invariant no longer necessarily holds).
-
-``--package-key``
-    .. index::
-       single: --package-key; ghc-pkg option
-
-    Causes ``ghc-pkg`` to interpret arguments as unit IDs (e.g., an
-    identifier like ``I5BErHzyOm07EBNpKBEeUv``). Package keys are used
-    to prefix symbol names GHC produces (e.g.,
-    ``6VWy06pWzzJq9evDvK2d4w6_DataziByteStringziInternal_unsafePackLenChars_info``),
-    so if you need to figure out what package a symbol belongs to, use
-    ``ghc-pkg`` with this flag.
 
 .. _building-packages:
 
@@ -996,7 +990,7 @@ Building a package from Haskell source
    single: packages; building
 
 We don't recommend building packages the hard way. Instead, use the
-`Cabal <http://www.haskell.org/cabal/users-guide/>`__ infrastructure if
+`Cabal <https://www.haskell.org/cabal/users-guide/>`__ infrastructure if
 possible. If your package is particularly complicated or requires a lot
 of configuration, then you might have to fall back to the low-level
 mechanisms, so a few hints for those brave souls follow.
@@ -1029,9 +1023,9 @@ extra indirection).
    ``HSfoo.o`` file that has been pre-linked. Loading the ``.o`` file is
    slightly quicker, but at the expense of having another copy of the
    compiled package. The rule of thumb is that if the modules of the
-   package were compiled with :ghc-flag:`-split-objs` then building the
+   package were compiled with :ghc-flag:`-split-sections` then building the
    ``HSfoo.o`` is worthwhile because it saves time when loading the
-   package into GHCi. Without :ghc-flag:`-split-objs`, there is not much
+   package into GHCi. Without :ghc-flag:`-split-sections`, there is not much
    difference in load time between the ``.o`` and ``.a`` libraries, so
    it is better to save the disk space and only keep the ``.a`` around.
    In a GHC distribution we provide ``.o`` files for most packages
@@ -1070,6 +1064,14 @@ extra indirection).
    the version number of GHC invoke ``ghc --numeric-version`` and use
    its output in place of ⟨GHCVersion⟩. See also :ref:`options-codegen`
    on how object files must be prepared for shared object linking.
+
+-  When building a shared library, care must be taken to ensure that the
+   resulting object is named appropriately. In particular, GHC expects the
+   name of a shared object to have the form ``libHS<unit id>-ghc<ghc
+   version>.<ext>`` where *unit id* is the unit ID given during compilation via
+   the :ghc-flag:`-this-unit-id ⟨unit-id⟩` flag, *ghc version* is the version of
+   GHC that produced/consumes the object and *ext* is the host system's usual
+   file extension for shared objects.
 
 To compile a module which is to be part of a new package, use the
 ``-package-name`` (to identify the name of the package) and
@@ -1339,8 +1341,6 @@ The allowed fields, with their types, are:
 
     ``libHSfoo.a``
         The name of the library on Unix and Windows (mingw) systems.
-        Note that we don't support building dynamic libraries of Haskell
-        code on Unix systems.
 
     ``HSfoo.dll``
         The name of the dynamic library on Windows systems (optional).
@@ -1438,7 +1438,7 @@ The allowed fields, with their types, are:
        single: haddock-interfaces; package specification
 
     (string list) A list of filenames containing
-    `Haddock <http://www.haskell.org/haddock/>`__ interface files
+    `Haddock <https://www.haskell.org/haddock/>`__ interface files
     (``.haddock`` files) for this package.
 
 ``haddock-html``
@@ -1449,3 +1449,23 @@ The allowed fields, with their types, are:
     HTML for this package.
 
 .. [1] it used to in GHC 6.4, but not since 6.6
+
+
+.. _system-cxx-std-lib:
+
+Linking against C++ libraries
+-----------------------------
+
+.. index::
+   single: system-cxx-std-lib
+   single: packages; system-cxx-std-lib
+   single: C++; linking
+
+Use of C++ libraries requires that the user link against the host
+system's C++ standard library. As the configuration necessary to
+achieve this is generally quite platform-dependent, GHC provides a
+built-in package, ``system-cxx-std-lib``. This package captures the
+configuration necessary for linking against the C++ standard library
+and can be used via the :ghc-flag:`-package ⟨pkg⟩` flag or the Cabal
+``build-depends`` field to link code against the C++ standard
+library.

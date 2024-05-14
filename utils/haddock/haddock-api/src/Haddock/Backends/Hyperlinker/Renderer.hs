@@ -1,6 +1,5 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
 
@@ -12,17 +11,19 @@ import Haddock.Backends.Hyperlinker.Utils
 
 import qualified Data.ByteString as BS
 
-import HieTypes
-import Module   ( ModuleName, moduleNameString )
-import Name     ( getOccString, isInternalName, Name, nameModule, nameUnique )
-import SrcLoc
-import Unique   ( getKey )
-import Encoding ( utf8DecodeByteString )
+import GHC.Iface.Ext.Types
+import GHC.Iface.Ext.Utils ( isEvidenceContext , emptyNodeInfo )
+import GHC.Unit.Module ( ModuleName, moduleNameString )
+import GHC.Types.Name   ( getOccString, isInternalName, Name, nameModule, nameUnique )
+import GHC.Types.SrcLoc
+import GHC.Types.Unique ( getKey )
+import GHC.Utils.Encoding ( utf8DecodeByteString )
 
 import System.FilePath.Posix ((</>))
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
+import qualified Data.List as List
 
 import Text.XHtml (Html, HtmlAttr, (!))
 import qualified Text.XHtml as Html
@@ -88,14 +89,14 @@ renderWithAst srcs Node{..} toks = anchored $ case toks of
     -- order to make sure these get hyperlinked properly, we intercept these
     -- special sequences of tokens and merge them into just one identifier or
     -- operator token.
-    [BacktickTok s1, tok @ Token{ tkType = TkIdentifier }, BacktickTok s2]
+    [BacktickTok s1, tok@Token{ tkType = TkIdentifier }, BacktickTok s2]
           | realSrcSpanStart s1 == realSrcSpanStart nodeSpan
           , realSrcSpanEnd s2   == realSrcSpanEnd nodeSpan
           -> richToken srcs nodeInfo
                        (Token{ tkValue = "`" <> tkValue tok <> "`"
                              , tkType = TkOperator
                              , tkSpan = nodeSpan })
-    [OpenParenTok s1, tok @ Token{ tkType = TkOperator }, CloseParenTok s2]
+    [OpenParenTok s1, tok@Token{ tkType = TkOperator }, CloseParenTok s2]
           | realSrcSpanStart s1 == realSrcSpanStart nodeSpan
           , realSrcSpanEnd s2   == realSrcSpanEnd nodeSpan
           -> richToken srcs nodeInfo
@@ -105,6 +106,7 @@ renderWithAst srcs Node{..} toks = anchored $ case toks of
 
     _ -> go nodeChildren toks
   where
+    nodeInfo = maybe emptyNodeInfo id (Map.lookup SourceInfo $ getSourcedNodeInfo sourcedNodeInfo)
     go _ [] = mempty
     go [] xs = foldMap renderToken xs
     go (cur:rest) xs =
@@ -139,8 +141,9 @@ richToken srcs details Token{..}
 
     contexts = concatMap (Set.elems . identInfo) . Map.elems . nodeIdentifiers $ details
 
-    -- pick an arbitary identifier to hyperlink with
-    identDet = Map.lookupMin . nodeIdentifiers $ details
+    -- pick an arbitrary non-evidence identifier to hyperlink with
+    identDet = Map.lookupMin $ Map.filter notEvidence $ nodeIdentifiers details
+    notEvidence = not . any isEvidenceContext . identInfo
 
     -- If we have name information, we can make links
     linked = case identDet of
@@ -163,7 +166,8 @@ annotate  ni content =
       | otherwise = mempty
     annotation = typ ++ identTyps
     typ = unlines (nodeType ni)
-    typedIdents = [ (n,t) | (n, identType -> Just t) <- Map.toList $ nodeIdentifiers ni ]
+    typedIdents = [ (n,t) | (n, c@(identType -> Just t)) <- Map.toList $ nodeIdentifiers ni
+                          , not (any isEvidenceContext $ identInfo c) ]
     identTyps
       | length typedIdents > 1 || null (nodeType ni)
           = concatMap (\(n,t) -> printName n ++ " :: " ++ t ++ "\n") typedIdents
@@ -176,17 +180,19 @@ richTokenStyle
   :: Bool         -- ^ are we lacking a type annotation?
   -> ContextInfo  -- ^ in what context did this token show up?
   -> [StyleClass]
-richTokenStyle True  Use           = ["hs-type"]
-richTokenStyle False Use           = ["hs-var"]
-richTokenStyle  _    RecField{}    = ["hs-var"]
-richTokenStyle  _    PatternBind{} = ["hs-var"]
-richTokenStyle  _    MatchBind{}   = ["hs-var"]
-richTokenStyle  _    TyVarBind{}   = ["hs-type"]
-richTokenStyle  _    ValBind{}     = ["hs-var"]
-richTokenStyle  _    TyDecl        = ["hs-type"]
-richTokenStyle  _    ClassTyDecl{} = ["hs-type"]
-richTokenStyle  _    Decl{}        = ["hs-var"]
-richTokenStyle  _    IEThing{}     = []  -- could be either a value or type
+richTokenStyle True  Use               = ["hs-type"]
+richTokenStyle False Use               = ["hs-var"]
+richTokenStyle  _    RecField{}        = ["hs-var"]
+richTokenStyle  _    PatternBind{}     = ["hs-var"]
+richTokenStyle  _    MatchBind{}       = ["hs-var"]
+richTokenStyle  _    TyVarBind{}       = ["hs-type"]
+richTokenStyle  _    ValBind{}         = ["hs-var"]
+richTokenStyle  _    TyDecl            = ["hs-type"]
+richTokenStyle  _    ClassTyDecl{}     = ["hs-type"]
+richTokenStyle  _    Decl{}            = ["hs-var"]
+richTokenStyle  _    IEThing{}         = []  -- could be either a value or type
+richTokenStyle  _    EvidenceVarBind{} = []
+richTokenStyle  _    EvidenceVarUse{}  = []
 
 tokenStyle :: TokenType -> [StyleClass]
 tokenStyle TkIdentifier = ["hs-identifier"]
@@ -243,14 +249,20 @@ hyperlink (srcs, srcs') ident = case ident of
     Left name -> externalModHyperlink name
 
   where
+    -- In a Nix environment, we have file:// URLs with absolute paths
+    makeHyperlinkUrl url | List.isPrefixOf "file://" url = url
+    makeHyperlinkUrl url = ".." </> url
+
     internalHyperlink name content =
         Html.anchor content ! [ Html.href $ "#" ++ internalAnchorIdent name ]
 
     externalNameHyperlink name content = case Map.lookup mdl srcs of
         Just SrcLocal -> Html.anchor content !
             [ Html.href $ hypSrcModuleNameUrl mdl name ]
-        Just (SrcExternal path) -> Html.anchor content !
-            [ Html.href $ spliceURL Nothing (Just mdl) (Just name) Nothing (".." </> path) ]
+        Just (SrcExternal path) ->
+          let hyperlinkUrl = makeHyperlinkUrl path </> hypSrcModuleNameUrl mdl name
+           in Html.anchor content !
+                [ Html.href $ spliceURL Nothing (Just mdl) (Just name) Nothing hyperlinkUrl ]
         Nothing -> content
       where
         mdl = nameModule name
@@ -259,8 +271,10 @@ hyperlink (srcs, srcs') ident = case ident of
         case Map.lookup moduleName srcs' of
           Just SrcLocal -> Html.anchor content !
             [ Html.href $ hypSrcModuleUrl' moduleName ]
-          Just (SrcExternal path) -> Html.anchor content !
-            [ Html.href $ spliceURL' Nothing (Just moduleName) Nothing Nothing (".." </> path) ]
+          Just (SrcExternal path) ->
+            let hyperlinkUrl = makeHyperlinkUrl path </> hypSrcModuleUrl' moduleName
+             in Html.anchor content !
+                  [ Html.href $ spliceURL' Nothing (Just moduleName) Nothing Nothing hyperlinkUrl ]
           Nothing -> content
 
 

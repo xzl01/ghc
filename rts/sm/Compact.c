@@ -7,11 +7,11 @@
  * Documentation on the architecture of the Garbage Collector can be
  * found in the online commentary:
  *
- *   http://ghc.haskell.org/trac/ghc/wiki/Commentary/Rts/Storage/GC
+ *   https://gitlab.haskell.org/ghc/ghc/wikis/commentary/rts/storage/gc
  *
  * ---------------------------------------------------------------------------*/
 
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
 
 #include "GCThread.h"
@@ -27,6 +27,7 @@
 #include "MarkWeak.h"
 #include "StablePtr.h"
 #include "StableName.h"
+#include "Hash.h"
 
 // Turn off inlining when debugging - it obfuscates things
 #if defined(DEBUG)
@@ -473,6 +474,67 @@ thread_TSO (StgTSO *tso)
     return (P_)tso + sizeofW(StgTSO);
 }
 
+/* ----------------------------------------------------------------------------
+    Note [CNFs in compacting GC]
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    CNF hash table keys point outside of the CNF so those need to be threaded
+    and updated during compaction. After compaction we need to re-visit those
+    hash tables for re-hashing. The list `nfdata_chain` is used for that
+    purpose. When we thread keys of a CNF we add the CNF to the list. After
+    compacting is done we re-visit the CNFs in the list and re-hash their
+    tables. See also #17937 for more details.
+   ------------------------------------------------------------------------- */
+
+static StgCompactNFData *nfdata_chain = NULL;
+
+static void
+thread_nfdata_hash_key(void *data STG_UNUSED, StgWord *key, const void *value STG_UNUSED)
+{
+    thread_((void *)key);
+}
+
+static void
+add_hash_entry(void *data, StgWord key, const void *value)
+{
+    HashTable *new_hash = (HashTable *)data;
+    insertHashTable(new_hash, key, value);
+}
+
+static void
+rehash_CNFs(void)
+{
+    while (nfdata_chain != NULL) {
+        StgCompactNFData *str = nfdata_chain;
+        nfdata_chain = str->link;
+        str->link = NULL;
+
+        HashTable *new_hash = allocHashTable();
+        mapHashTable(str->hash, (void*)new_hash, add_hash_entry);
+        freeHashTable(str->hash, NULL);
+        str->hash = new_hash;
+    }
+}
+
+static void
+update_fwd_cnf( bdescr *bd )
+{
+    while (bd) {
+        ASSERT(bd->flags & BF_COMPACT);
+        StgCompactNFData *str = ((StgCompactNFDataBlock*)bd->start)->owner;
+
+        // Thread hash table keys. Values won't be moved as those are inside the
+        // CNF, and the CNF is a large object and so won't ever move.
+        if (str->hash) {
+            mapHashTableKeys(str->hash, NULL, thread_nfdata_hash_key);
+            ASSERT(str->link == NULL);
+            str->link = nfdata_chain;
+            nfdata_chain = str;
+        }
+
+        bd = bd->link;
+    }
+}
 
 static void
 update_fwd_large( bdescr *bd )
@@ -489,7 +551,6 @@ update_fwd_large( bdescr *bd )
     switch (info->type) {
 
     case ARR_WORDS:
-    case COMPACT_NFDATA:
       // nothing to follow
       continue;
 
@@ -797,10 +858,11 @@ update_fwd_compact( bdescr *blocks )
 
             W_ size = p - q;
             if (free + size > free_bd->start + BLOCK_SIZE_W) {
-                // set the next bit in the bitmap to indicate that
-                // this object needs to be pushed into the next
-                // block.  This saves us having to run down the
-                // threaded info pointer list twice during the next pass.
+                // set the next bit in the bitmap to indicate that this object
+                // needs to be pushed into the next block.  This saves us having
+                // to run down the threaded info pointer list twice during the
+                // next pass. See Note [Mark bits in mark-compact collector] in
+                // Compact.h.
                 mark(q+1,bd);
                 free_bd = free_bd->link;
                 free = free_bd->start;
@@ -828,18 +890,27 @@ update_bkwd_compact( generation *gen )
     for (; bd != NULL; bd = bd->link) {
         P_ p = bd->start;
 
-        while (p < bd->free ) {
+        while (p < bd->free) {
 
-            while ( p < bd->free && !is_marked(p,bd) ) {
+            while (p < bd->free && !is_marked(p,bd)) {
                 p++;
             }
+
             if (p >= bd->free) {
                 break;
             }
 
             if (is_marked(p+1,bd)) {
-                // don't forget to update the free ptr in the block desc.
+                // Don't forget to update the free ptr in the block desc
                 free_bd->free = free;
+
+                // Zero the remaining bytes of this block before moving on to
+                // the next block
+                IF_DEBUG(zero_on_gc, {
+                    memset(free_bd->free, 0xaa,
+                           BLOCK_SIZE - ((W_)(free_bd->free - free_bd->start) * sizeof(W_)));
+                });
+
                 free_bd = free_bd->link;
                 free = free_bd->start;
                 free_blocks++;
@@ -866,18 +937,28 @@ update_bkwd_compact( generation *gen )
         }
     }
 
-    // free the remaining blocks and count what's left.
+    // Free the remaining blocks and count what's left.
     free_bd->free = free;
     if (free_bd->link != NULL) {
         freeChain(free_bd->link);
         free_bd->link = NULL;
     }
 
+    // Zero the free bits of the last used block.
+    IF_DEBUG(zero_on_gc, {
+        W_ block_size_bytes = free_bd->blocks * BLOCK_SIZE;
+        W_ block_in_use_bytes = (free_bd->free - free_bd->start) * sizeof(W_);
+        W_ block_free_bytes = block_size_bytes - block_in_use_bytes;
+        memset(free_bd->free, 0xaa, block_free_bytes);
+    });
+
     return free_blocks;
 }
 
 void
-compact(StgClosure *static_objects)
+compact(StgClosure *static_objects,
+        StgWeak **dead_weak_ptr_list,
+        StgTSO **resurrected_threads)
 {
     // 1. thread the roots
     markCapabilities((evac_fn)thread_root, NULL);
@@ -892,13 +973,13 @@ compact(StgClosure *static_objects)
     }
 
     if (dead_weak_ptr_list != NULL) {
-        thread((void *)&dead_weak_ptr_list); // tmp
+        thread((void *)dead_weak_ptr_list); // tmp
     }
 
     // mutable lists
     for (W_ g = 1; g < RtsFlags.GcFlags.generations; g++) {
-        for (W_ n = 0; n < n_capabilities; n++) {
-            for (bdescr *bd = capabilities[n]->mut_lists[g];
+        for (W_ n = 0; n < getNumCapabilities(); n++) {
+            for (bdescr *bd = getCapability(n)->mut_lists[g];
                  bd != NULL; bd = bd->link) {
                 for (P_ p = bd->start; p < bd->free; p++) {
                     thread((StgClosure **)p);
@@ -913,7 +994,7 @@ compact(StgClosure *static_objects)
     }
 
     // any threads resurrected during this GC
-    thread((void *)&resurrected_threads);
+    thread((void *)resurrected_threads);
 
     // the task list
     for (Task *task = all_tasks; task != NULL; task = task->all_next) {
@@ -943,11 +1024,12 @@ compact(StgClosure *static_objects)
         debugTrace(DEBUG_gc, "update_fwd:  %d", g);
 
         update_fwd(gen->blocks);
-        for (W_ n = 0; n < n_capabilities; n++) {
+        for (W_ n = 0; n < getNumCapabilities(); n++) {
             update_fwd(gc_threads[n]->gens[g].todo_bd);
             update_fwd(gc_threads[n]->gens[g].part_list);
         }
         update_fwd_large(gen->scavenged_large_objects);
+        update_fwd_cnf(gen->live_compact_objects);
         if (g == RtsFlags.GcFlags.generations-1 && gen->old_blocks != NULL) {
             debugTrace(DEBUG_gc, "update_fwd:  %d (compact)", g);
             update_fwd_compact(gen->old_blocks);
@@ -963,4 +1045,8 @@ compact(StgClosure *static_objects)
                    gen->no, gen->n_old_blocks, blocks);
         gen->n_old_blocks = blocks;
     }
+
+    // 4. Re-hash hash tables of threaded CNFs.
+    // See Note [CNFs in compacting GC] above.
+    rehash_CNFs();
 }

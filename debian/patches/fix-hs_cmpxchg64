@@ -1,0 +1,39 @@
+commit 9fa545722f9151781344446dd5501db38cb90dd1
+Author: Cheng Shao <terrorjack@type.dance>
+Date:   Mon Feb 27 19:11:27 2023 +0000
+
+    ghc-prim: fix hs_cmpxchg64 function prototype
+    
+    hs_cmpxchg64 must return a StgWord64, otherwise incorrect runtime
+    results of 64-bit MO_Cmpxchg will appear in 32-bit unregisterised
+    builds, which go unnoticed at compile-time due to C implicit casting
+    in .hc files.
+
+Index: b/libraries/ghc-prim/cbits/atomic.c
+===================================================================
+--- a/libraries/ghc-prim/cbits/atomic.c
++++ b/libraries/ghc-prim/cbits/atomic.c
+@@ -308,8 +308,8 @@ hs_cmpxchg32(StgWord x, StgWord old, Stg
+   return __sync_val_compare_and_swap((volatile StgWord32 *) x, (StgWord32) old, (StgWord32) new);
+ }
+ 
+-extern StgWord hs_cmpxchg64(StgWord x, StgWord64 old, StgWord64 new);
+-StgWord
++extern StgWord64 hs_cmpxchg64(StgWord x, StgWord64 old, StgWord64 new);
++StgWord64
+ hs_cmpxchg64(StgWord x, StgWord64 old, StgWord64 new)
+ {
+   return __sync_val_compare_and_swap((volatile StgWord64 *) x, old, new);
+Index: b/rts/include/stg/Prim.h
+===================================================================
+--- a/rts/include/stg/Prim.h
++++ b/rts/include/stg/Prim.h
+@@ -41,7 +41,7 @@ StgWord64 hs_atomic_xor64(StgWord x, Stg
+ StgWord hs_cmpxchg8(StgWord x, StgWord old, StgWord new_);
+ StgWord hs_cmpxchg16(StgWord x, StgWord old, StgWord new_);
+ StgWord hs_cmpxchg32(StgWord x, StgWord old, StgWord new_);
+-StgWord hs_cmpxchg64(StgWord x, StgWord64 old, StgWord64 new_);
++StgWord64 hs_cmpxchg64(StgWord x, StgWord64 old, StgWord64 new_);
+ StgWord hs_atomicread8(StgWord x);
+ StgWord hs_atomicread16(StgWord x);
+ StgWord hs_atomicread32(StgWord x);

@@ -34,8 +34,8 @@ LLVM Code Generator (``-fllvm``)
 .. index::
    single: LLVM code generator
 
-This is an alternative backend that uses the `LLVM <http://llvm.org>`__
-compiler to produce executable code. It generally produces code as with
+This is an alternative backend that uses the `LLVM <https://llvm.org>`__
+compiler to produce executable code. It generally produces code with
 performance as good as the native code generator but for some cases can
 produce much faster code. This is especially true for numeric, array
 heavy code using packages like vector. The penalty is a significant
@@ -46,26 +46,26 @@ You must install and have LLVM available on your ``PATH`` for the LLVM code
 generator to work. Specifically GHC needs to be able to call the ``opt``
 and ``llc`` tools. Secondly, if you are running Mac OS X with LLVM 3.0
 or greater then you also need the `Clang C
-compiler <http://clang.llvm.org>`__ compiler available on your ``PATH``.
+compiler <https://clang.llvm.org>`__ compiler available on your ``PATH``.
 
 .. note::
 
-    Note that this GHC release expects an LLVM version in the |llvm-version|
-    release series.
+    Note that this GHC release expects an LLVM version in the |llvm-version-min|
+    up to |llvm-version-max| (not inclusive) release series.
 
 To install LLVM and Clang:
 
 -  *Linux*: Use your package management tool.
 
 -  *Mac OS X*: Clang is included by default on recent OS X machines when
-   XCode is installed (from 10.6 and later). LLVM is not included.
+   Xcode is installed (from 10.6 and later). LLVM is not included.
    In order to use the LLVM based code generator, you should install the
-   `Homebrew <http://mxcl.github.com/homebrew/>`__ package manager for
+   `Homebrew <https://github.com/Homebrew/brew>`__ package manager for
    OS X. Alternatively you can download binaries for LLVM and Clang from
-   `here <http://llvm.org/releases/download.html>`__.
+   `here <https://llvm.org/releases/download.html>`__.
 
 -  *Windows*: You should download binaries for LLVM and clang from
-   `here <http://llvm.org/releases/download.html>`__.
+   `here <https://llvm.org/releases/download.html>`__.
 
 .. _c-code-gen:
 
@@ -75,6 +75,13 @@ C Code Generator (``-fvia-C``)
 .. index::
    single: C code generator
    single: -fvia-C
+
+.. ghc-flag:: -fvia-C
+    :shortdesc: use the C code generator
+    :type: dynamic
+    :category: warnings
+
+    Use the C code generator. Only supposed in unregisterised GHC builds.
 
 This is the oldest code generator in GHC and is generally not included
 any more having been deprecated around GHC 7.0. Select it with the
@@ -117,4 +124,5 @@ to build GHC with the appropriate options set. Consult the GHC Building
 Guide for details.
 
 You can check if your GHC is unregisterised by calling
+``ghc --print-unregisterised`` (see :ghc-flag:`--print-unregisterised`) or
 ``ghc --info`` (see :ghc-flag:`--info`).

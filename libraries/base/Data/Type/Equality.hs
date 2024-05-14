@@ -1,18 +1,16 @@
-{-# LANGUAGE DeriveGeneric          #-}
-{-# LANGUAGE TypeOperators          #-}
-{-# LANGUAGE GADTs                  #-}
-{-# LANGUAGE FlexibleInstances      #-}
-{-# LANGUAGE StandaloneDeriving     #-}
-{-# LANGUAGE NoImplicitPrelude      #-}
-{-# LANGUAGE RankNTypes             #-}
-{-# LANGUAGE TypeFamilies           #-}
-{-# LANGUAGE UndecidableInstances   #-}
-{-# LANGUAGE ExplicitNamespaces     #-}
-{-# LANGUAGE MultiParamTypeClasses  #-}
-{-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE DataKinds              #-}
-{-# LANGUAGE PolyKinds              #-}
-{-# LANGUAGE Trustworthy            #-}
+{-# LANGUAGE DataKinds                #-}
+{-# LANGUAGE FlexibleInstances        #-}
+{-# LANGUAGE GADTs                    #-}
+{-# LANGUAGE MultiParamTypeClasses    #-}
+{-# LANGUAGE NoImplicitPrelude        #-}
+{-# LANGUAGE PolyKinds                #-}
+{-# LANGUAGE RankNTypes               #-}
+{-# LANGUAGE StandaloneDeriving       #-}
+{-# LANGUAGE StandaloneKindSignatures #-}
+{-# LANGUAGE Trustworthy              #-}
+{-# LANGUAGE TypeFamilies             #-}
+{-# LANGUAGE TypeOperators            #-}
+{-# LANGUAGE UndecidableInstances     #-}
 
 -----------------------------------------------------------------------------
 -- |
@@ -20,7 +18,7 @@
 -- License     :  BSD-style (see the LICENSE file in the distribution)
 --
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  not portable
 --
 -- Definition of propositional equality @(':~:')@. Pattern-matching on a variable
@@ -33,7 +31,9 @@
 
 module Data.Type.Equality (
   -- * The equality types
-  (:~:)(..), type (~~),
+  type (~),
+  type (~~),
+  (:~:)(..),
   (:~~:)(..),
 
   -- * Working with equality
@@ -61,7 +61,7 @@ infix 4 :~:, :~~:
 -- in the body of the pattern-match, the compiler knows that @a ~ b@.
 --
 -- @since 4.7.0.0
-data a :~: b where  -- See Note [The equality types story] in TysPrim
+data a :~: b where  -- See Note [The equality types story] in GHC.Builtin.Types.Prim
   Refl :: a :~: a
 
 -- with credit to Conal Elliott for 'ty', Erik Hesselink & Martijn van
@@ -122,7 +122,8 @@ deriving instance a ~ b => Bounded (a :~: b)
 -- inhabited by a terminating value if and only if @a@ is the same type as @b@.
 --
 -- @since 4.10.0.0
-data (a :: k1) :~~: (b :: k2) where
+type (:~~:) :: k1 -> k2 -> Type
+data a :~~: b where
    HRefl :: a :~~: a
 
 -- | @since 4.10.0.0
@@ -146,8 +147,22 @@ instance a ~~ b => Enum (a :~~: b) where
 deriving instance a ~~ b => Bounded (a :~~: b)
 
 -- | This class contains types where you can learn the equality of two types
--- from information contained in /terms/. Typically, only singleton types should
--- inhabit this class.
+-- from information contained in /terms/.
+--
+-- The result should be @Just Refl@ if and only if the types applied to @f@ are
+-- equal:
+--
+-- @TestEquality (x :: f a) (y :: f b) = Just Refl ⟺ a = b@
+--
+-- Typically, only singleton types should inhabit this class. In that case type
+-- argument equality coincides with term equality:
+--
+-- @TestEquality (x :: f a) (y :: f b) = Just Refl ⟺ a = b ⟺ x = y@
+--
+-- @isJust (TestEquality x y) = x == y@
+--
+-- Singleton types are not required, however, and so the latter two would-be
+-- laws are not in fact valid in general.
 class TestEquality f where
   -- | Conditionally prove the equality of @a@ and @b@.
   testEquality :: f a -> f b -> Maybe (a :~: b)
@@ -163,7 +178,8 @@ instance TestEquality ((:~~:) a) where
 infix 4 ==
 
 -- | A type family to compute Boolean equality.
-type family (a :: k) == (b :: k) :: Bool where
+type (==) :: k -> k -> Bool
+type family a == b where
   f a == g b = f == g && a == b
   a == a = 'True
   _ == _ = 'False

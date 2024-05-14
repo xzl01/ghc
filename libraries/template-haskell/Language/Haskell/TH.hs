@@ -4,10 +4,12 @@ For other documentation, refer to:
 <http://www.haskell.org/haskellwiki/Template_Haskell>
 
 -}
+{-# LANGUAGE Safe #-}
 module Language.Haskell.TH(
         -- * The monad and its operations
         Q,
         runQ,
+        Quote(..),
         -- ** Administration: errors, locations and IO
         reportError,              -- :: String -> Q ()
         reportWarning,            -- :: String -> Q ()
@@ -20,6 +22,7 @@ module Language.Haskell.TH(
         -- *** Reify
         reify,            -- :: Name -> Q Info
         reifyModule,
+        newDeclarationGroup,
         Info(..), ModuleInfo(..),
         InstanceDec,
         ParentName,
@@ -34,6 +37,8 @@ module Language.Haskell.TH(
         lookupValueName, -- :: String -> Q (Maybe Name)
         -- *** Fixity lookup
         reifyFixity,
+        -- *** Type lookup
+        reifyType,
         -- *** Instance lookup
         reifyInstances,
         isInstance,
@@ -46,12 +51,13 @@ module Language.Haskell.TH(
 
         -- * Typed expressions
         TExp, unType,
+        Code(..), unTypeCode, unsafeCodeCoerce, hoistCode, bindCode,
+        bindCode_, joinCode, liftCode,
 
         -- * Names
         Name, NameSpace,        -- Abstract
         -- ** Constructing names
         mkName,         -- :: String -> Name
-        newName,        -- :: String -> Q Name
         -- ** Deconstructing names
         nameBase,       -- :: Name -> String
         nameModule,     -- :: Name -> Maybe String
@@ -82,7 +88,11 @@ module Language.Haskell.TH(
         Pat(..), FieldExp, FieldPat,
     -- ** Types
         Type(..), TyVarBndr(..), TyLit(..), Kind, Cxt, Pred, Syntax.Role(..),
-        FamilyResultSig(..), Syntax.InjectivityAnn(..), PatSynType,
+        Syntax.Specificity(..),
+        FamilyResultSig(..), Syntax.InjectivityAnn(..), PatSynType, BangType, VarBangType,
+
+    -- ** Documentation
+        putDoc, getDoc, DocLoc(..),
 
     -- * Library functions
     module Language.Haskell.TH.Lib,

@@ -1,8 +1,6 @@
-{-# LANGUAGE CPP, BangPatterns #-}
+{-# LANGUAGE BangPatterns #-}
 {-# OPTIONS_HADDOCK prune #-}
-#if __GLASGOW_HASKELL__ >= 701
 {-# LANGUAGE Trustworthy #-}
-#endif
 
 -- |
 -- Module      : Data.ByteString.Lazy.Char8
@@ -33,136 +31,152 @@
 module Data.ByteString.Lazy.Char8 (
 
         -- * The @ByteString@ type
-        ByteString,             -- instances: Eq, Ord, Show, Read, Data, Typeable
+        ByteString,
 
         -- * Introducing and eliminating 'ByteString's
-        empty,                  -- :: ByteString
-        singleton,              -- :: Char   -> ByteString
-        pack,                   -- :: String -> ByteString
-        unpack,                 -- :: ByteString -> String
-        fromChunks,             -- :: [Strict.ByteString] -> ByteString
-        toChunks,               -- :: ByteString -> [Strict.ByteString]
-        fromStrict,             -- :: Strict.ByteString -> ByteString
-        toStrict,               -- :: ByteString -> Strict.ByteString
+        empty,
+        singleton,
+        pack,
+        unpack,
+        fromChunks,
+        toChunks,
+        fromStrict,
+        toStrict,
 
         -- * Basic interface
-        cons,                   -- :: Char -> ByteString -> ByteString
-        cons',                  -- :: Char -> ByteString -> ByteString
-        snoc,                   -- :: ByteString -> Char -> ByteString
-        append,                 -- :: ByteString -> ByteString -> ByteString
-        head,                   -- :: ByteString -> Char
-        uncons,                 -- :: ByteString -> Maybe (Char, ByteString)
-        last,                   -- :: ByteString -> Char
-        tail,                   -- :: ByteString -> ByteString
-        unsnoc,                 -- :: ByteString -> Maybe (ByteString, Char)
-        init,                   -- :: ByteString -> ByteString
-        null,                   -- :: ByteString -> Bool
-        length,                 -- :: ByteString -> Int64
+        cons,
+        cons',
+        snoc,
+        append,
+        head,
+        uncons,
+        last,
+        tail,
+        unsnoc,
+        init,
+        null,
+        length,
 
         -- * Transforming ByteStrings
-        map,                    -- :: (Char -> Char) -> ByteString -> ByteString
-        reverse,                -- :: ByteString -> ByteString
-        intersperse,            -- :: Char -> ByteString -> ByteString
-        intercalate,            -- :: ByteString -> [ByteString] -> ByteString
-        transpose,              -- :: [ByteString] -> [ByteString]
+        map,
+        reverse,
+        intersperse,
+        intercalate,
+        transpose,
 
         -- * Reducing 'ByteString's (folds)
-        foldl,                  -- :: (a -> Char -> a) -> a -> ByteString -> a
-        foldl',                 -- :: (a -> Char -> a) -> a -> ByteString -> a
-        foldl1,                 -- :: (Char -> Char -> Char) -> ByteString -> Char
-        foldl1',                -- :: (Char -> Char -> Char) -> ByteString -> Char
-        foldr,                  -- :: (Char -> a -> a) -> a -> ByteString -> a
-        foldr1,                 -- :: (Char -> Char -> Char) -> ByteString -> Char
+        foldl,
+        foldl',
+        foldl1,
+        foldl1',
+        foldr,
+        foldr',
+        foldr1,
+        foldr1',
 
         -- ** Special folds
-        concat,                 -- :: [ByteString] -> ByteString
-        concatMap,              -- :: (Char -> ByteString) -> ByteString -> ByteString
-        any,                    -- :: (Char -> Bool) -> ByteString -> Bool
-        all,                    -- :: (Char -> Bool) -> ByteString -> Bool
-        maximum,                -- :: ByteString -> Char
-        minimum,                -- :: ByteString -> Char
+        concat,
+        concatMap,
+        any,
+        all,
+        maximum,
+        minimum,
+        compareLength,
 
         -- * Building ByteStrings
         -- ** Scans
-        scanl,                  -- :: (Char -> Char -> Char) -> Char -> ByteString -> ByteString
---      scanl1,                 -- :: (Char -> Char -> Char) -> ByteString -> ByteString
---      scanr,                  -- :: (Char -> Char -> Char) -> Char -> ByteString -> ByteString
---      scanr1,                 -- :: (Char -> Char -> Char) -> ByteString -> ByteString
+        scanl,
+        scanl1,
+        scanr,
+        scanr1,
 
         -- ** Accumulating maps
-        mapAccumL,              -- :: (acc -> Char -> (acc, Char)) -> acc -> ByteString -> (acc, ByteString)
-        mapAccumR,              -- :: (acc -> Char -> (acc, Char)) -> acc -> ByteString -> (acc, ByteString)
+        mapAccumL,
+        mapAccumR,
 
         -- ** Infinite ByteStrings
-        repeat,                 -- :: Char -> ByteString
-        replicate,              -- :: Int64 -> Char -> ByteString
-        cycle,                  -- :: ByteString -> ByteString
-        iterate,                -- :: (Char -> Char) -> Char -> ByteString
+        repeat,
+        replicate,
+        cycle,
+        iterate,
 
         -- ** Unfolding ByteStrings
-        unfoldr,                -- :: (a -> Maybe (Char, a)) -> a -> ByteString
+        unfoldr,
 
         -- * Substrings
 
         -- ** Breaking strings
-        take,                   -- :: Int64 -> ByteString -> ByteString
-        drop,                   -- :: Int64 -> ByteString -> ByteString
-        splitAt,                -- :: Int64 -> ByteString -> (ByteString, ByteString)
-        takeWhile,              -- :: (Char -> Bool) -> ByteString -> ByteString
-        dropWhile,              -- :: (Char -> Bool) -> ByteString -> ByteString
-        span,                   -- :: (Char -> Bool) -> ByteString -> (ByteString, ByteString)
-        break,                  -- :: (Char -> Bool) -> ByteString -> (ByteString, ByteString)
-        group,                  -- :: ByteString -> [ByteString]
-        groupBy,                -- :: (Char -> Char -> Bool) -> ByteString -> [ByteString]
-        inits,                  -- :: ByteString -> [ByteString]
-        tails,                  -- :: ByteString -> [ByteString]
-        stripPrefix,            -- :: ByteString -> ByteString -> Maybe ByteString
-        stripSuffix,            -- :: ByteString -> ByteString -> Maybe ByteString
+        take,
+        takeEnd,
+        drop,
+        dropEnd,
+        splitAt,
+        takeWhile,
+        takeWhileEnd,
+        dropWhile,
+        dropWhileEnd,
+        span,
+        spanEnd,
+        break,
+        breakEnd,
+        group,
+        groupBy,
+        inits,
+        tails,
+        initsNE,
+        tailsNE,
+        stripPrefix,
+        stripSuffix,
 
         -- ** Breaking into many substrings
-        split,                  -- :: Char -> ByteString -> [ByteString]
-        splitWith,              -- :: (Char -> Bool) -> ByteString -> [ByteString]
+        split,
+        splitWith,
 
         -- ** Breaking into lines and words
-        lines,                  -- :: ByteString -> [ByteString]
-        words,                  -- :: ByteString -> [ByteString]
-        unlines,                -- :: [ByteString] -> ByteString
-        unwords,                -- :: ByteString -> [ByteString]
+        lines,
+        words,
+        unlines,
+        unwords,
 
         -- * Predicates
-        isPrefixOf,             -- :: ByteString -> ByteString -> Bool
-        isSuffixOf,             -- :: ByteString -> ByteString -> Bool
+        isPrefixOf,
+        isSuffixOf,
 
         -- * Searching ByteStrings
 
         -- ** Searching by equality
-        elem,                   -- :: Char -> ByteString -> Bool
-        notElem,                -- :: Char -> ByteString -> Bool
+        elem,
+        notElem,
 
         -- ** Searching with a predicate
-        find,                   -- :: (Char -> Bool) -> ByteString -> Maybe Char
-        filter,                 -- :: (Char -> Bool) -> ByteString -> ByteString
---      partition               -- :: (Char -> Bool) -> ByteString -> (ByteString, ByteString)
+        find,
+        filter,
+        partition,
 
         -- * Indexing ByteStrings
-        index,                  -- :: ByteString -> Int64 -> Char
-        elemIndex,              -- :: Char -> ByteString -> Maybe Int64
-        elemIndices,            -- :: Char -> ByteString -> [Int64]
-        findIndex,              -- :: (Char -> Bool) -> ByteString -> Maybe Int64
-        findIndices,            -- :: (Char -> Bool) -> ByteString -> [Int64]
-        count,                  -- :: Char -> ByteString -> Int64
+        index,
+        indexMaybe,
+        (!?),
+        elemIndex,
+        elemIndexEnd,
+        elemIndices,
+        findIndex,
+        findIndexEnd,
+        findIndices,
+        count,
 
         -- * Zipping and unzipping ByteStrings
-        zip,                    -- :: ByteString -> ByteString -> [(Char,Char)]
-        zipWith,                -- :: (Char -> Char -> c) -> ByteString -> ByteString -> [c]
---      unzip,                  -- :: [(Char,Char)] -> (ByteString,ByteString)
+        zip,
+        zipWith,
+        packZipWith,
+        unzip,
 
         -- * Ordered ByteStrings
---        sort,                   -- :: ByteString -> ByteString
+--        sort,
 
         -- * Low level conversions
         -- ** Copying ByteStrings
-        copy,                   -- :: ByteString -> ByteString
+        copy,
 
         -- * Reading from ByteStrings
         readInt,
@@ -174,44 +188,45 @@ module Data.ByteString.Lazy.Char8 (
         -- newline mode is considered a flaw and may be changed in a future version.
 
         -- ** Standard input and output
-        getContents,            -- :: IO ByteString
-        putStr,                 -- :: ByteString -> IO ()
-        putStrLn,               -- :: ByteString -> IO ()
-        interact,               -- :: (ByteString -> ByteString) -> IO ()
+        getContents,
+        putStr,
+        putStrLn,
+        interact,
 
         -- ** Files
-        readFile,               -- :: FilePath -> IO ByteString
-        writeFile,              -- :: FilePath -> ByteString -> IO ()
-        appendFile,             -- :: FilePath -> ByteString -> IO ()
+        readFile,
+        writeFile,
+        appendFile,
 
         -- ** I\/O with Handles
-        hGetContents,           -- :: Handle -> IO ByteString
-        hGet,                   -- :: Handle -> Int64 -> IO ByteString
-        hGetNonBlocking,        -- :: Handle -> Int64 -> IO ByteString
-        hPut,                   -- :: Handle -> ByteString -> IO ()
-        hPutNonBlocking,        -- :: Handle -> ByteString -> IO ByteString
-        hPutStr,                -- :: Handle -> ByteString -> IO ()
-        hPutStrLn,              -- :: Handle -> ByteString -> IO ()
+        hGetContents,
+        hGet,
+        hGetNonBlocking,
+        hPut,
+        hPutNonBlocking,
+        hPutStr,
+        hPutStrLn,
 
   ) where
 
 -- Functions transparently exported
-import Data.ByteString.Lazy 
-        (fromChunks, toChunks, fromStrict, toStrict
+import Data.ByteString.Lazy
+        (fromChunks, toChunks
         ,empty,null,length,tail,init,append,reverse,transpose,cycle
-        ,concat,take,drop,splitAt,intercalate
-        ,isPrefixOf,isSuffixOf,group,inits,tails,copy
+        ,concat,take,takeEnd,drop,dropEnd,splitAt,intercalate
+        ,isPrefixOf,isSuffixOf,group,inits,tails,initsNE,tailsNE,copy
         ,stripPrefix,stripSuffix
         ,hGetContents, hGet, hPut, getContents
         ,hGetNonBlocking, hPutNonBlocking
         ,putStr, hPutStr, interact
-        ,readFile,writeFile,appendFile)
+        ,readFile,writeFile,appendFile,compareLength)
 
 -- Functions we need to wrap.
 import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString as S (ByteString) -- typename only
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Unsafe as B
+import Data.List.NonEmpty (NonEmpty(..))
 import Data.ByteString.Lazy.Internal
 
 import Data.ByteString.Internal (w2c, c2w, isSpaceWord8)
@@ -219,10 +234,10 @@ import Data.ByteString.Internal (w2c, c2w, isSpaceWord8)
 import Data.Int (Int64)
 import qualified Data.List as List
 
-import Prelude hiding           
-        (reverse,head,tail,last,init,null,length,map,lines,foldl,foldr,unlines
-        ,concat,any,take,drop,splitAt,takeWhile,dropWhile,span,break,elem,filter
-        ,unwords,words,maximum,minimum,all,concatMap,scanl,scanl1,foldl1,foldr1
+import Prelude hiding
+        (reverse,head,tail,last,init,Foldable(..),map,lines,unlines
+        ,concat,any,take,drop,splitAt,takeWhile,dropWhile,span,break,filter
+        ,unwords,words,all,concatMap,scanl,scanl1,scanr,scanr1
         ,readFile,writeFile,appendFile,replicate,getContents,getLine,putStr,putStrLn
         ,zip,zipWith,unzip,notElem,repeat,iterate,interact,cycle)
 
@@ -235,7 +250,7 @@ singleton :: Char -> ByteString
 singleton = L.singleton . c2w
 {-# INLINE singleton #-}
 
--- | /O(n)/ Convert a 'String' into a 'ByteString'. 
+-- | /O(n)/ Convert a 'String' into a 'ByteString'.
 pack :: [Char] -> ByteString
 pack = packChars
 
@@ -246,7 +261,7 @@ unpack = unpackChars
 infixr 5 `cons`, `cons'` --same as list (:)
 infixl 5 `snoc`
 
--- | /O(1)/ 'cons' is analogous to '(:)' for lists.
+-- | /O(1)/ 'cons' is analogous to '(Prelude.:)' for lists.
 cons :: Char -> ByteString -> ByteString
 cons = L.cons . c2w
 {-# INLINE cons #-}
@@ -328,11 +343,17 @@ foldl' f = L.foldl' (\a c -> f a (w2c c))
 -- (typically the right-identity of the operator), and a packed string,
 -- reduces the packed string using the binary operator, from right to left.
 foldr :: (Char -> a -> a) -> a -> ByteString -> a
-foldr f = L.foldr (\c a -> f (w2c c) a)
+foldr f = L.foldr (f . w2c)
 {-# INLINE foldr #-}
 
+-- | 'foldr'' is like 'foldr', but strict in the accumulator.
+--
+-- @since 0.11.2.0
+foldr' :: (Char -> a -> a) -> a -> ByteString -> a
+foldr' f = L.foldr' (f . w2c)
+
 -- | 'foldl1' is a variant of 'foldl' that has no starting value
--- argument, and thus must be applied to non-empty 'ByteStrings'.
+-- argument, and thus must be applied to non-empty 'ByteString's.
 foldl1 :: (Char -> Char -> Char) -> ByteString -> Char
 foldl1 f ps = w2c (L.foldl1 (\x y -> c2w (f (w2c x) (w2c y))) ps)
 {-# INLINE foldl1 #-}
@@ -346,6 +367,12 @@ foldl1' f ps = w2c (L.foldl1' (\x y -> c2w (f (w2c x) (w2c y))) ps)
 foldr1 :: (Char -> Char -> Char) -> ByteString -> Char
 foldr1 f ps = w2c (L.foldr1 (\x y -> c2w (f (w2c x) (w2c y))) ps)
 {-# INLINE foldr1 #-}
+
+-- | 'foldr1'' is like 'foldr1', but strict in the accumulator.
+--
+-- @since 0.11.2.0
+foldr1' :: (Char -> Char -> Char) -> ByteString -> Char
+foldr1' f ps = w2c (L.foldr1' (\x y -> c2w (f (w2c x) (w2c y))) ps)
 
 -- | Map a function over a 'ByteString' and concatenate the results
 concatMap :: (Char -> ByteString) -> ByteString -> ByteString
@@ -378,7 +405,7 @@ minimum = w2c . L.minimum
 -- Building ByteStrings
 
 -- | 'scanl' is similar to 'foldl', but returns a list of successive
--- reduced values from the left. This function will fuse.
+-- reduced values from the left.
 --
 -- > scanl f z [x1, x2, ...] == [z, z `f` x1, (z `f` x1) `f` x2, ...]
 --
@@ -387,6 +414,45 @@ minimum = w2c . L.minimum
 -- > last (scanl f z xs) == foldl f z xs.
 scanl :: (Char -> Char -> Char) -> Char -> ByteString -> ByteString
 scanl f z = L.scanl (\a b -> c2w (f (w2c a) (w2c b))) (c2w z)
+
+-- | 'scanl1' is a variant of 'scanl' that has no starting value argument.
+--
+-- > scanl1 f [x1, x2, ...] == [x1, x1 `f` x2, ...]
+--
+-- @since 0.11.2.0
+scanl1 :: (Char -> Char -> Char) -> ByteString -> ByteString
+scanl1 f = L.scanl1 f'
+  where f' accumulator value = c2w (f (w2c accumulator) (w2c value))
+
+-- | 'scanr' is similar to 'foldr', but returns a list of successive
+-- reduced values from the right.
+--
+-- > scanr f z [..., x{n-1}, xn] == [..., x{n-1} `f` (xn `f` z), xn `f` z, z]
+--
+-- Note that
+--
+-- > head (scanr f z xs) == foldr f z xs
+-- > last (scanr f z xs) == z
+--
+-- @since 0.11.2.0
+scanr
+    :: (Char -> Char -> Char)
+    -- ^ element -> accumulator -> new accumulator
+    -> Char
+    -- ^ starting value of accumulator
+    -> ByteString
+    -- ^ input of length n
+    -> ByteString
+    -- ^ output of length n+1
+scanr f = L.scanr f' . c2w
+  where f' accumulator value = c2w (f (w2c accumulator) (w2c value))
+
+-- | 'scanr1' is a variant of 'scanr' that has no starting value argument.
+--
+-- @since 0.11.2.0
+scanr1 :: (Char -> Char -> Char) -> ByteString -> ByteString
+scanr1 f = L.scanr1 f'
+  where f' accumulator value = c2w (f (w2c accumulator) (w2c value))
 
 -- | The 'mapAccumL' function behaves like a combination of 'map' and
 -- 'foldl'; it applies a function to each element of a ByteString,
@@ -445,15 +511,45 @@ takeWhile :: (Char -> Bool) -> ByteString -> ByteString
 takeWhile f = L.takeWhile (f . w2c)
 {-# INLINE takeWhile #-}
 
+-- | Returns the longest (possibly empty) suffix of elements
+-- satisfying the predicate.
+--
+-- @'takeWhileEnd' p@ is equivalent to @'reverse' . 'takeWhile' p . 'reverse'@.
+--
+-- @since 0.11.2.0
+takeWhileEnd :: (Char -> Bool) -> ByteString -> ByteString
+takeWhileEnd f = L.takeWhileEnd (f . w2c)
+{-# INLINE takeWhileEnd #-}
+
 -- | 'dropWhile' @p xs@ returns the suffix remaining after 'takeWhile' @p xs@.
 dropWhile :: (Char -> Bool) -> ByteString -> ByteString
 dropWhile f = L.dropWhile (f . w2c)
 {-# INLINE dropWhile #-}
 
+-- | Similar to 'P.dropWhileEnd',
+-- drops the longest (possibly empty) suffix of elements
+-- satisfying the predicate and returns the remainder.
+--
+-- @'dropWhileEnd' p@ is equivalent to @'reverse' . 'dropWhile' p . 'reverse'@.
+--
+-- @since 0.11.2.0
+dropWhileEnd :: (Char -> Bool) -> ByteString -> ByteString
+dropWhileEnd f = L.dropWhileEnd (f . w2c)
+{-# INLINE dropWhileEnd #-}
+
 -- | 'break' @p@ is equivalent to @'span' ('not' . p)@.
 break :: (Char -> Bool) -> ByteString -> (ByteString, ByteString)
 break f = L.break (f . w2c)
 {-# INLINE break #-}
+
+-- | 'breakEnd' behaves like 'break' but from the end of the 'ByteString'
+--
+-- breakEnd p == spanEnd (not.p)
+--
+-- @since 0.11.2.0
+breakEnd :: (Char -> Bool) -> ByteString -> (ByteString, ByteString)
+breakEnd f = L.breakEnd (f . w2c)
+{-# INLINE breakEnd #-}
 
 -- | 'span' @p xs@ breaks the ByteString into two segments. It is
 -- equivalent to @('takeWhile' p xs, 'dropWhile' p xs)@
@@ -461,11 +557,27 @@ span :: (Char -> Bool) -> ByteString -> (ByteString, ByteString)
 span f = L.span (f . w2c)
 {-# INLINE span #-}
 
+-- | 'spanEnd' behaves like 'span' but from the end of the 'ByteString'.
+-- We have
+--
+-- > spanEnd (not.isSpace) "x y z" == ("x y ","z")
+--
+-- and
+--
+-- > spanEnd (not . isSpace) ps
+-- >    ==
+-- > let (x,y) = span (not.isSpace) (reverse ps) in (reverse y, reverse x)
+--
+-- @since 0.11.2.0
+spanEnd :: (Char -> Bool) -> ByteString -> (ByteString, ByteString)
+spanEnd f = L.spanEnd (f . w2c)
+{-# INLINE spanEnd #-}
+
 {-
--- | 'breakChar' breaks its ByteString argument at the first occurence
+-- | 'breakChar' breaks its ByteString argument at the first occurrence
 -- of the specified Char. It is more efficient than 'break' as it is
 -- implemented with @memchr(3)@. I.e.
--- 
+--
 -- > break (=='c') "abcd" == breakChar 'c' "abcd"
 --
 breakChar :: Char -> ByteString -> (ByteString, ByteString)
@@ -473,7 +585,7 @@ breakChar = L.breakByte . c2w
 {-# INLINE breakChar #-}
 
 -- | 'spanChar' breaks its ByteString argument at the first
--- occurence of a Char other than its argument. It is more efficient
+-- occurrence of a Char other than its argument. It is more efficient
 -- than 'span (==)'
 --
 -- > span  (=='c') "abcd" == spanByte 'c' "abcd"
@@ -493,14 +605,15 @@ spanChar = L.spanByte . c2w
 -- > split '\n' "a\nb\nd\ne" == ["a","b","d","e"]
 -- > split 'a'  "aXaXaXa"    == ["","X","X","X"]
 -- > split 'x'  "x"          == ["",""]
--- 
+-- > split undefined ""      == []  -- and not [""]
+--
 -- and
 --
 -- > intercalate [c] . split c == id
 -- > split == splitWith . (==)
--- 
+--
 -- As for all splitting functions in this library, this function does
--- not copy the substrings, it just constructs new 'ByteStrings' that
+-- not copy the substrings, it just constructs new 'ByteString's that
 -- are slices of the original.
 --
 split :: Char -> ByteString -> [ByteString]
@@ -513,6 +626,7 @@ split = L.split . c2w
 -- separators result in an empty component in the output.  eg.
 --
 -- > splitWith (=='a') "aabbaca" == ["","","bb","c",""]
+-- > splitWith undefined ""      == []  -- and not [""]
 --
 splitWith :: (Char -> Bool) -> ByteString -> [ByteString]
 splitWith f = L.splitWith (f . w2c)
@@ -527,12 +641,44 @@ index :: ByteString -> Int64 -> Char
 index = (w2c .) . L.index
 {-# INLINE index #-}
 
+-- | /O(1)/ 'ByteString' index, starting from 0, that returns 'Just' if:
+--
+-- > 0 <= n < length bs
+--
+-- @since 0.11.0.0
+indexMaybe :: ByteString -> Int64 -> Maybe Char
+indexMaybe = (fmap w2c .) . L.indexMaybe
+{-# INLINE indexMaybe #-}
+
+-- | /O(1)/ 'ByteString' index, starting from 0, that returns 'Just' if:
+--
+-- > 0 <= n < length bs
+--
+-- @since 0.11.0.0
+(!?) :: ByteString -> Int64 -> Maybe Char
+(!?) = indexMaybe
+{-# INLINE (!?) #-}
+
 -- | /O(n)/ The 'elemIndex' function returns the index of the first
 -- element in the given 'ByteString' which is equal (by memchr) to the
 -- query element, or 'Nothing' if there is no such element.
 elemIndex :: Char -> ByteString -> Maybe Int64
 elemIndex = L.elemIndex . c2w
 {-# INLINE elemIndex #-}
+
+-- | /O(n)/ The 'elemIndexEnd' function returns the last index of the
+-- element in the given 'ByteString' which is equal to the query
+-- element, or 'Nothing' if there is no such element. The following
+-- holds:
+--
+-- > elemIndexEnd c xs = case elemIndex c (reverse xs) of
+-- >   Nothing -> Nothing
+-- >   Just i  -> Just (length xs - 1 - i)
+--
+-- @since 0.11.1.0
+elemIndexEnd :: Char -> ByteString -> Maybe Int64
+elemIndexEnd = L.elemIndexEnd . c2w
+{-# INLINE elemIndexEnd #-}
 
 -- | /O(n)/ The 'elemIndices' function extends 'elemIndex', by returning
 -- the indices of all elements equal to the query element, in ascending order.
@@ -546,10 +692,20 @@ findIndex :: (Char -> Bool) -> ByteString -> Maybe Int64
 findIndex f = L.findIndex (f . w2c)
 {-# INLINE findIndex #-}
 
+-- | The 'findIndexEnd' function takes a predicate and a 'ByteString' and
+-- returns the index of the last element in the ByteString
+-- satisfying the predicate.
+--
+-- @since 0.11.1.0
+findIndexEnd :: (Char -> Bool) -> ByteString -> Maybe Int64
+findIndexEnd f = L.findIndexEnd (f . w2c)
+{-# INLINE findIndexEnd #-}
+
 -- | The 'findIndices' function extends 'findIndex', by returning the
 -- indices of all elements satisfying the predicate, in ascending order.
 findIndices :: (Char -> Bool) -> ByteString -> [Int64]
 findIndices f = L.findIndices (f . w2c)
+{-# INLINE findIndices #-}
 
 -- | count returns the number of times its argument appears in the ByteString
 --
@@ -577,6 +733,11 @@ notElem c = L.notElem (c2w c)
 filter :: (Char -> Bool) -> ByteString -> ByteString
 filter f = L.filter (f . w2c)
 {-# INLINE filter #-}
+
+-- | @since 0.10.12.0
+partition :: (Char -> Bool) -> ByteString -> (ByteString, ByteString)
+partition f = L.partition (f . w2c)
+{-# INLINE partition #-}
 
 {-
 -- | /O(n)/ and /O(n\/c) space/ A first order equivalent of /filter .
@@ -655,88 +816,75 @@ zip ps qs
 zipWith :: (Char -> Char -> a) -> ByteString -> ByteString -> [a]
 zipWith f = L.zipWith ((. w2c) . f . w2c)
 
--- | 'lines' breaks a ByteString up into a list of ByteStrings at
--- newline Chars. The resulting strings do not contain newlines.
+-- | A specialised version of `zipWith` for the common case of a
+-- simultaneous map over two ByteStrings, to build a 3rd.
 --
--- As of bytestring 0.9.0.3, this function is stricter than its 
--- list cousin.
+-- @since 0.11.1.0
+packZipWith :: (Char -> Char -> Char) -> ByteString -> ByteString -> ByteString
+packZipWith f = L.packZipWith f'
+    where
+        f' c1 c2 = c2w $ f (w2c c1) (w2c c2)
+{-# INLINE packZipWith #-}
+
+-- | /O(n)/ 'unzip' transforms a list of pairs of chars into a pair of
+-- ByteStrings. Note that this performs two 'pack' operations.
+--
+-- @since 0.11.1.0
+unzip :: [(Char, Char)] -> (ByteString, ByteString)
+unzip ls = (pack (fmap fst ls), pack (fmap snd ls))
+{-# INLINE unzip #-}
+
+-- | 'lines' lazily splits a ByteString into a list of ByteStrings at
+-- newline Chars (@'\\n'@). The resulting strings do not contain newlines.
+-- The first chunk of the result is only strict in the first chunk of the
+-- input.
+--
+-- Note that it __does not__ regard CR (@'\\r'@) as a newline character.
 --
 lines :: ByteString -> [ByteString]
 lines Empty          = []
-lines (Chunk c0 cs0) = loop0 c0 cs0
-    where
-    -- this is a really performance sensitive function but the
-    -- chunked representation makes the general case a bit expensive
-    -- however assuming a large chunk size and normalish line lengths
-    -- we will find line endings much more frequently than chunk
-    -- endings so it makes sense to optimise for that common case.
-    -- So we partition into two special cases depending on whether we
-    -- are keeping back a list of chunks that will eventually be output
-    -- once we get to the end of the current line.
+lines (Chunk c0 cs0) = unNE $! go c0 cs0
+  where
+    -- Natural NonEmpty -> List
+    unNE :: NonEmpty a -> [a]
+    unNE (a :| b) = a : b
 
-    -- the common special case where we have no existing chunks of
-    -- the current line
-    loop0 :: S.ByteString -> ByteString -> [ByteString]
-    loop0 c cs =
-        case B.elemIndex (c2w '\n') c of
-            Nothing -> case cs of
-                           Empty  | B.null c  ->                 []
-                                  | otherwise -> Chunk c Empty : []
-                           (Chunk c' cs')
-                               | B.null c  -> loop0 c'     cs'
-                               | otherwise -> loop  c' [c] cs'
+    -- Strict in the first argument, lazy in the second.
+    consNE :: ByteString -> NonEmpty ByteString -> NonEmpty ByteString
+    consNE !a b = a :| (unNE $! b)
 
-            Just n | n /= 0    -> Chunk (B.unsafeTake n c) Empty
-                                : loop0 (B.unsafeDrop (n+1) c) cs
-                   | otherwise -> Empty
-                                : loop0 (B.unsafeTail c) cs
+    -- Note invariant: The initial chunk is non-empty on input, and we
+    -- need to be sure to maintain this in internal recursive calls.
+    go :: S.ByteString -> ByteString -> NonEmpty ByteString
+    go c cs = case B.elemIndex (c2w '\n') c of
+        Just n
+            | n1 <- n + 1
+            , n1 < B.length c -> consNE c' $ go (B.unsafeDrop n1 c) cs
+              -- 'c' was a multi-line chunk
+            | otherwise       -> c' :| lines cs
+              -- 'c' was a single-line chunk
+          where
+            !c' = chunk (B.unsafeTake n c) Empty
 
-    -- the general case when we are building a list of chunks that are
-    -- part of the same line
-    loop :: S.ByteString -> [S.ByteString] -> ByteString -> [ByteString]
-    loop c line cs =
-        case B.elemIndex (c2w '\n') c of
-            Nothing ->
-                case cs of
-                    Empty -> let c' = revChunks (c : line)
-                              in c' `seq` (c' : [])
+        -- Initial chunk with no new line becomes first chunk of
+        -- first line of result, with the rest of the result lazy!
+        -- In particular, we don't strictly pattern match on 'cs'.
+        --
+        -- We can form `Chunk c ...` because the invariant is maintained
+        -- here and also by using `chunk` in the defintion of `c'` above.
+        Nothing -> let ~(l:|ls) = lazyRest cs
+                    in  Chunk c l :| ls
+          where
+            lazyRest :: ByteString -> NonEmpty ByteString
+            lazyRest (Chunk c' cs') = go c' cs'
+            lazyRest Empty          = Empty :| []
 
-                    (Chunk c' cs') -> loop c' (c : line) cs'
-
-            Just n ->
-                let c' = revChunks (B.unsafeTake n c : line)
-                 in c' `seq` (c' : loop0 (B.unsafeDrop (n+1) c) cs)
-
-{-
-
-This function is too strict!  Consider,
-
-> prop_lazy =
-    (L.unpack . head . lazylines $ L.append (L.pack "a\nb\n") (error "failed"))
-  ==
-    "a"
-
-fails.  Here's a properly lazy version of 'lines' for lazy bytestrings
-
-    lazylines           :: L.ByteString -> [L.ByteString]
-    lazylines s
-        | L.null s  = []
-        | otherwise =
-            let (l,s') = L.break ((==) '\n') s
-            in l : if L.null s' then []
-                                else lazylines (L.tail s')
-
-we need a similarly lazy, but efficient version.
-
--}
-
-
--- | 'unlines' is an inverse operation to 'lines'.  It joins lines,
--- after appending a terminating newline to each.
+-- | 'unlines' joins lines, appending a terminating newline after each.
+--
+-- Equivalent to
+--     @'concat' . Data.List.concatMap (\\x -> [x, 'singleton' \'\\n'])@.
 unlines :: [ByteString] -> ByteString
-unlines [] = empty
-unlines ss = concat (List.intersperse nl ss) `append` nl -- half as much space
-    where nl = singleton '\n'
+unlines = List.foldr (\x t -> x `append` cons '\n' t) Empty
 
 -- | 'words' breaks a ByteString up into a list of words, which
 -- were delimited by Chars representing white space. And
@@ -789,7 +937,6 @@ readInt (Chunk x xs) = case w2c (B.unsafeHead x) of
                       e  = n' `seq` c' `seq` Just (n',c')
          --                  in n' `seq` c' `seq` JustS n' c'
 
-
 -- | readInteger reads an Integer from the beginning of the ByteString.  If
 -- there is no integer at the beginning of the string, it returns Nothing,
 -- otherwise it just returns the int read, and the rest of the string.
@@ -836,26 +983,29 @@ readInteger (Chunk c0 cs0) =
           combine1 _ [n] = n
           combine1 b ns  = combine1 (b*b) $ combine2 b ns
 
-          combine2 b (n:m:ns) = let t = n+m*b in t `seq` (t : combine2 b ns)
+          combine2 b (n:m:ns) = let !t = n+m*b in t : combine2 b ns
           combine2 _ ns       = ns
 
-          end n c cs = let c' = chunk c cs
-                        in c' `seq` (n, c')
+          end n c cs = let !c' = chunk c cs
+                        in (n, c')
 
 
--- | Write a ByteString to a handle, appending a newline byte
+-- | Write a ByteString to a handle, appending a newline byte.
+--
+-- The chunks will be
+-- written one at a time, followed by a newline.
+-- Other threads might write to the 'Handle' in between,
+-- and hence 'hPutStrLn' alone is not suitable for concurrent writes.
 --
 hPutStrLn :: Handle -> ByteString -> IO ()
 hPutStrLn h ps = hPut h ps >> hPut h (L.singleton 0x0a)
 
--- | Write a ByteString to stdout, appending a newline byte
+-- | Write a ByteString to 'stdout', appending a newline byte.
+--
+-- The chunks will be
+-- written one at a time, followed by a newline.
+-- Other threads might write to the 'stdout' in between,
+-- and hence 'putStrLn' alone is not suitable for concurrent writes.
 --
 putStrLn :: ByteString -> IO ()
 putStrLn = hPutStrLn stdout
-
--- ---------------------------------------------------------------------
--- Internal utilities
-
--- reverse a list of possibly-empty chunks into a lazy ByteString
-revChunks :: [S.ByteString] -> ByteString
-revChunks cs = List.foldl' (flip chunk) Empty cs

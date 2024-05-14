@@ -1,5 +1,7 @@
 {-# LANGUAGE Trustworthy #-}
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# OPTIONS_HADDOCK print-explicit-runtime-reps #-}
+  -- Show the levity-polymorphic signature of '$'
 
 -----------------------------------------------------------------------------
 -- |
@@ -9,7 +11,7 @@
 -- License     :  BSD-style (see the LICENSE file in the distribution)
 --
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  portable
 --
 -- Simple combinators working solely on and with functions.
@@ -45,7 +47,7 @@ infixl 1 &
 -- 120
 --
 -- Instead of making a recursive call, we introduce a dummy parameter @rec@;
--- when used within 'fix', this parameter then refers to 'fix' argument, hence
+-- when used within 'fix', this parameter then refers to 'fix'’s argument, hence
 -- the recursion is reintroduced.
 fix :: (a -> a) -> a
 fix f = let x = f x in x

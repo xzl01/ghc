@@ -3,13 +3,13 @@
  *
  * The Static Pointer Table implementation.
  *
- * https://ghc.haskell.org/trac/ghc/wiki/StaticPointers
- * https://ghc.haskell.org/trac/ghc/wiki/StaticPointers/ImplementationPlan
+ * https://gitlab.haskell.org/ghc/ghc/wikis/static-pointers
+ * https://gitlab.haskell.org/ghc/ghc/wikis/static-pointers/implementation-plan
  *
  */
 
-#include "StaticPtrTable.h"
 #include "Rts.h"
+#include "StaticPtrTable.h"
 #include "RtsUtils.h"
 #include "Hash.h"
 #include "StablePtr.h"
@@ -21,14 +21,14 @@ static Mutex spt_lock;
 #endif
 
 /// Hash function for the SPT.
-static int hashFingerprint(const HashTable *table, StgWord key) {
+STATIC_INLINE int hashFingerprint(const HashTable *table, StgWord key) {
   const StgWord64* ptr = (StgWord64*) key;
   // Take half of the key to compute the hash.
   return hashWord(table, *(ptr + 1));
 }
 
 /// Comparison function for the SPT.
-static int compareFingerprint(StgWord a, StgWord b) {
+STATIC_INLINE int compareFingerprint(StgWord a, StgWord b) {
   const StgWord64* ptra = (StgWord64*) a;
   const StgWord64* ptrb = (StgWord64*) b;
   return *ptra == *ptrb && *(ptra + 1) == *(ptrb + 1);
@@ -38,14 +38,14 @@ void hs_spt_insert_stableptr(StgWord64 key[2], StgStablePtr *entry) {
   // hs_spt_insert is called from constructor functions, so
   // the SPT needs to be initialized here.
   if (spt == NULL) {
-    spt = allocHashTable_(hashFingerprint, compareFingerprint);
+    spt = allocHashTable();
 #if defined(THREADED_RTS)
     initMutex(&spt_lock);
 #endif
   }
 
   ACQUIRE_LOCK(&spt_lock);
-  insertHashTable(spt, (StgWord)key, entry);
+  insertHashTable_(spt, (StgWord)key, entry, hashFingerprint);
   RELEASE_LOCK(&spt_lock);
 }
 
@@ -68,7 +68,8 @@ static void freeSptEntry(void* entry) {
 void hs_spt_remove(StgWord64 key[2]) {
    if (spt) {
      ACQUIRE_LOCK(&spt_lock);
-     StgStablePtr* entry = removeHashTable(spt, (StgWord)key, NULL);
+     StgStablePtr* entry = removeHashTable_(spt, (StgWord)key, NULL,
+        hashFingerprint, compareFingerprint);
      RELEASE_LOCK(&spt_lock);
 
      if (entry)
@@ -76,11 +77,11 @@ void hs_spt_remove(StgWord64 key[2]) {
    }
 }
 
-StgPtr hs_spt_lookup(StgWord64 key1, StgWord64 key2) {
+StgPtr hs_spt_lookup(StgWord64 key[2]) {
   if (spt) {
     ACQUIRE_LOCK(&spt_lock);
-    StgWord64 key[2] = { key1, key2 };
-    const StgStablePtr * entry = lookupHashTable(spt, (StgWord)key);
+    const StgStablePtr * entry = lookupHashTable_(spt, (StgWord)key,
+        hashFingerprint, compareFingerprint);
     const StgPtr ret = entry ? deRefStablePtr(*entry) : NULL;
     RELEASE_LOCK(&spt_lock);
     return ret;
@@ -98,11 +99,11 @@ int hs_spt_keys(StgPtr keys[], int szKeys) {
     return 0;
 }
 
-int hs_spt_key_count() {
+int hs_spt_key_count(void) {
   return spt ? keyCountHashTable(spt) : 0;
 }
 
-void exitStaticPtrTable() {
+void exitStaticPtrTable(void) {
   if (spt) {
     freeHashTable(spt, freeSptEntry);
     spt = NULL;

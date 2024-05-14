@@ -1,5 +1,9 @@
-{-# LANGUAGE TypeFamilyDependencies, Safe, PolyKinds #-}
-{-# LANGUAGE TypeFamilies, TypeOperators, DataKinds, NoImplicitPrelude #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE Safe #-}
+{-# LANGUAGE TypeFamilyDependencies #-}
+{-# LANGUAGE TypeOperators #-}
 
 -----------------------------------------------------------------------------
 -- |
@@ -7,7 +11,7 @@
 -- License     :  BSD-style (see the LICENSE file in the distribution)
 --
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  not portable
 --
 -- Basic operations on type-level Booleans.

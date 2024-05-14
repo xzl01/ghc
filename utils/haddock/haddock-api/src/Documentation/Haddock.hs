@@ -8,7 +8,7 @@
 -- Stability   :  experimental
 -- Portability :  portable
 --
--- The Haddock API: A rudimentory, highly experimental API exposing some of
+-- The Haddock API: A rudimentary, highly experimental API exposing some of
 -- the internals of Haddock. Don't expect it to be stable.
 -----------------------------------------------------------------------------
 module Documentation.Haddock (
@@ -52,9 +52,7 @@ module Documentation.Haddock (
   -- * Interface files
   InterfaceFile(..),
   readInterfaceFile,
-  nameCacheFromGhc,
   freshNameCache,
-  NameCacheAccessor,
 
   -- * Flags and options
   Flag(..),

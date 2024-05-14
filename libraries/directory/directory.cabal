@@ -1,5 +1,5 @@
 name:           directory
-version:        1.3.6.0
+version:        1.3.7.1
 license:        BSD3
 license-file:   LICENSE
 maintainer:     libraries@haskell.org
@@ -54,11 +54,11 @@ Library
     include-dirs: .
 
     build-depends:
-        base     >= 4.5 && < 4.15,
-        time     >= 1.4 && < 1.10,
+        base     >= 4.5 && < 4.18,
+        time     >= 1.4 && < 1.13,
         filepath >= 1.3 && < 1.5
     if os(windows)
-        build-depends: Win32 >= 2.2.2 && < 2.9
+        build-depends: Win32 >= 2.2.2 && < 2.14
     else
         build-depends: unix >= 2.5.1 && < 2.9
 
@@ -100,6 +100,7 @@ test-suite test
         GetPermissions001
         LongPaths
         MakeAbsolute
+        MinimizeNameConflicts
         PathIsSymbolicLink
         RemoveDirectoryRecursive001
         RemovePathForcibly

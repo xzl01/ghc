@@ -1,6 +1,5 @@
 {-# LANGUAGE Trustworthy #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE NoStarIsType #-}
@@ -13,6 +12,7 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE TypeApplications #-}
 
 {-| This module is an internal GHC module.  It declares the constants used
 in the implementation of type-level natural numbers.  The programmer interface
@@ -23,8 +23,8 @@ for working with type-level naturals should be defined in a separate library.
 
 module GHC.TypeNats
   ( -- * Nat Kind
-    Nat -- declared in GHC.Types in package ghc-prim
-
+    Natural -- declared in GHC.Num.Natural in package ghc-bignum
+  , Nat
     -- * Linking type and value level
   , KnownNat, natVal, natVal'
   , SomeNat(..)
@@ -34,21 +34,33 @@ module GHC.TypeNats
     -- * Functions on type literals
   , type (<=), type (<=?), type (+), type (*), type (^), type (-)
   , CmpNat
+  , cmpNat
   , Div, Mod, Log2
 
   ) where
 
-import GHC.Base(Eq(..), Ord(..), Bool(True), Ordering(..), otherwise)
-import GHC.Types( Nat )
-import GHC.Natural(Natural)
+import GHC.Base(Eq(..), Ord(..), otherwise, WithDict(..))
+import GHC.Types
+import GHC.Num.Natural(Natural)
 import GHC.Show(Show(..))
 import GHC.Read(Read(..))
-import GHC.Prim(magicDict, Proxy#)
+import GHC.Prim(Proxy#)
 import Data.Maybe(Maybe(..))
 import Data.Proxy (Proxy(..))
 import Data.Type.Equality((:~:)(Refl))
+import Data.Type.Ord(OrderingI(..), type (<=), type (<=?))
 import Unsafe.Coerce(unsafeCoerce)
 
+import GHC.TypeNats.Internal(CmpNat)
+
+-- | A type synonym for 'Natural'.
+--
+-- Prevously, this was an opaque data type, but it was changed to a type
+-- synonym.
+--
+-- @since 4.16.0.0
+
+type Nat = Natural
 --------------------------------------------------------------------------------
 
 -- | This class gives the integer associated with a type-level natural.
@@ -80,10 +92,11 @@ someNatVal :: Natural -> SomeNat
 someNatVal n = withSNat SomeNat (SNat n) Proxy
 {-# NOINLINE someNatVal #-} -- See Note [NOINLINE someNatVal]
 
-{- Note [NOINLINE someNatVal]
-
+{-
+Note [NOINLINE someNatVal]
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 `someNatVal` converts a natural number to an existentially quantified
-dictionary for `KnowNat` (aka `SomeNat`).  The existential quantification
+dictionary for `KnownNat` (aka `SomeNat`).  The existential quantification
 is very important, as it captures the fact that we don't know the type
 statically, although we do know that it exists.   Because this type is
 fully opaque, we should never be able to prove that it matches anything else.
@@ -112,10 +125,10 @@ After inlining and simplification, this ends up looking something like this:
     where type T = Any Nat
 
 `KnownNat` is the constructor for dictionaries for the class `KnownNat`.
-See Note [magicDictId magic] in "basicType/MkId.hs" for details on how
-we actually construct the dictionry.
+See Note [withDict] in "GHC.Tc.Instance.Class" for details on how
+we actually construct the dictionary.
 
-Note that using `Any Nat` is not really correct, as multilple calls to
+Note that using `Any Nat` is not really correct, as multiple calls to
 `someNatVal` would violate coherence:
 
   type T = Any Nat
@@ -157,26 +170,9 @@ instance Read SomeNat where
 
 --------------------------------------------------------------------------------
 
-infix  4 <=?, <=
 infixl 6 +, -
 infixl 7 *, `Div`, `Mod`
 infixr 8 ^
-
--- | Comparison of type-level naturals, as a constraint.
---
--- @since 4.7.0.0
-type x <= y = (x <=? y) ~ 'True
-
--- | Comparison of type-level naturals, as a function.
---
--- @since 4.7.0.0
-type family CmpNat    (m :: Nat)    (n :: Nat)    :: Ordering
-
-{- | Comparison of type-level naturals, as a function.
-NOTE: The functionality for this function should be subsumed
-by 'CmpNat', so this might go away in the future.
-Please let us know, if you encounter discrepancies between the two. -}
-type family (m :: Nat) <=? (n :: Nat) :: Bool
 
 -- | Addition of type-level naturals.
 --
@@ -223,19 +219,34 @@ type family Log2 (m :: Nat) :: Nat
 --
 -- @since 4.7.0.0
 sameNat :: (KnownNat a, KnownNat b) =>
-           Proxy a -> Proxy b -> Maybe (a :~: b)
+           proxy1 a -> proxy2 b -> Maybe (a :~: b)
 sameNat x y
   | natVal x == natVal y = Just (unsafeCoerce Refl)
   | otherwise            = Nothing
+
+-- | Like 'sameNat', but if the numbers aren't equal, this additionally
+-- provides proof of LT or GT.
+--
+-- @since 4.16.0.0
+cmpNat :: forall a b proxy1 proxy2. (KnownNat a, KnownNat b)
+       => proxy1 a -> proxy2 b -> OrderingI a b
+cmpNat x y = case compare (natVal x) (natVal y) of
+  EQ -> case unsafeCoerce (Refl, Refl) :: (CmpNat a b :~: 'EQ, a :~: b) of
+    (Refl, Refl) -> EQI
+  LT -> case unsafeCoerce Refl :: (CmpNat a b :~: 'LT) of
+    Refl -> LTI
+  GT -> case unsafeCoerce Refl :: (CmpNat a b :~: 'GT) of
+    Refl -> GTI
+
+
 
 --------------------------------------------------------------------------------
 -- PRIVATE:
 
 newtype SNat    (n :: Nat)    = SNat    Natural
 
-data WrapN a b = WrapN (KnownNat    a => Proxy a -> b)
-
--- See Note [magicDictId magic] in "basicType/MkId.hs"
-withSNat :: (KnownNat a => Proxy a -> b)
+-- See Note [withDict] in "GHC.Tc.Instance.Class" in GHC
+withSNat :: forall a b.
+            (KnownNat a => Proxy a -> b)
          -> SNat a      -> Proxy a -> b
-withSNat f x y = magicDict (WrapN f) x y
+withSNat f x y = withDict @(KnownNat a) x f y

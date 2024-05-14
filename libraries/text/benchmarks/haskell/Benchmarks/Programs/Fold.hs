@@ -12,16 +12,15 @@
 --
 -- * Writing back to a handle
 --
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE CPP, OverloadedStrings #-}
 module Benchmarks.Programs.Fold
     ( benchmark
     ) where
 
 import Data.List (foldl')
 import Data.List (intersperse)
-import Data.Monoid (mempty, mappend, mconcat)
 import System.IO (Handle)
-import Criterion (Benchmark, bench, whnfIO)
+import Test.Tasty.Bench (Benchmark, bench, whnfIO)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import qualified Data.Text.Lazy.Builder as TLB

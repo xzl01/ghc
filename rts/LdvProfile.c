@@ -9,7 +9,7 @@
 
 #if defined(PROFILING)
 
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
 
 #include "Profiling.h"
@@ -17,6 +17,37 @@
 #include "Stats.h"
 #include "RtsUtils.h"
 #include "Schedule.h"
+
+bool isInherentlyUsed( StgHalfWord closure_type )
+{
+    switch(closure_type) {
+    case TSO:
+    case STACK:
+    case MVAR_CLEAN:
+    case MVAR_DIRTY:
+    case TVAR:
+    case MUT_ARR_PTRS_CLEAN:
+    case MUT_ARR_PTRS_DIRTY:
+    case MUT_ARR_PTRS_FROZEN_CLEAN:
+    case MUT_ARR_PTRS_FROZEN_DIRTY:
+    case SMALL_MUT_ARR_PTRS_CLEAN:
+    case SMALL_MUT_ARR_PTRS_DIRTY:
+    case SMALL_MUT_ARR_PTRS_FROZEN_CLEAN:
+    case SMALL_MUT_ARR_PTRS_FROZEN_DIRTY:
+    case ARR_WORDS:
+    case WEAK:
+    case MUT_VAR_CLEAN:
+    case MUT_VAR_DIRTY:
+    case BCO:
+    case PRIM:
+    case MUT_PRIM:
+    case TREC_CHUNK:
+        return true;
+
+    default:
+        return false;
+    }
+}
 
 /* --------------------------------------------------------------------------
  * This function is called eventually on every object destroyed during
@@ -39,7 +70,7 @@ processHeapClosureForDead( const StgClosure *c )
     if (IS_FORWARDING_PTR(info)) {
         // The size of the evacuated closure is currently stored in
         // the LDV field.  See SET_EVACUAEE_FOR_LDV() in
-        // includes/StgLdvProf.h.
+        // rts/include/StgLdvProf.h.
         return LDVW(c);
     }
     info = INFO_PTR_TO_STRUCT(info);
@@ -55,33 +86,13 @@ processHeapClosureForDead( const StgClosure *c )
 
     size = closure_sizeW(c);
 
-    switch (info->type) {
-        /*
+    /*
           'inherently used' cases: do nothing.
-        */
-    case TSO:
-    case STACK:
-    case MVAR_CLEAN:
-    case MVAR_DIRTY:
-    case TVAR:
-    case MUT_ARR_PTRS_CLEAN:
-    case MUT_ARR_PTRS_DIRTY:
-    case MUT_ARR_PTRS_FROZEN_CLEAN:
-    case MUT_ARR_PTRS_FROZEN_DIRTY:
-    case SMALL_MUT_ARR_PTRS_CLEAN:
-    case SMALL_MUT_ARR_PTRS_DIRTY:
-    case SMALL_MUT_ARR_PTRS_FROZEN_CLEAN:
-    case SMALL_MUT_ARR_PTRS_FROZEN_DIRTY:
-    case ARR_WORDS:
-    case WEAK:
-    case MUT_VAR_CLEAN:
-    case MUT_VAR_DIRTY:
-    case BCO:
-    case PRIM:
-    case MUT_PRIM:
-    case TREC_CHUNK:
+    */
+    if(isInherentlyUsed(info->type))
         return size;
 
+    switch (info->type) {
         /*
           ordinary cases: call LDV_recordDead().
         */
@@ -111,7 +122,7 @@ processHeapClosureForDead( const StgClosure *c )
     case BLACKHOLE:
     case BLOCKING_QUEUE:
         /*
-          'Ingore' cases
+          'Ignore' cases
         */
         // Why can we ignore IND closures? We assume that
         // any census is preceded by a major garbage collection, which
@@ -201,7 +212,7 @@ LdvCensusForDead( uint32_t N )
 {
     uint32_t g;
 
-    // ldvTime == 0 means that LDV profiling is currently turned off.
+    // era == 0 means that LDV profiling is currently turned off.
     if (era == 0)
         return;
 
@@ -222,7 +233,7 @@ LdvCensusForDead( uint32_t N )
  * Regard any closure in the current heap as dead or moribund and update
  * LDV statistics accordingly.
  * Called from shutdownHaskell() in RtsStartup.c.
- * Also, stops LDV profiling by resetting ldvTime to 0.
+ * Also, stops LDV profiling by resetting 'era' to 0.
  * ----------------------------------------------------------------------- */
 void
 LdvCensusKillAll( void )

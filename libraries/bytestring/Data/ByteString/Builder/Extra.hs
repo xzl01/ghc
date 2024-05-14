@@ -1,8 +1,5 @@
-{-# LANGUAGE CPP          #-}
 {-# LANGUAGE BangPatterns #-}
-#if __GLASGOW_HASKELL__ >= 701
 {-# LANGUAGE Trustworthy #-}
-#endif
 -----------------------------------------------------------------------------
 -- | Copyright : (c) 2010      Jasper Van der Jeugt
 --               (c) 2010-2011 Simon Meier
@@ -81,7 +78,7 @@ import Foreign
 --  * an IO action for writing the Builder's data into a user-supplied memory
 --    buffer.
 --
---  * a pre-existing chunks of data represented by a strict 'ByteString'
+--  * a pre-existing chunks of data represented by a strict 'S.ByteString'
 --
 -- While this is rather low level, it provides you with full flexibility in
 -- how the data is written out.

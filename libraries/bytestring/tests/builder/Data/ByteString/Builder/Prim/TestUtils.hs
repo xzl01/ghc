@@ -1,4 +1,5 @@
-{-# LANGUAGE CPP, ScopedTypeVariables #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 -- |
 -- Copyright   : (c) 2011 Simon Meier
 -- License     : BSD3-style (see LICENSE)
@@ -59,6 +60,8 @@ module Data.ByteString.Builder.Prim.TestUtils (
   , double_list
   , coerceFloatToWord32
   , coerceDoubleToWord64
+  , coerceWord32ToFloat
+  , coerceWord64ToDouble
 
   ) where
 
@@ -70,28 +73,18 @@ import qualified Data.ByteString               as S
 import qualified Data.ByteString.Internal      as S
 import qualified Data.ByteString.Builder.Prim.Internal as I
 
+import           Data.Bits (Bits(..))
 import           Data.Char (chr, ord)
-
+import           Data.Int
+import           Data.Word
+import           Foreign (Storable(..), castPtr, minusPtr, with)
 import           Numeric (showHex)
+import           System.IO.Unsafe (unsafePerformIO)
 
-#if MIN_VERSION_base(4,4,0)
-import Foreign hiding (unsafePerformIO)
-import System.IO.Unsafe (unsafePerformIO)
-#else
-import Foreign
-#endif
+import           Test.Tasty
+import           Test.Tasty.QuickCheck (Arbitrary(..), testProperty)
 
-import           System.ByteOrder
-
-#if defined(HAVE_TEST_FRAMEWORK)
-import           Test.HUnit (assertBool)
-import           Test.Framework
-import           Test.Framework.Providers.HUnit
-import           Test.Framework.Providers.QuickCheck2
-#else
-import           TestFramework
-#endif
-import           Test.QuickCheck (Arbitrary(..))
+#include <ghcautoconf.h>
 
 -- Helper functions
 -------------------
@@ -99,11 +92,11 @@ import           Test.QuickCheck (Arbitrary(..))
 -- | Quickcheck test that includes a check that the property holds on the
 -- bounds of a bounded value.
 testBoundedProperty :: forall a. (Arbitrary a, Show a, Bounded a)
-                    => String -> (a -> Bool) -> Test
+                    => String -> (a -> Bool) -> TestTree
 testBoundedProperty name p = testGroup name
   [ testProperty name p
-  , testCase (name ++ " minBound") $ assertBool "minBound" (p (minBound :: a))
-  , testCase (name ++ " maxBound") $ assertBool "minBound" (p (maxBound :: a))
+  , testProperty (name ++ " minBound") (p (minBound :: a))
+  , testProperty (name ++ " maxBound") (p (maxBound :: a))
   ]
 
 -- | Quote a 'String' nicely.
@@ -154,7 +147,7 @@ testF :: (Arbitrary a, Show a)
       => String
       -> (a -> [Word8])
       -> FixedPrim a
-      -> Test
+      -> TestTree
 testF name ref fe =
     testProperty name prop
   where
@@ -175,7 +168,7 @@ testBoundedF :: (Arbitrary a, Bounded a, Show a)
              => String
              -> (a -> [Word8])
              -> FixedPrim a
-             -> Test
+             -> TestTree
 testBoundedF name ref fe =
     testBoundedProperty name $ \x -> evalF fe x == ref x
 
@@ -185,7 +178,7 @@ testFixedBoundF :: (Arbitrary a, Show a, Integral a)
                 => String
                 -> (a -> a -> [Word8])
                 -> (a -> FixedPrim a)
-                -> Test
+                -> TestTree
 testFixedBoundF name ref bfe =
     testProperty name prop
   where
@@ -212,7 +205,7 @@ testBoundedB :: (Arbitrary a, Bounded a, Show a)
              => String
              -> (a -> [Word8])
              -> BoundedPrim a
-             -> Test
+             -> TestTree
 testBoundedB name ref fe =
     testBoundedProperty name check
   where
@@ -229,7 +222,7 @@ testBoundedB name ref fe =
 
 -- | Compare two implementations of a function.
 compareImpls :: (Arbitrary a, Show a, Show b, Eq b)
-             => TestName -> (a -> b) -> (a -> b) -> Test
+             => TestName -> (a -> b) -> (a -> b) -> TestTree
 compareImpls name f1 f2 =
     testProperty name check
   where
@@ -340,13 +333,14 @@ littleEndian_list :: (Storable a, Bits a, Integral a) => a -> [Word8]
 littleEndian_list x =
     map (fromIntegral . (x `shiftR`) . (8*)) $ [0..sizeOf x - 1]
 
+-- See https://gitlab.haskell.org/ghc/ghc/-/issues/20338
+-- and https://gitlab.haskell.org/ghc/ghc/-/issues/18445
 hostEndian_list :: (Storable a, Bits a, Integral a) => a -> [Word8]
-hostEndian_list = case byteOrder of
-    LittleEndian -> littleEndian_list
-    BigEndian    -> bigEndian_list
-    _            -> error $
-        "bounded-encoding: unsupported byteorder '" ++ show byteOrder ++ "'"
-
+#if defined(WORDS_BIGENDIAN)
+hostEndian_list = bigEndian_list
+#else
+hostEndian_list = littleEndian_list
+#endif
 
 float_list :: (Word32 -> [Word8]) -> Float -> [Word8]
 float_list f  = f . coerceFloatToWord32
@@ -363,6 +357,16 @@ coerceFloatToWord32 x = unsafePerformIO (with x (peek . castPtr))
 {-# NOINLINE coerceDoubleToWord64 #-}
 coerceDoubleToWord64 :: Double -> Word64
 coerceDoubleToWord64 x = unsafePerformIO (with x (peek . castPtr))
+
+-- | Convert a 'Word32' to a 'Float'.
+{-# NOINLINE coerceWord32ToFloat #-}
+coerceWord32ToFloat :: Word32 -> Float
+coerceWord32ToFloat x = unsafePerformIO (with x (peek . castPtr))
+
+-- | Convert a 'Word64' to a 'Double'.
+{-# NOINLINE coerceWord64ToDouble #-}
+coerceWord64ToDouble :: Word64 -> Double
+coerceWord64ToDouble x = unsafePerformIO (with x (peek . castPtr))
 
 -- | Parse a variable length encoding
 parseVar :: (Num a, Bits a) => [Word8] -> (a, [Word8])

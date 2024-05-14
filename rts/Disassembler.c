@@ -10,7 +10,7 @@
 
 #if defined(DEBUG)
 
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
 #include "RtsAPI.h"
 #include "rts/Bytecodes.h"
@@ -80,9 +80,12 @@ disInstr ( StgBCO *bco, int pc )
                          instrs[pc], (signed int)instrs[pc+1]);
          pc += 2; break;
       case bci_CCALL:
-         debugBelch("CCALL    marshaller at 0x%" FMT_Word "\n",
+         debugBelch("CCALL    marshaller at 0x%" FMT_HexWord "\n",
                          literals[instrs[pc]] );
          pc += 1; break;
+      case bci_PRIMCALL:
+         debugBelch("PRIMCALL\n");
+         break;
      case bci_STKCHECK:  {
          StgWord stk_words_reqd = BCO_GET_LARGE_ARG + 1;
          debugBelch("STKCHECK %" FMT_Word "\n", (W_)stk_words_reqd );
@@ -120,10 +123,6 @@ disInstr ( StgBCO *bco, int pc )
          debugBelch("PUSH_G   " ); printPtr( ptrs[instrs[pc]] );
          debugBelch("\n" );
          pc += 1; break;
-      case bci_PUSH_ALTS:
-         debugBelch("PUSH_ALTS  " ); printPtr( ptrs[instrs[pc]] );
-         debugBelch("\n");
-         pc += 1; break;
       case bci_PUSH_ALTS_P:
          debugBelch("PUSH_ALTS_P  " ); printPtr( ptrs[instrs[pc]] );
          debugBelch("\n");
@@ -148,6 +147,13 @@ disInstr ( StgBCO *bco, int pc )
          debugBelch("PUSH_ALTS_V  " ); printPtr( ptrs[instrs[pc]] );
          debugBelch("\n");
          pc += 1; break;
+      case bci_PUSH_ALTS_T:
+         debugBelch("PUSH_ALTS_T  ");
+         printPtr( ptrs[instrs[pc]] );
+         debugBelch(" 0x%" FMT_HexWord " ", literals[instrs[pc+1]] );
+         printPtr( ptrs[instrs[pc+2]] );
+         debugBelch("\n");
+         pc += 3; break;
       case bci_PUSH_PAD8:
          debugBelch("PUSH_PAD8\n");
          pc += 1; break;
@@ -159,26 +165,23 @@ disInstr ( StgBCO *bco, int pc )
          pc += 1; break;
       case bci_PUSH_UBX8:
          debugBelch(
-             "PUSH_UBX8 0x%" FMT_Word8 " ",
+             "PUSH_UBX8 0x%" FMT_HexWord8 "\n",
              (StgWord8) literals[instrs[pc]] );
-         debugBelch("\n");
          pc += 1; break;
       case bci_PUSH_UBX16:
          debugBelch(
-             "PUSH_UBX16 0x%" FMT_Word16 " ",
+             "PUSH_UBX16 0x%" FMT_HexWord16 "\n",
              (StgWord16) literals[instrs[pc]] );
-         debugBelch("\n");
          pc += 1; break;
       case bci_PUSH_UBX32:
          debugBelch(
-             "PUSH_UBX32 0x%" FMT_Word32 " ",
+             "PUSH_UBX32 0x%" FMT_HexWord32 "\n",
              (StgWord32) literals[instrs[pc]] );
-         debugBelch("\n");
          pc += 1; break;
       case bci_PUSH_UBX:
          debugBelch("PUSH_UBX ");
          for (i = 0; i < instrs[pc+1]; i++)
-            debugBelch("0x%" FMT_Word " ", literals[i + instrs[pc]] );
+            debugBelch("0x%" FMT_HexWord " ", literals[i + instrs[pc]] );
          debugBelch("\n");
          pc += 2; break;
       case bci_PUSH_APPLY_N:
@@ -250,26 +253,135 @@ disInstr ( StgBCO *bco, int pc )
           debugBelch("TESTLT_I  %" FMT_Int ", fail to %d\n", literals[discr], failto);
           break;
       }
+
+      case bci_TESTLT_I64: {
+          unsigned int discr  = BCO_NEXT;
+          int failto = BCO_GET_LARGE_ARG;
+          debugBelch("TESTLT_I64  %" FMT_Int64 ", fail to %d\n", *((StgInt64*)(literals+discr)), failto);
+          break;
+      }
+
+      case bci_TESTLT_I32: {
+          unsigned int discr  = BCO_NEXT;
+          int failto = BCO_GET_LARGE_ARG;
+          debugBelch("TESTLT_I32  %" FMT_Int ", fail to %d\n", literals[discr], failto);
+          break;
+      }
+
+      case bci_TESTLT_I16: {
+          unsigned int discr  = BCO_NEXT;
+          int failto = BCO_GET_LARGE_ARG;
+          debugBelch("TESTLT_I16  %" FMT_Int ", fail to %d\n", literals[discr], failto);
+          break;
+      }
+
+      case bci_TESTLT_I8: {
+          unsigned int discr  = BCO_NEXT;
+          int failto = BCO_GET_LARGE_ARG;
+          debugBelch("TESTLT_I8  %" FMT_Int ", fail to %d\n", literals[discr], failto);
+          break;
+      }
+
       case bci_TESTEQ_I:
          debugBelch("TESTEQ_I  %" FMT_Int ", fail to %d\n", literals[instrs[pc]],
                                                       instrs[pc+1]);
          pc += 2; break;
 
+      case bci_TESTEQ_I64:
+         debugBelch("TESTEQ_I64  %" FMT_Int64 ", fail to %d\n", *((StgInt64*)(literals+instrs[pc])),
+                                                      instrs[pc+1]);
+         pc += 2; break;
+
+      case bci_TESTEQ_I32:
+         debugBelch("TESTEQ_I32  %" FMT_Int ", fail to %d\n", literals[instrs[pc]],
+                                                      instrs[pc+1]);
+         pc += 2; break;
+
+      case bci_TESTEQ_I16:
+         debugBelch("TESTEQ_I16  %" FMT_Int ", fail to %d\n", literals[instrs[pc]],
+                                                      instrs[pc+1]);
+         pc += 2; break;
+
+      case bci_TESTEQ_I8:
+         debugBelch("TESTEQ_I8  %" FMT_Int ", fail to %d\n", literals[instrs[pc]],
+                                                      instrs[pc+1]);
+         pc += 2; break;
+
+      case bci_TESTLT_W: {
+          unsigned int discr  = BCO_NEXT;
+          int failto = BCO_GET_LARGE_ARG;
+          debugBelch("TESTLT_W  %" FMT_Word ", fail to %d\n", literals[discr], failto);
+          break;
+      }
+
+      case bci_TESTLT_W64: {
+          unsigned int discr  = BCO_NEXT;
+          int failto = BCO_GET_LARGE_ARG;
+          debugBelch("TESTLT_W64  %" FMT_Word64 ", fail to %d\n", *((StgWord64*)(literals+discr)), failto);
+          break;
+      }
+
+      case bci_TESTLT_W32: {
+          unsigned int discr  = BCO_NEXT;
+          int failto = BCO_GET_LARGE_ARG;
+          debugBelch("TESTLT_W32  %" FMT_Word ", fail to %d\n", literals[discr], failto);
+          break;
+      }
+
+      case bci_TESTLT_W16: {
+          unsigned int discr  = BCO_NEXT;
+          int failto = BCO_GET_LARGE_ARG;
+          debugBelch("TESTLT_W16  %" FMT_Word ", fail to %d\n", literals[discr], failto);
+          break;
+      }
+
+      case bci_TESTLT_W8: {
+          unsigned int discr  = BCO_NEXT;
+          int failto = BCO_GET_LARGE_ARG;
+          debugBelch("TESTLT_W8  %" FMT_Word ", fail to %d\n", literals[discr], failto);
+          break;
+      }
+
+      case bci_TESTEQ_W:
+         debugBelch("TESTEQ_W  %" FMT_Word ", fail to %d\n", literals[instrs[pc]],
+                                                      instrs[pc+1]);
+         pc += 2; break;
+
+      case bci_TESTEQ_W64:
+         debugBelch("TESTEQ_W64  %" FMT_Word64 ", fail to %d\n", *((StgWord64*)(literals+instrs[pc])),
+                                                      instrs[pc+1]);
+         pc += 2; break;
+
+      case bci_TESTEQ_W32:
+         debugBelch("TESTEQ_W32  %" FMT_Word ", fail to %d\n", literals[instrs[pc]],
+                                                      instrs[pc+1]);
+         pc += 2; break;
+
+      case bci_TESTEQ_W16:
+         debugBelch("TESTEQ_W16  %" FMT_Word ", fail to %d\n", literals[instrs[pc]],
+                                                      instrs[pc+1]);
+         pc += 2; break;
+
+      case bci_TESTEQ_W8:
+         debugBelch("TESTEQ_W8  %" FMT_Word ", fail to %d\n", literals[instrs[pc]],
+                                                      instrs[pc+1]);
+         pc += 2; break;
+
       case bci_TESTLT_F:
-         debugBelch("TESTLT_F  %" FMT_Int ", fail to %d\n", literals[instrs[pc]],
+         debugBelch("TESTLT_F  %f, fail to %d\n", *((StgFloat*)literals+instrs[pc]),
                                                       instrs[pc+1]);
          pc += 2; break;
       case bci_TESTEQ_F:
-         debugBelch("TESTEQ_F  %" FMT_Int ", fail to %d\n", literals[instrs[pc]],
+         debugBelch("TESTEQ_F  %f, fail to %d\n", *((StgFloat*)literals+instrs[pc]),
                                                       instrs[pc+1]);
          pc += 2; break;
 
       case bci_TESTLT_D:
-         debugBelch("TESTLT_D  %" FMT_Int ", fail to %d\n", literals[instrs[pc]],
+         debugBelch("TESTLT_D  %f, fail to %d\n", *((StgDouble*)(literals+instrs[pc])),
                                                       instrs[pc+1]);
          pc += 2; break;
       case bci_TESTEQ_D:
-         debugBelch("TESTEQ_D  %" FMT_Int ", fail to %d\n", literals[instrs[pc]],
+         debugBelch("TESTEQ_D  %f, fail to %d\n", *((StgDouble*)(literals+instrs[pc])),
                                                       instrs[pc+1]);
          pc += 2; break;
 
@@ -292,9 +404,6 @@ disInstr ( StgBCO *bco, int pc )
          debugBelch("ENTER\n");
          break;
 
-      case bci_RETURN:
-         debugBelch("RETURN\n" );
-         break;
       case bci_RETURN_P:
          debugBelch("RETURN_P\n" );
          break;
@@ -313,6 +422,9 @@ disInstr ( StgBCO *bco, int pc )
       case bci_RETURN_V:
          debugBelch("RETURN_V\n" );
          break;
+      case bci_RETURN_T:
+         debugBelch("RETURN_T\n ");
+         break;
 
       default:
          barf("disInstr: unknown opcode %u", (unsigned int) instr);
@@ -320,12 +432,6 @@ disInstr ( StgBCO *bco, int pc )
    return pc;
 }
 
-
-/* Something of a kludge .. how do we know where the end of the insn
-   array is, since it isn't recorded anywhere?  Answer: the first
-   short is the number of bytecodes which follow it.
-   See ByteCodeGen.linkBCO.insns_arr for construction ...
-*/
 void disassemble( StgBCO *bco )
 {
    uint32_t i, j;

@@ -27,10 +27,10 @@ import Text.XHtml hiding ( name, p, quote )
 import qualified Data.Map as M
 import Data.List ( stripPrefix )
 
-import GHC hiding (LexicalFixity(..))
-import Name
-import RdrName
-import FastString (unpackFS)
+import GHC hiding (LexicalFixity(..), anchor)
+import GHC.Types.Name
+import GHC.Types.Name.Reader
+import GHC.Data.FastString (unpackFS)
 
 
 -- | Indicator of how to render a 'DocName' into 'Html'
@@ -57,8 +57,9 @@ ppUncheckedLink _ x = linkIdOcc' mdl (Just occ) << occHtml
     occHtml = toHtml (showWrapped (occNameString . snd) x) -- TODO: apply ppQualifyName
 
 -- The Bool indicates if it is to be rendered in infix notation
-ppLDocName :: Qualification -> Notation -> Located DocName -> Html
+ppLDocName :: Qualification -> Notation -> GenLocated l DocName -> Html
 ppLDocName qual notation (L _ d) = ppDocName qual notation True d
+
 
 ppDocName :: Qualification -> Notation -> Bool -> DocName -> Html
 ppDocName qual notation insertAnchors docName =
@@ -186,9 +187,12 @@ ppModule mdl = anchor ! [href (moduleUrl mdl)]
                << toHtml (moduleString mdl)
 
 
-ppModuleRef :: ModuleName -> String -> Html
-ppModuleRef mdl ref = anchor ! [href (moduleHtmlFile' mdl ++ ref)]
-                      << toHtml (moduleNameString mdl)
+ppModuleRef :: Maybe Html -> ModuleName -> String -> Html
+ppModuleRef Nothing mdl ref = anchor ! [href (moduleHtmlFile' mdl ++ ref)]
+                              << toHtml (moduleNameString mdl)
+ppModuleRef (Just lbl) mdl ref = anchor ! [href (moduleHtmlFile' mdl ++ ref)]
+                                 << lbl
+
     -- NB: The ref parameter already includes the '#'.
     -- This function is only called from markupModule expanding a
     -- DocModule, which doesn't seem to be ever be used.

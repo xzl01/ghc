@@ -1,3 +1,13 @@
+### 3.1.16.0
+
+- Add `tokens'` and `string'` combinators which don't consume the prefix.
+
+### 3.1.15.0
+
+- Add `INLINABLE` pragmas to most overloaded combinators
+- Support recent versions of dependencies
+- Fix memory leak in `>>=` https://github.com/haskell/parsec/issues/127
+
 ### 3.1.14.0
 
 - Add `parseFromFile` to `Text.Parsec.Text.Lazy` and `Text.Parsec.Text` (#103, #104).
@@ -53,7 +63,7 @@
 
 ### 3.1.9
 
-- Many and various updates to documentation and package description (inlcuding
+- Many and various updates to documentation and package description (including
   the homepage links).
 - Add an `Eq` instance for `ParseError`
 - Fixed a regression from 3.1.6: `runP` is again exported from module

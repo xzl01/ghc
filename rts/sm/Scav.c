@@ -7,7 +7,7 @@
  * Documentation on the architecture of the Garbage Collector can be
  * found in the online commentary:
  *
- *   http://ghc.haskell.org/trac/ghc/wiki/Commentary/Rts/Storage/GC
+ *   https://gitlab.haskell.org/ghc/ghc/wikis/commentary/rts/storage/gc
  *
  * ---------------------------------------------------------------------------*/
 
@@ -42,7 +42,7 @@
    - scavenge_one() scavenges only stack frame SRTs
    ------------------------------------------------------------------------- */
 
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
 
 #include "Storage.h"
@@ -58,11 +58,14 @@
 #include "Sanity.h"
 #include "Capability.h"
 #include "LdvProfile.h"
+#include "HeapUtils.h"
 #include "Hash.h"
 
 #include "sm/MarkWeak.h"
+#include "sm/NonMoving.h" // for nonmoving_set_closure_mark_bit
+#include "sm/NonMovingScav.h"
 
-static void scavenge_stack (StgPtr p, StgPtr stack_end);
+#include <string.h> /* for memset */
 
 static void scavenge_large_bitmap (StgPtr p,
                                    StgLargeBitmap *large_bitmap,
@@ -75,18 +78,32 @@ static void scavenge_large_bitmap (StgPtr p,
 # define scavenge_block(a) scavenge_block1(a)
 # define scavenge_mutable_list(bd,g) scavenge_mutable_list1(bd,g)
 # define scavenge_capability_mut_lists(cap) scavenge_capability_mut_Lists1(cap)
+# define scavengeTSO(tso) scavengeTSO1(tso)
+# define scavenge_stack(p, stack_end) scavenge_stack1(p, stack_end)
+# define scavenge_fun_srt(info) scavenge_fun_srt1(info)
+# define scavenge_fun_srt(info) scavenge_fun_srt1(info)
+# define scavenge_thunk_srt(info) scavenge_thunk_srt1(info)
+# define scavenge_mut_arr_ptrs(info) scavenge_mut_arr_ptrs1(info)
+# define scavenge_PAP(pap) scavenge_PAP1(pap)
+# define scavenge_AP(ap) scavenge_AP1(ap)
+# define scavenge_compact(str) scavenge_compact1(str)
 #endif
+
+static void do_evacuate(StgClosure **p, void *user STG_UNUSED)
+{
+    evacuate(p);
+}
 
 /* -----------------------------------------------------------------------------
    Scavenge a TSO.
    -------------------------------------------------------------------------- */
 
-static void
+void
 scavengeTSO (StgTSO *tso)
 {
     bool saved_eager;
 
-    debugTrace(DEBUG_gc,"scavenging thread %d",(int)tso->id);
+    debugTrace(DEBUG_gc,"scavenging thread %" FMT_StgThreadID,tso->id);
 
     // update the pointer from the InCall.
     if (tso->bound != NULL) {
@@ -159,7 +176,10 @@ evacuate_hash_entry(MapHashData *dat, StgWord key, const void *value)
     SET_GCT(old_gct);
 }
 
-static void
+/* Here we scavenge the sharing-preservation hash-table, which may contain keys
+ * living in from-space.
+ */
+void
 scavenge_compact(StgCompactNFData *str)
 {
     bool saved_eager;
@@ -182,9 +202,9 @@ scavenge_compact(StgCompactNFData *str)
 
     gct->eager_promotion = saved_eager;
     if (gct->failed_to_evac) {
-        ((StgClosure *)str)->header.info = &stg_COMPACT_NFDATA_DIRTY_info;
+        RELEASE_STORE(&((StgClosure *)str)->header.info, &stg_COMPACT_NFDATA_DIRTY_info);
     } else {
-        ((StgClosure *)str)->header.info = &stg_COMPACT_NFDATA_CLEAN_info;
+        RELEASE_STORE(&((StgClosure *)str)->header.info, &stg_COMPACT_NFDATA_CLEAN_info);
     }
 }
 
@@ -192,7 +212,7 @@ scavenge_compact(StgCompactNFData *str)
    Mutable arrays of pointers
    -------------------------------------------------------------------------- */
 
-static StgPtr scavenge_mut_arr_ptrs (StgMutArrPtrs *a)
+StgPtr scavenge_mut_arr_ptrs (StgMutArrPtrs *a)
 {
     W_ m;
     bool any_failed;
@@ -317,7 +337,8 @@ scavenge_PAP_payload (StgClosure *fun, StgClosure **payload, StgWord size)
     StgWord bitmap;
     const StgFunInfoTable *fun_info;
 
-    fun_info = get_fun_itbl(UNTAG_CONST_CLOSURE(fun));
+    fun = UNTAG_CLOSURE(fun);
+    fun_info = get_fun_itbl(fun);
     ASSERT(fun_info->i.type != PAP);
     p = (StgPtr)payload;
 
@@ -342,14 +363,14 @@ scavenge_PAP_payload (StgClosure *fun, StgClosure **payload, StgWord size)
     return p;
 }
 
-STATIC_INLINE GNUC_ATTR_HOT StgPtr
+GNUC_ATTR_HOT StgPtr
 scavenge_PAP (StgPAP *pap)
 {
     evacuate(&pap->fun);
     return scavenge_PAP_payload (pap->fun, pap->payload, pap->n_args);
 }
 
-STATIC_INLINE StgPtr
+StgPtr
 scavenge_AP (StgAP *ap)
 {
     evacuate(&ap->fun);
@@ -360,7 +381,7 @@ scavenge_AP (StgAP *ap)
    Scavenge SRTs
    -------------------------------------------------------------------------- */
 
-STATIC_INLINE GNUC_ATTR_HOT void
+GNUC_ATTR_HOT void
 scavenge_thunk_srt(const StgInfoTable *info)
 {
     StgThunkInfoTable *thunk_info;
@@ -374,7 +395,7 @@ scavenge_thunk_srt(const StgInfoTable *info)
     }
 }
 
-STATIC_INLINE GNUC_ATTR_HOT void
+GNUC_ATTR_HOT void
 scavenge_fun_srt(const StgInfoTable *info)
 {
     StgFunInfoTable *fun_info;
@@ -416,9 +437,17 @@ scavenge_block (bdescr *bd)
   saved_eager_promotion = gct->eager_promotion;
   gct->failed_to_evac = false;
 
-  ws = &gct->gens[bd->gen->no];
+  ws = &gct->gens[bd->gen_no];
 
   p = bd->u.scan;
+
+  // Sanity check: See Note [Deadlock detection under the nonmoving collector].
+#if defined(DEBUG)
+  if (RtsFlags.GcFlags.useNonmoving && deadlock_detect_gc) {
+      ASSERT(bd->gen == oldest_gen);
+  }
+#endif
+
 
   // we might be evacuating into the very object that we're
   // scavenging, so we have to check the real bd->free pointer each
@@ -445,9 +474,9 @@ scavenge_block (bdescr *bd)
         gct->eager_promotion = saved_eager_promotion;
 
         if (gct->failed_to_evac) {
-            mvar->header.info = &stg_MVAR_DIRTY_info;
+            RELEASE_STORE(&mvar->header.info, &stg_MVAR_DIRTY_info);
         } else {
-            mvar->header.info = &stg_MVAR_CLEAN_info;
+            RELEASE_STORE(&mvar->header.info, &stg_MVAR_CLEAN_info);
         }
         p += sizeofW(StgMVar);
         break;
@@ -462,9 +491,9 @@ scavenge_block (bdescr *bd)
         gct->eager_promotion = saved_eager_promotion;
 
         if (gct->failed_to_evac) {
-            tvar->header.info = &stg_TVAR_DIRTY_info;
+            RELEASE_STORE(&tvar->header.info, &stg_TVAR_DIRTY_info);
         } else {
-            tvar->header.info = &stg_TVAR_CLEAN_info;
+            RELEASE_STORE(&tvar->header.info, &stg_TVAR_CLEAN_info);
         }
         p += sizeofW(StgTVar);
         break;
@@ -596,9 +625,9 @@ scavenge_block (bdescr *bd)
         gct->eager_promotion = saved_eager_promotion;
 
         if (gct->failed_to_evac) {
-            ((StgClosure *)q)->header.info = &stg_MUT_VAR_DIRTY_info;
+            RELEASE_STORE(&((StgClosure *) q)->header.info, &stg_MUT_VAR_DIRTY_info);
         } else {
-            ((StgClosure *)q)->header.info = &stg_MUT_VAR_CLEAN_info;
+            RELEASE_STORE(&((StgClosure *) q)->header.info, &stg_MUT_VAR_CLEAN_info);
         }
         p += sizeofW(StgMutVar);
         break;
@@ -615,9 +644,9 @@ scavenge_block (bdescr *bd)
         gct->eager_promotion = saved_eager_promotion;
 
         if (gct->failed_to_evac) {
-            bq->header.info = &stg_BLOCKING_QUEUE_DIRTY_info;
+            RELEASE_STORE(&bq->header.info, &stg_BLOCKING_QUEUE_DIRTY_info);
         } else {
-            bq->header.info = &stg_BLOCKING_QUEUE_CLEAN_info;
+            RELEASE_STORE(&bq->header.info, &stg_BLOCKING_QUEUE_CLEAN_info);
         }
         p += sizeofW(StgBlockingQueue);
         break;
@@ -667,9 +696,9 @@ scavenge_block (bdescr *bd)
         p = scavenge_mut_arr_ptrs((StgMutArrPtrs*)p);
 
         if (gct->failed_to_evac) {
-            ((StgClosure *)q)->header.info = &stg_MUT_ARR_PTRS_DIRTY_info;
+            RELEASE_STORE(&((StgClosure *) q)->header.info, &stg_MUT_ARR_PTRS_DIRTY_info);
         } else {
-            ((StgClosure *)q)->header.info = &stg_MUT_ARR_PTRS_CLEAN_info;
+            RELEASE_STORE(&((StgClosure *) q)->header.info, &stg_MUT_ARR_PTRS_CLEAN_info);
         }
 
         gct->eager_promotion = saved_eager_promotion;
@@ -684,9 +713,9 @@ scavenge_block (bdescr *bd)
         p = scavenge_mut_arr_ptrs((StgMutArrPtrs*)p);
 
         if (gct->failed_to_evac) {
-            ((StgClosure *)q)->header.info = &stg_MUT_ARR_PTRS_FROZEN_DIRTY_info;
+            RELEASE_STORE(&((StgClosure *) q)->header.info, &stg_MUT_ARR_PTRS_FROZEN_DIRTY_info);
         } else {
-            ((StgClosure *)q)->header.info = &stg_MUT_ARR_PTRS_FROZEN_CLEAN_info;
+            RELEASE_STORE(&((StgClosure *) q)->header.info, &stg_MUT_ARR_PTRS_FROZEN_CLEAN_info);
         }
         break;
     }
@@ -709,9 +738,9 @@ scavenge_block (bdescr *bd)
         gct->eager_promotion = saved_eager_promotion;
 
         if (gct->failed_to_evac) {
-            ((StgClosure *)q)->header.info = &stg_SMALL_MUT_ARR_PTRS_DIRTY_info;
+            RELEASE_STORE(&((StgClosure *) q)->header.info, &stg_SMALL_MUT_ARR_PTRS_DIRTY_info);
         } else {
-            ((StgClosure *)q)->header.info = &stg_SMALL_MUT_ARR_PTRS_CLEAN_info;
+            RELEASE_STORE(&((StgClosure *) q)->header.info, &stg_SMALL_MUT_ARR_PTRS_CLEAN_info);
         }
 
         gct->failed_to_evac = true; // always put it on the mutable list.
@@ -730,9 +759,9 @@ scavenge_block (bdescr *bd)
         }
 
         if (gct->failed_to_evac) {
-            ((StgClosure *)q)->header.info = &stg_SMALL_MUT_ARR_PTRS_FROZEN_DIRTY_info;
+            RELEASE_STORE(&((StgClosure *) q)->header.info, &stg_SMALL_MUT_ARR_PTRS_FROZEN_DIRTY_info);
         } else {
-            ((StgClosure *)q)->header.info = &stg_SMALL_MUT_ARR_PTRS_FROZEN_CLEAN_info;
+            RELEASE_STORE(&((StgClosure *) q)->header.info, &stg_SMALL_MUT_ARR_PTRS_FROZEN_CLEAN_info);
         }
         break;
     }
@@ -815,7 +844,7 @@ scavenge_block (bdescr *bd)
 
   if (p > bd->free)  {
       gct->copied += ws->todo_free - bd->free;
-      bd->free = p;
+      RELEASE_STORE(&bd->free, p);
   }
 
   debugTrace(DEBUG_gc, "   scavenged %ld bytes",
@@ -870,9 +899,9 @@ scavenge_mark_stack(void)
             gct->eager_promotion = saved_eager_promotion;
 
             if (gct->failed_to_evac) {
-                mvar->header.info = &stg_MVAR_DIRTY_info;
+                RELEASE_STORE(&mvar->header.info, &stg_MVAR_DIRTY_info);
             } else {
-                mvar->header.info = &stg_MVAR_CLEAN_info;
+                RELEASE_STORE(&mvar->header.info, &stg_MVAR_CLEAN_info);
             }
             break;
         }
@@ -886,9 +915,9 @@ scavenge_mark_stack(void)
             gct->eager_promotion = saved_eager_promotion;
 
             if (gct->failed_to_evac) {
-                tvar->header.info = &stg_TVAR_DIRTY_info;
+                RELEASE_STORE(&tvar->header.info, &stg_TVAR_DIRTY_info);
             } else {
-                tvar->header.info = &stg_TVAR_CLEAN_info;
+                RELEASE_STORE(&tvar->header.info, &stg_TVAR_CLEAN_info);
             }
             break;
         }
@@ -992,9 +1021,9 @@ scavenge_mark_stack(void)
             gct->eager_promotion = saved_eager_promotion;
 
             if (gct->failed_to_evac) {
-                ((StgClosure *)q)->header.info = &stg_MUT_VAR_DIRTY_info;
+                RELEASE_STORE(&((StgClosure *) q)->header.info, &stg_MUT_VAR_DIRTY_info);
             } else {
-                ((StgClosure *)q)->header.info = &stg_MUT_VAR_CLEAN_info;
+                RELEASE_STORE(&((StgClosure *) q)->header.info, &stg_MUT_VAR_CLEAN_info);
             }
             break;
         }
@@ -1011,9 +1040,9 @@ scavenge_mark_stack(void)
             gct->eager_promotion = saved_eager_promotion;
 
             if (gct->failed_to_evac) {
-                bq->header.info = &stg_BLOCKING_QUEUE_DIRTY_info;
+                RELEASE_STORE(&bq->header.info, &stg_BLOCKING_QUEUE_DIRTY_info);
             } else {
-                bq->header.info = &stg_BLOCKING_QUEUE_CLEAN_info;
+                RELEASE_STORE(&bq->header.info, &stg_BLOCKING_QUEUE_CLEAN_info);
             }
             break;
         }
@@ -1059,9 +1088,9 @@ scavenge_mark_stack(void)
             scavenge_mut_arr_ptrs((StgMutArrPtrs *)p);
 
             if (gct->failed_to_evac) {
-                ((StgClosure *)q)->header.info = &stg_MUT_ARR_PTRS_DIRTY_info;
+                RELEASE_STORE(&((StgClosure *) q)->header.info, &stg_MUT_ARR_PTRS_DIRTY_info);
             } else {
-                ((StgClosure *)q)->header.info = &stg_MUT_ARR_PTRS_CLEAN_info;
+                RELEASE_STORE(&((StgClosure *) q)->header.info, &stg_MUT_ARR_PTRS_CLEAN_info);
             }
 
             gct->eager_promotion = saved_eager_promotion;
@@ -1078,9 +1107,9 @@ scavenge_mark_stack(void)
             scavenge_mut_arr_ptrs((StgMutArrPtrs *)p);
 
             if (gct->failed_to_evac) {
-                ((StgClosure *)q)->header.info = &stg_MUT_ARR_PTRS_FROZEN_DIRTY_info;
+                RELEASE_STORE(&((StgClosure *) q)->header.info, &stg_MUT_ARR_PTRS_FROZEN_DIRTY_info);
             } else {
-                ((StgClosure *)q)->header.info = &stg_MUT_ARR_PTRS_FROZEN_CLEAN_info;
+                RELEASE_STORE(&((StgClosure *) q)->header.info, &stg_MUT_ARR_PTRS_FROZEN_CLEAN_info);
             }
             break;
         }
@@ -1105,9 +1134,9 @@ scavenge_mark_stack(void)
             gct->eager_promotion = saved_eager;
 
             if (gct->failed_to_evac) {
-                ((StgClosure *)q)->header.info = &stg_SMALL_MUT_ARR_PTRS_DIRTY_info;
+                RELEASE_STORE(&((StgClosure *)q)->header.info, &stg_SMALL_MUT_ARR_PTRS_DIRTY_info);
             } else {
-                ((StgClosure *)q)->header.info = &stg_SMALL_MUT_ARR_PTRS_CLEAN_info;
+                RELEASE_STORE(&((StgClosure *)q)->header.info, &stg_SMALL_MUT_ARR_PTRS_CLEAN_info);
             }
 
             gct->failed_to_evac = true; // mutable anyhow.
@@ -1126,9 +1155,9 @@ scavenge_mark_stack(void)
             }
 
             if (gct->failed_to_evac) {
-                ((StgClosure *)q)->header.info = &stg_SMALL_MUT_ARR_PTRS_FROZEN_DIRTY_info;
+                RELEASE_STORE(&((StgClosure *)q)->header.info, &stg_SMALL_MUT_ARR_PTRS_FROZEN_DIRTY_info);
             } else {
-                ((StgClosure *)q)->header.info = &stg_SMALL_MUT_ARR_PTRS_FROZEN_CLEAN_info;
+                RELEASE_STORE(&((StgClosure *)q)->header.info, &stg_SMALL_MUT_ARR_PTRS_FROZEN_CLEAN_info);
             }
             break;
         }
@@ -1232,9 +1261,9 @@ scavenge_one(StgPtr p)
         gct->eager_promotion = saved_eager_promotion;
 
         if (gct->failed_to_evac) {
-            mvar->header.info = &stg_MVAR_DIRTY_info;
+            RELEASE_STORE(&mvar->header.info, &stg_MVAR_DIRTY_info);
         } else {
-            mvar->header.info = &stg_MVAR_CLEAN_info;
+            RELEASE_STORE(&mvar->header.info, &stg_MVAR_CLEAN_info);
         }
         break;
     }
@@ -1248,9 +1277,9 @@ scavenge_one(StgPtr p)
         gct->eager_promotion = saved_eager_promotion;
 
         if (gct->failed_to_evac) {
-            tvar->header.info = &stg_TVAR_DIRTY_info;
+            RELEASE_STORE(&tvar->header.info, &stg_TVAR_DIRTY_info);
         } else {
-            tvar->header.info = &stg_TVAR_CLEAN_info;
+            RELEASE_STORE(&tvar->header.info, &stg_TVAR_CLEAN_info);
         }
         break;
     }
@@ -1312,9 +1341,9 @@ scavenge_one(StgPtr p)
         gct->eager_promotion = saved_eager_promotion;
 
         if (gct->failed_to_evac) {
-            ((StgClosure *)q)->header.info = &stg_MUT_VAR_DIRTY_info;
+            RELEASE_STORE(&((StgClosure *)q)->header.info, &stg_MUT_VAR_DIRTY_info);
         } else {
-            ((StgClosure *)q)->header.info = &stg_MUT_VAR_CLEAN_info;
+            RELEASE_STORE(&((StgClosure *)q)->header.info, &stg_MUT_VAR_CLEAN_info);
         }
         break;
     }
@@ -1331,9 +1360,9 @@ scavenge_one(StgPtr p)
         gct->eager_promotion = saved_eager_promotion;
 
         if (gct->failed_to_evac) {
-            bq->header.info = &stg_BLOCKING_QUEUE_DIRTY_info;
+            RELEASE_STORE(&bq->header.info, &stg_BLOCKING_QUEUE_DIRTY_info);
         } else {
-            bq->header.info = &stg_BLOCKING_QUEUE_CLEAN_info;
+            RELEASE_STORE(&bq->header.info, &stg_BLOCKING_QUEUE_CLEAN_info);
         }
         break;
     }
@@ -1379,9 +1408,9 @@ scavenge_one(StgPtr p)
         scavenge_mut_arr_ptrs((StgMutArrPtrs *)p);
 
         if (gct->failed_to_evac) {
-            ((StgClosure *)p)->header.info = &stg_MUT_ARR_PTRS_DIRTY_info;
+            RELEASE_STORE(&((StgClosure *)p)->header.info, &stg_MUT_ARR_PTRS_DIRTY_info);
         } else {
-            ((StgClosure *)p)->header.info = &stg_MUT_ARR_PTRS_CLEAN_info;
+            RELEASE_STORE(&((StgClosure *)p)->header.info, &stg_MUT_ARR_PTRS_CLEAN_info);
         }
 
         gct->eager_promotion = saved_eager_promotion;
@@ -1396,9 +1425,9 @@ scavenge_one(StgPtr p)
         scavenge_mut_arr_ptrs((StgMutArrPtrs *)p);
 
         if (gct->failed_to_evac) {
-            ((StgClosure *)p)->header.info = &stg_MUT_ARR_PTRS_FROZEN_DIRTY_info;
+            RELEASE_STORE(&((StgClosure *)p)->header.info, &stg_MUT_ARR_PTRS_FROZEN_DIRTY_info);
         } else {
-            ((StgClosure *)p)->header.info = &stg_MUT_ARR_PTRS_FROZEN_CLEAN_info;
+            RELEASE_STORE(&((StgClosure *)p)->header.info, &stg_MUT_ARR_PTRS_FROZEN_CLEAN_info);
         }
         break;
     }
@@ -1423,9 +1452,9 @@ scavenge_one(StgPtr p)
         gct->eager_promotion = saved_eager;
 
         if (gct->failed_to_evac) {
-            ((StgClosure *)q)->header.info = &stg_SMALL_MUT_ARR_PTRS_DIRTY_info;
+            RELEASE_STORE(&((StgClosure *)q)->header.info, &stg_SMALL_MUT_ARR_PTRS_DIRTY_info);
         } else {
-            ((StgClosure *)q)->header.info = &stg_SMALL_MUT_ARR_PTRS_CLEAN_info;
+            RELEASE_STORE(&((StgClosure *)q)->header.info, &stg_SMALL_MUT_ARR_PTRS_CLEAN_info);
         }
 
         gct->failed_to_evac = true;
@@ -1444,9 +1473,9 @@ scavenge_one(StgPtr p)
         }
 
         if (gct->failed_to_evac) {
-            ((StgClosure *)q)->header.info = &stg_SMALL_MUT_ARR_PTRS_FROZEN_DIRTY_info;
+            RELEASE_STORE(&((StgClosure *)q)->header.info, &stg_SMALL_MUT_ARR_PTRS_FROZEN_DIRTY_info);
         } else {
-            ((StgClosure *)q)->header.info = &stg_SMALL_MUT_ARR_PTRS_FROZEN_CLEAN_info;
+            RELEASE_STORE(&((StgClosure *)q)->header.info, &stg_SMALL_MUT_ARR_PTRS_FROZEN_CLEAN_info);
         }
         break;
     }
@@ -1564,10 +1593,14 @@ static void
 scavenge_mutable_list(bdescr *bd, generation *gen)
 {
     StgPtr p, q;
-    uint32_t gen_no;
+#if defined(DEBUG)
+    MutListScavStats stats; // Local accumulator
+    zeroMutListScavStats(&stats);
+#endif
 
-    gen_no = gen->no;
+    uint32_t gen_no = gen->no;
     gct->evac_gen_no = gen_no;
+
     for (; bd != NULL; bd = bd->link) {
         for (q = bd->start; q < bd->free; q++) {
             p = (StgPtr)*q;
@@ -1579,31 +1612,31 @@ scavenge_mutable_list(bdescr *bd, generation *gen)
             case MUT_VAR_CLEAN:
                 // can happen due to concurrent writeMutVars
             case MUT_VAR_DIRTY:
-                mutlist_MUTVARS++; break;
+                stats.n_MUTVAR++; break;
             case MUT_ARR_PTRS_CLEAN:
             case MUT_ARR_PTRS_DIRTY:
             case MUT_ARR_PTRS_FROZEN_CLEAN:
             case MUT_ARR_PTRS_FROZEN_DIRTY:
-                mutlist_MUTARRS++; break;
+                stats.n_MUTARR++; break;
             case MVAR_CLEAN:
                 barf("MVAR_CLEAN on mutable list");
             case MVAR_DIRTY:
-                mutlist_MVARS++; break;
+                stats.n_MVAR++; break;
             case TVAR:
-                mutlist_TVAR++; break;
+                stats.n_TVAR++; break;
             case TREC_CHUNK:
-                mutlist_TREC_CHUNK++; break;
+                stats.n_TREC_CHUNK++; break;
             case MUT_PRIM:
                 pinfo = ((StgClosure*)p)->header.info;
                 if (pinfo == &stg_TVAR_WATCH_QUEUE_info)
-                    mutlist_TVAR_WATCH_QUEUE++;
+                    stats.n_TVAR_WATCH_QUEUE++;
                 else if (pinfo == &stg_TREC_HEADER_info)
-                    mutlist_TREC_HEADER++;
+                    stats.n_TREC_HEADER++;
                 else
-                    mutlist_OTHERS++;
+                    stats.n_OTHERS++;
                 break;
             default:
-                mutlist_OTHERS++; break;
+                stats.n_OTHERS++; break;
             }
 #endif
 
@@ -1628,9 +1661,9 @@ scavenge_mutable_list(bdescr *bd, generation *gen)
                 scavenge_mut_arr_ptrs_marked((StgMutArrPtrs *)p);
 
                 if (gct->failed_to_evac) {
-                    ((StgClosure *)p)->header.info = &stg_MUT_ARR_PTRS_DIRTY_info;
+                    RELEASE_STORE(&((StgClosure *)p)->header.info, &stg_MUT_ARR_PTRS_DIRTY_info);
                 } else {
-                    ((StgClosure *)p)->header.info = &stg_MUT_ARR_PTRS_CLEAN_info;
+                    RELEASE_STORE(&((StgClosure *)p)->header.info, &stg_MUT_ARR_PTRS_CLEAN_info);
                 }
 
                 gct->eager_promotion = saved_eager_promotion;
@@ -1642,19 +1675,36 @@ scavenge_mutable_list(bdescr *bd, generation *gen)
                 ;
             }
 
-            if (scavenge_one(p)) {
+            if (RtsFlags.GcFlags.useNonmoving && major_gc && gen == oldest_gen) {
+                // We can't use scavenge_one here as we need to scavenge SRTs
+                nonmovingScavengeOne((StgClosure *)p);
+            } else if (scavenge_one(p)) {
                 // didn't manage to promote everything, so put the
                 // object back on the list.
                 recordMutableGen_GC((StgClosure *)p,gen_no);
             }
         }
     }
+
+#if defined(DEBUG)
+    // For lack of a better option we protect mutlist_scav_stats with oldest_gen->sync
+    ACQUIRE_SPIN_LOCK(&oldest_gen->sync);
+    addMutListScavStats(&stats, &mutlist_scav_stats);
+    RELEASE_SPIN_LOCK(&oldest_gen->sync);
+#endif
 }
 
 void
 scavenge_capability_mut_lists (Capability *cap)
 {
-    uint32_t g;
+    // In a major GC only nonmoving heap's mut list is root
+    if (RtsFlags.GcFlags.useNonmoving && major_gc) {
+        uint32_t g = oldest_gen->no;
+        scavenge_mutable_list(cap->saved_mut_lists[g], oldest_gen);
+        freeChain_sync(cap->saved_mut_lists[g]);
+        cap->saved_mut_lists[g] = NULL;
+        return;
+    }
 
     /* Mutable lists from each generation > N
      * we want to *scavenge* these roots, not evacuate them: they're not
@@ -1662,7 +1712,7 @@ scavenge_capability_mut_lists (Capability *cap)
      * Also do them in reverse generation order, for the usual reason:
      * namely to reduce the likelihood of spurious old->new pointers.
      */
-    for (g = RtsFlags.GcFlags.generations-1; g > N; g--) {
+    for (uint32_t g = RtsFlags.GcFlags.generations-1; g > N; g--) {
         scavenge_mutable_list(cap->saved_mut_lists[g], &generations[g]);
         freeChain_sync(cap->saved_mut_lists[g]);
         cap->saved_mut_lists[g] = NULL;
@@ -1711,8 +1761,9 @@ scavenge_static(void)
     /* Take this object *off* the static_objects list,
      * and put it on the scavenged_static_objects list.
      */
-    gct->static_objects = *STATIC_LINK(info,p);
-    *STATIC_LINK(info,p) = gct->scavenged_static_objects;
+    StgClosure **link = STATIC_LINK(info,p);
+    gct->static_objects = RELAXED_LOAD(link);
+    RELAXED_STORE(link, gct->scavenged_static_objects);
     gct->scavenged_static_objects = flagged_p;
 
     switch (info -> type) {
@@ -1779,22 +1830,7 @@ scavenge_static(void)
 static void
 scavenge_large_bitmap( StgPtr p, StgLargeBitmap *large_bitmap, StgWord size )
 {
-    uint32_t i, j, b;
-    StgWord bitmap;
-
-    b = 0;
-
-    for (i = 0; i < size; b++) {
-        bitmap = large_bitmap->bitmap[b];
-        j = stg_min(size-i, BITS_IN(W_));
-        i += j;
-        for (; j > 0; j--, p++) {
-            if ((bitmap & 1) == 0) {
-                evacuate((StgClosure **)p);
-            }
-            bitmap = bitmap >> 1;
-        }
-    }
+    walk_large_bitmap(do_evacuate, (StgClosure **) p, large_bitmap, size, NULL);
 }
 
 
@@ -1804,7 +1840,7 @@ scavenge_large_bitmap( StgPtr p, StgLargeBitmap *large_bitmap, StgWord size )
    AP_STACK_UPDs, since these are just sections of copied stack.
    -------------------------------------------------------------------------- */
 
-static void
+void
 scavenge_stack(StgPtr p, StgPtr stack_end)
 {
   const StgRetInfoTable* info;
@@ -1823,7 +1859,7 @@ scavenge_stack(StgPtr p, StgPtr stack_end)
 
     case UPDATE_FRAME:
         // Note [upd-black-hole]
-        //
+        // ~~~~~~~~~~~~~~~~~~~~~
         // In SMP, we can get update frames that point to indirections
         // when two threads evaluate the same thunk.  We do attempt to
         // discover this situation in threadPaused(), but it's
@@ -2046,6 +2082,16 @@ loop:
     did_something = false;
     for (g = RtsFlags.GcFlags.generations-1; g >= 0; g--) {
         ws = &gct->gens[g];
+
+        if (ws->todo_seg != END_NONMOVING_TODO_LIST) {
+            struct NonmovingSegment *seg = ws->todo_seg;
+            ASSERT(seg->todo_link);
+            ws->todo_seg = seg->todo_link;
+            seg->todo_link = NULL;
+            scavengeNonmovingSegment(seg);
+            did_something = true;
+            break;
+        }
 
         gct->scan_bd = NULL;
 

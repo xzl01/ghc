@@ -4,7 +4,7 @@
  *
  * ---------------------------------------------------------------------------*/
 
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
 #include "sm/GC.h"
 #include "sm/GCThread.h"
@@ -20,8 +20,8 @@ void LongGCSync (uint32_t me USED_IF_THREADS, Time t STG_UNUSED)
 #if defined(THREADED_RTS)
     {
         uint32_t i;
-        for (i=0; i < n_capabilities; i++) {
-            if (i != me && gc_threads[i]->wakeup != GC_THREAD_STANDING_BY) {
+        for (i=0; i < getNumCapabilities(); i++) {
+            if (i != me && SEQ_CST_LOAD(&gc_threads[i]->wakeup) == GC_THREAD_STANDING_BY) {
                 debugBelch("Warning: slow GC sync: still waiting for cap %d\n",
                            i);
             }

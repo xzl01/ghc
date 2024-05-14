@@ -1,5 +1,7 @@
 {-# LANGUAGE Trustworthy #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 -----------------------------------------------------------------------------
 -- |
@@ -8,7 +10,7 @@
 -- License     :  BSD-style (see the file libraries/base/LICENSE)
 --
 -- Maintainer  :  Ashley Yakeley <ashley@semantic.org>
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  portable
 --
 -- This module defines a \"Fixed\" type for fixed-precision arithmetic.
@@ -37,28 +39,29 @@ module Data.Fixed
 ) where
 
 import Data.Data
+import GHC.TypeLits (KnownNat, natVal)
 import GHC.Read
 import Text.ParserCombinators.ReadPrec
 import Text.Read.Lex
 
 default () -- avoid any defaulting shenanigans
 
--- | generalisation of 'div' to any instance of 'Real'
+-- | Generalisation of 'div' to any instance of 'Real'
 div' :: (Real a,Integral b) => a -> a -> b
 div' n d = floor ((toRational n) / (toRational d))
 
--- | generalisation of 'divMod' to any instance of 'Real'
+-- | Generalisation of 'divMod' to any instance of 'Real'
 divMod' :: (Real a,Integral b) => a -> a -> (b,a)
 divMod' n d = (f,n - (fromIntegral f) * d) where
     f = div' n d
 
--- | generalisation of 'mod' to any instance of 'Real'
+-- | Generalisation of 'mod' to any instance of 'Real'
 mod' :: (Real a) => a -> a -> a
 mod' n d = n - (fromInteger f) * d where
     f = div' n d
 
 -- | The type parameter should be an instance of 'HasResolution'.
-newtype Fixed a = MkFixed Integer
+newtype Fixed (a :: k) = MkFixed Integer
         deriving ( Eq  -- ^ @since 2.01
                  , Ord -- ^ @since 2.01
                  )
@@ -71,22 +74,84 @@ conMkFixed :: Constr
 conMkFixed = mkConstr tyFixed "MkFixed" [] Prefix
 
 -- | @since 4.1.0.0
-instance (Typeable a) => Data (Fixed a) where
+instance (Typeable k,Typeable a) => Data (Fixed (a :: k)) where
     gfoldl k z (MkFixed a) = k (z MkFixed) a
     gunfold k z _ = k (z MkFixed)
     dataTypeOf _ = tyFixed
     toConstr _ = conMkFixed
 
-class HasResolution a where
+class HasResolution (a :: k) where
     resolution :: p a -> Integer
 
-withType :: (p a -> f a) -> f a
-withType foo = foo undefined
+-- | For example, @Fixed 1000@ will give you a 'Fixed' with a resolution of 1000.
+instance KnownNat n => HasResolution n where
+    resolution _ = natVal (Proxy :: Proxy n)
+
+withType :: (Proxy a -> f a) -> f a
+withType foo = foo Proxy
 
 withResolution :: (HasResolution a) => (Integer -> f a) -> f a
 withResolution foo = withType (foo . resolution)
 
 -- | @since 2.01
+--
+-- Recall that, for numeric types, 'succ' and 'pred' typically add and subtract
+-- @1@, respectively. This is not true in the case of 'Fixed', whose successor
+-- and predecessor functions intuitively return the "next" and "previous" values
+-- in the enumeration. The results of these functions thus depend on the
+-- resolution of the 'Fixed' value. For example, when enumerating values of
+-- resolution @10^-3@ of @type Milli = Fixed E3@,
+--
+-- @
+--   succ (0.000 :: Milli) == 0.001
+-- @
+--
+--
+-- and likewise
+--
+-- @
+--   pred (0.000 :: Milli) == -0.001
+-- @
+--
+--
+-- In other words, 'succ' and 'pred' increment and decrement a fixed-precision
+-- value by the least amount such that the value's resolution is unchanged.
+-- For example, @10^-12@ is the smallest (positive) amount that can be added to
+-- a value of @type Pico = Fixed E12@ without changing its resolution, and so
+--
+-- @
+--   succ (0.000000000000 :: Pico) == 0.000000000001
+-- @
+--
+--
+-- and similarly
+--
+-- @
+--   pred (0.000000000000 :: Pico) == -0.000000000001
+-- @
+--
+--
+-- This is worth bearing in mind when defining 'Fixed' arithmetic sequences. In
+-- particular, you may be forgiven for thinking the sequence
+--
+-- @
+--   [1..10] :: [Pico]
+-- @
+--
+--
+-- evaluates to @[1, 2, 3, 4, 5, 6, 7, 8, 9, 10] :: [Pico]@.
+--
+-- However, this is not true. On the contrary, similarly to the above
+-- implementations of 'succ' and 'pred', @enumFromTo :: Pico -> Pico -> [Pico]@
+-- has a "step size" of @10^-12@. Hence, the list @[1..10] :: [Pico]@ has
+-- the form
+--
+-- @
+--   [1.000000000000, 1.00000000001, 1.00000000002, ..., 10.000000000000]
+-- @
+--
+--
+-- and contains @9 * 10^12 + 1@ values.
 instance Enum (Fixed a) where
     succ (MkFixed a) = MkFixed (succ a)
     pred (MkFixed a) = MkFixed (pred a)
@@ -170,7 +235,7 @@ convertFixed :: forall a . HasResolution a => Lexeme -> ReadPrec (Fixed a)
 convertFixed (Number n)
  | Just (i, f) <- numberToFixed e n =
     return (fromInteger i + (fromInteger f / (10 ^ e)))
-    where r = resolution (undefined :: Fixed a)
+    where r = resolution (Proxy :: Proxy a)
           -- round 'e' up to help make the 'read . show == id' property
           -- possible also for cases where 'resolution' is not a
           -- power-of-10, such as e.g. when 'resolution = 128'

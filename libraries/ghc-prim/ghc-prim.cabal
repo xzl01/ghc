@@ -1,12 +1,12 @@
-cabal-version:  2.1
+cabal-version:  2.2
 name:           ghc-prim
-version:        0.5.3
+version:        0.9.1
 -- NOTE: Don't forget to update ./changelog.md
 license:        BSD-3-Clause
 license-file:   LICENSE
 category:       GHC
 maintainer:     libraries@haskell.org
-bug-reports:    http://ghc.haskell.org/trac/ghc/newticket?component=libraries%20%28other%29&keywords=ghc-prim
+bug-reports:    https://gitlab.haskell.org/ghc/ghc/issues/new
 synopsis:       GHC primitives
 build-type:     Custom
 description:
@@ -20,7 +20,7 @@ source-repository head
     subdir:   libraries/ghc-prim
 
 custom-setup
-    setup-depends: base >= 4 && < 5, Cabal >= 1.23
+    setup-depends: base >= 4 && < 5, process, filepath, directory, Cabal >= 1.23 && < 3.9
 
 Library
     default-language: Haskell2010
@@ -43,8 +43,12 @@ Library
         GHC.CString
         GHC.Classes
         GHC.Debug
-        GHC.IntWord64
         GHC.Magic
+        GHC.Magic.Dict
+        GHC.Prim.Ext
+        GHC.Prim.Panic
+        GHC.Prim.Exception
+        GHC.Prim.PtrEq
         GHC.PrimopWrappers
         GHC.Tuple
         GHC.Types
@@ -56,15 +60,15 @@ Library
     if os(windows)
         -- Windows requires some extra libraries for linking because the RTS
         -- is no longer re-exporting them (see #11223)
-        -- msvcrt: standard C library. The RTS will automatically include this,
-        --         but is added for completeness.
-        -- mingwex: provides C99 compatibility. libm is a stub on MingW.
+        -- ucrt: standard C library. The RTS will automatically include this,
+        --       but is added for completeness.
+        -- mingwex: provides GNU POSIX extensions that aren't provided by ucrt.
         -- mingw32: Unfortunately required because of a resource leak between
         --          mingwex and mingw32. the __math_err symbol is defined in
         --          mingw32 which is required by mingwex.
         -- user32: provides access to apis to modify user components (UI etc)
         --         on Windows. Required because of mingw32.
-        extra-libraries: user32, mingw32, mingwex
+        extra-libraries: user32, mingw32, mingwex, ucrt
 
     if os(linux)
         -- we need libm, but for musl and other's we might need libc, as libm
@@ -74,6 +78,7 @@ Library
     c-sources:
         cbits/atomic.c
         cbits/bswap.c
+        cbits/bitrev.c
         cbits/clz.c
         cbits/ctz.c
         cbits/debug.c

@@ -18,11 +18,11 @@ import Haddock.Utils
 import Haddock.Backends.Xhtml.Utils
 
 import GHC
-import HieTypes     ( HieAST(..), HieType(..), HieArgs(..), TypeIndex, HieTypeFlat )
-import IfaceType
-import Name         ( getOccFS, getOccString )
-import Outputable   ( showSDoc )
-import Var          ( VarBndr(..) )
+import GHC.Iface.Ext.Types ( HieAST(..), HieType(..), HieArgs(..), TypeIndex, HieTypeFlat )
+import GHC.Iface.Type
+import GHC.Types.Name      ( getOccFS, getOccString )
+import GHC.Driver.Ppr      ( showSDoc )
+import GHC.Types.Var       ( VarBndr(..) )
 
 import System.FilePath.Posix ((</>), (<.>))
 
@@ -82,9 +82,9 @@ lineFormat :: String
 lineFormat = "line-%{LINE}"
 
 
--- * HIE file procesddsing
+-- * HIE file processing
 
--- This belongs in GHC's HieUtils...
+-- This belongs in GHC.Iface.Ext.Utils...
 
 -- | Pretty-printed type, ready to be turned into HTML by @xhtml@
 type PrintedType = String
@@ -129,8 +129,8 @@ recoverFullIfaceTypes df flattened ast = fmap (printed A.!) ast
     go (HLitTy l) = IfaceLitTy l
     go (HForAllTy ((n,k),af) t) = let b = (getOccFS n, k)
                                   in IfaceForAllTy (Bndr (IfaceTvBndr b) af) t
-    go (HFunTy a b) = IfaceFunTy a b
-    go (HQualTy con b) = IfaceDFunTy con b
+    go (HFunTy w a b) = IfaceFunTy VisArg w a b
+    go (HQualTy con b) = IfaceFunTy InvisArg many_ty con b
     go (HCastTy a) = a
     go HCoercionTy = IfaceTyVar "<coercion type>"
     go (HTyConApp a xs) = IfaceTyConApp a (hieToIfaceArgs xs)

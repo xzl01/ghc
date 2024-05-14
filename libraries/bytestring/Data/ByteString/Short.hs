@@ -1,17 +1,14 @@
-{-# LANGUAGE CPP #-}
-#if __GLASGOW_HASKELL__ >= 701
 {-# LANGUAGE Trustworthy #-}
-#endif
 
 -- |
 -- Module      : Data.ByteString.Short
--- Copyright   : (c) Duncan Coutts 2012-2013
+-- Copyright   : (c) Duncan Coutts 2012-2013, Julian Ospald 2022
 -- License     : BSD-style
 --
--- Maintainer  : duncan@community.haskell.org
+-- Maintainer  : hasufell@posteo.de
 -- Stability   : stable
 -- Portability : ghc only
--- 
+--
 -- A compact representation suitable for storing short byte strings in memory.
 --
 -- In typical use cases it can be imported alongside "Data.ByteString", e.g.
@@ -30,26 +27,26 @@ module Data.ByteString.Short (
 
     -- * The @ShortByteString@ type
 
-    ShortByteString,
+    ShortByteString(..),
 
     -- ** Memory overhead
     -- | With GHC, the memory overheads are as follows, expressed in words and
     -- in bytes (words are 4 and 8 bytes on 32 or 64bit machines respectively).
     --
-    -- * 'ByteString' unshared: 9 words; 36 or 72 bytes.
+    -- * 'B.ByteString' unshared: 8 words; 32 or 64 bytes.
     --
-    -- * 'ByteString' shared substring: 5 words; 20 or 40 bytes.
+    -- * 'B.ByteString' shared substring: 4 words; 16 or 32 bytes.
     --
     -- * 'ShortByteString': 4 words; 16 or 32 bytes.
     --
-    -- For the string data itself, both 'ShortByteString' and 'ByteString' use
+    -- For the string data itself, both 'ShortByteString' and 'B.ByteString' use
     -- one byte per element, rounded up to the nearest word. For example,
     -- including the overheads, a length 10 'ShortByteString' would take
     -- @16 + 12 = 28@ bytes on a 32bit platform and @32 + 16 = 48@ bytes on a
     -- 64bit platform.
     --
     -- These overheads can all be reduced by 1 word (4 or 8 bytes) when the
-    -- 'ShortByteString' or 'ByteString' is unpacked into another constructor.
+    -- 'ShortByteString' or 'B.ByteString' is unpacked into another constructor.
     --
     -- For example:
     --
@@ -59,9 +56,9 @@ module Data.ByteString.Short (
     -- This will take @1 + 1 + 3@ words (the @ThingId@ constructor +
     -- unpacked @Int@ + unpacked @ShortByteString@), plus the words for the
     -- string data.
-    
+
     -- ** Heap fragmentation
-    -- | With GHC, the 'ByteString' representation uses /pinned/ memory,
+    -- | With GHC, the 'B.ByteString' representation uses /pinned/ memory,
     -- meaning it cannot be moved by the GC. This is usually the right thing to
     -- do for larger strings, but for small strings using pinned memory can
     -- lead to heap fragmentation which wastes space. The 'ShortByteString'
@@ -70,23 +67,113 @@ module Data.ByteString.Short (
     -- small unpinned strings are allocated in the same way as normal heap
     -- allocations, rather than in a separate pinned area.
 
-    -- * Conversions
-    toShort,
-    fromShort,
+    -- * Introducing and eliminating 'ShortByteString's
+    empty,
+    singleton,
     pack,
     unpack,
+    fromShort,
+    toShort,
 
-    -- * Other operations
-    empty, null, length, index,
+    -- * Basic interface
+    snoc,
+    cons,
+    append,
+    last,
+    tail,
+    uncons,
+    head,
+    init,
+    unsnoc,
+    null,
+    length,
+
+    -- * Encoding validation
+    isValidUtf8,
+
+    -- * Transforming ShortByteStrings
+    map,
+    reverse,
+    intercalate,
+
+    -- * Reducing 'ShortByteString's (folds)
+    foldl,
+    foldl',
+    foldl1,
+    foldl1',
+
+    foldr,
+    foldr',
+    foldr1,
+    foldr1',
+
+    -- ** Special folds
+    all,
+    any,
+    concat,
+
+    -- ** Generating and unfolding ByteStrings
+    replicate,
+    unfoldr,
+    unfoldrN,
+
+    -- * Substrings
+
+    -- ** Breaking strings
+    take,
+    takeEnd,
+    takeWhileEnd,
+    takeWhile,
+    drop,
+    dropEnd,
+    dropWhile,
+    dropWhileEnd,
+    breakEnd,
+    break,
+    span,
+    spanEnd,
+    splitAt,
+    split,
+    splitWith,
+    stripSuffix,
+    stripPrefix,
+
+    -- * Predicates
+    isInfixOf,
+    isPrefixOf,
+    isSuffixOf,
+
+    -- ** Search for arbitrary substrings
+    breakSubstring,
+
+    -- * Searching ShortByteStrings
+
+    -- ** Searching by equality
+    elem,
+
+    -- ** Searching with a predicate
+    find,
+    filter,
+    partition,
+
+    -- * Indexing ShortByteStrings
+    index,
+    indexMaybe,
+    (!?),
+    elemIndex,
+    elemIndices,
+    count,
+    findIndex,
+    findIndices,
 
     -- * Low level conversions
-    -- ** Packing 'CString's and pointers
+    -- ** Packing 'Foreign.C.String.CString's and pointers
     packCString,
     packCStringLen,
 
-    -- ** Using ByteStrings as 'CString's
+    -- ** Using ShortByteStrings as 'Foreign.C.String.CString's
     useAsCString,
-    useAsCStringLen
+    useAsCStringLen,
   ) where
 
 import Data.ByteString.Short.Internal

@@ -137,16 +137,20 @@ In your program, you import a module ``Foo`` by saying ``import Foo``.
 In :ghc-flag:`--make` mode or GHCi, GHC will look for a source file for ``Foo``
 and arrange to compile it first. Without :ghc-flag:`--make`, GHC will look for
 the interface file for ``Foo``, which should have been created by an
-earlier compilation of ``Foo``. GHC uses the same strategy in each of
-these cases for finding the appropriate file.
+earlier compilation of ``Foo``.
 
-This strategy is as follows: GHC keeps a list of directories called the
+The strategy for looking for source files is as follows:
+GHC keeps a list of directories called the
 search path. For each of these directories, it tries appending
 ``⟨basename⟩.⟨extension⟩`` to the directory, and checks whether the
 file exists. The value of ⟨basename⟩ is the module name with dots
 replaced by the directory separator ("``/``" or "``\\"``, depending on the
 system), and ⟨extension⟩ is a source extension (``hs``, ``lhs``) if we
-are in :ghc-flag:`--make` mode or GHCi, or ⟨hisuf⟩ otherwise.
+are in :ghc-flag:`--make` mode or GHCi.
+
+When looking for interface files in :ghc-flag:`-c` mode, we look for interface
+files in the ``-hidir``, if it's set. Otherwise the same strategy as
+for source files is used to try to locate the interface file.
 
 For example, suppose the search path contains directories ``d1``,
 ``d2``, and ``d3``, and we are in :ghc-flag:`--make` mode looking for the source
@@ -240,6 +244,14 @@ Redirecting the compilation output(s)
 
     will produce ``Prog`` (or ``Prog.exe`` if you are on Windows).
 
+.. ghc-flag:: -dyno ⟨file⟩
+    :shortdesc: set dynamic output filename
+    :type: dynamic
+    :category:
+
+    When using ``-dynamic-too``, option ``-dyno`` ⟨suffix⟩ is the
+    counterpart of ``-o``. It redirects the dynamic output to ⟨file⟩.
+
 .. ghc-flag:: -odir ⟨dir⟩
     :shortdesc: set directory for object files
     :type: dynamic
@@ -259,6 +271,9 @@ Redirecting the compilation output(s)
     files are put; use the ``-hidir`` option for that. In the above
     example, they would still be put in ``parse/Foo.hi``,
     ``parse/Bar.hi``, and ``gurgle/Bumble.hi``.
+
+    Please also note that when doing incremental compilation, this directory is
+    where GHC looks into to find object files from previous builds.
 
 .. ghc-flag:: -ohi ⟨file⟩
     :shortdesc: set the filename in which to put the interface
@@ -280,6 +295,14 @@ Redirecting the compilation output(s)
     to redirect the interface into the bit bucket: ``-ohi /dev/null``,
     for example.
 
+.. ghc-flag:: -dynohi ⟨file⟩
+    :shortdesc: set the filename in which to put the dynamic interface
+    :type: dynamic
+    :category:
+
+    When using ``-dynamic-too``, option ``-dynohi`` ⟨file⟩ is the counterpart
+    of ``-ohi``. It redirects the dynamic interface output to ⟨file⟩.
+
 .. ghc-flag:: -hidir ⟨dir⟩
     :shortdesc: set directory for interface files
     :type: dynamic
@@ -288,6 +311,10 @@ Redirecting the compilation output(s)
     Redirects all generated interface files into ⟨dir⟩, instead of the
     default.
 
+    Please also note that when doing incremental compilation (by ``ghc --make``
+    or ``ghc -c``), this directory is where GHC looks into to find interface
+    files.
+
 .. ghc-flag:: -hiedir ⟨dir⟩
     :shortdesc: set directory for extended interface files
     :type: dynamic
@@ -295,6 +322,10 @@ Redirecting the compilation output(s)
 
     Redirects all generated extended interface files into ⟨dir⟩, instead of
     the default.
+
+    Please also note that when doing incremental compilation (by ``ghc --make``
+    or ``ghc -c``), this directory is where GHC looks into to find extended
+    interface files.
 
 .. ghc-flag:: -stubdir ⟨dir⟩
     :shortdesc: redirect FFI stub files
@@ -322,8 +353,8 @@ Redirecting the compilation output(s)
     :category:
 
     The ``-outputdir`` option is shorthand for the combination of
-    :ghc-flag:`-odir ⟨dir⟩`, :ghc-flag:`-hidir ⟨dir⟩`, :ghc-flag:`-stubdir
-    ⟨dir⟩` and :ghc-flag:`-dumpdir ⟨dir⟩`.
+    :ghc-flag:`-odir ⟨dir⟩`, :ghc-flag:`-hidir ⟨dir⟩`, :ghc-flag:`-hiedir ⟨dir⟩`,
+    :ghc-flag:`-stubdir ⟨dir⟩` and :ghc-flag:`-dumpdir ⟨dir⟩`.
 
 .. ghc-flag:: -osuf ⟨suffix⟩
     :shortdesc: set the output file suffix
@@ -334,6 +365,15 @@ Redirecting the compilation output(s)
     files to whatever you specify. We use this when compiling libraries,
     so that objects for the profiling versions of the libraries don't
     clobber the normal ones.
+
+.. ghc-flag:: -dynosuf ⟨suffix⟩
+    :shortdesc: set the dynamic output file suffix
+    :type: dynamic
+    :category:
+
+    When using ``-dynamic-too``, option ``-dynosuf`` ⟨suffix⟩ is the
+    counterpart of ``-osuf``. It changes the ``.dyn_o`` file suffix
+    for dynamic object files.
 
 .. ghc-flag:: -hisuf ⟨suffix⟩
     :shortdesc: set the suffix to use for interface files
@@ -358,6 +398,15 @@ Redirecting the compilation output(s)
         ghc ... -osuf prof.o -hisuf prof.hi -prof -fprof-auto
 
     to get the profiled version.
+
+.. ghc-flag:: -dynhisuf ⟨suffix⟩
+    :shortdesc: set the suffix to use for dynamic interface files
+    :type: dynamic
+    :category:
+
+    When using ``-dynamic-too``, option ``-dynhisuf`` ⟨suffix⟩ is the
+    counterpart of ``-hisuf``. It changes the ``.dyn_hi`` file suffix
+    for dynamic interface files.
 
 .. ghc-flag:: -hiesuf ⟨suffix⟩
     :shortdesc: set the suffix to use for extended interface files
@@ -486,7 +535,7 @@ Redirecting temporary files
 
     If you have trouble because of running out of space in ``/tmp`` (or
     wherever your installation thinks temporary files should go), you
-    may use the :ghc-flag:`-tmpdir ⟨dir⟩` option option to specify an
+    may use the :ghc-flag:`-tmpdir ⟨dir⟩` option to specify an
     alternate directory. For example, ``-tmpdir .`` says to put temporary files
     in the current working directory.
 
@@ -575,7 +624,7 @@ The GHC API exposes functions for reading and writing these files.
     :type: dynamic
     :category: extended-interface-files
 
-    Writes out extended interface files alongisde regular enterface files.
+    Writes out extended interface files alongside regular interface files.
     Just like regular interface files, GHC has a recompilation check to detect
     out of date or missing extended interface files.
 
@@ -586,7 +635,7 @@ The GHC API exposes functions for reading and writing these files.
 
     Runs a series of sanity checks and lints on the extended interface files
     that are being written out. These include testing things properties such as
-    variables not occuring outside of their expected scopes.
+    variables not occurring outside of their expected scopes.
 
 The format in which GHC currently stores its typechecked AST, makes it costly
 to collect the types for some expressions nodes. For the sake of performance,
@@ -648,18 +697,35 @@ jot. So now…
 GHC calculates a fingerprint (in fact an MD5 hash) of each interface
 file, and of each declaration within the interface file. It also keeps
 in every interface file a list of the fingerprints of everything it used
-when it last compiled the file. If the source file's modification date
-is earlier than the ``.o`` file's date (i.e. the source hasn't changed
-since the file was last compiled), and the recompilation checking is on,
-GHC will be clever. It compares the fingerprints on the things it needs
-this time with the fingerprints on the things it needed last time
-(gleaned from the interface file of the module being compiled); if they
-are all the same it stops compiling early in the process saying
-“Compilation IS NOT required”. What a beautiful sight!
+when it last compiled the file. If the MD5 hash of the source file
+stored in the ``.hi`` file hasn't changed, the ``.o`` file's
+modification date is greater than or equal to that of the ``.hi`` file,
+and the recompilation checking is on, GHC will be clever. It compares
+the fingerprints on the things it needs this time with the fingerprints
+on the things it needed last time (gleaned from the interface file of
+the module being compiled); if they are all the same it stops compiling
+early in the process saying “Compilation IS NOT required”. What a
+beautiful sight!
 
-You can read about `how all this
-works <http://ghc.haskell.org/trac/ghc/wiki/Commentary/Compiler/RecompilationAvoidance>`__
-in the GHC commentary.
+You can read about :ghc-wiki:`how all this works <commentary/compiler/recompilation-avoidance>` in the GHC commentary.
+
+Recompilation for Template Haskell and Plugins
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Recompilation checking gets a bit more complicated when using Template Haskell or
+plugins. Both these features execute code at compile time and so if any of the
+executed code changes then it's necessary to recompile the module. Consider the
+top-level splice::
+
+  main = $(foo bar [| () |])
+
+When the module is compiled ``foo bar [| () |]`` will be evaluated and the resulting
+code placed into the program. The dependencies of the expression are calculated
+and stored during module compilation. When the interface file is written, additional
+dependencies are created on the object file dependencies of the expression. For instance,
+if ``foo`` is from module ``A`` and ``bar`` is from module ``B``, the module will
+now depend on ``A.o`` and ``B.o``, if either of these change then the module will
+be recompiled.
 
 .. _mutual-recursion:
 
@@ -749,7 +815,7 @@ There are several points to note here:
       the same machine-generated binary format as any other
       GHC-generated interface file (e.g. ``B.hi``). You can display its
       contents with ``ghc --show-iface``. If you specify a directory for
-      interface files, the ``-ohidir`` flag, then that affects ``hi-boot`` files
+      interface files, the ``-hidir`` flag, then that affects ``hi-boot`` files
       too.
 
 -  If hs-boot files are considered distinct from their parent source
@@ -820,10 +886,34 @@ A hs-boot file is written in a subset of Haskell:
    You cannot use ``deriving`` on a data type declaration; write an
    ``instance`` declaration instead.
 
--  Class declarations is exactly as in Haskell, except that you may not
-   put default method declarations. You can also omit all the
-   superclasses and class methods entirely; but you must either omit
-   them all or put them all in.
+-  Class declarations can either be given in full, exactly as in Haskell,
+   or they can be given abstractly by omitting everything other than the
+   instance head: no superclasses, no class methods, no associated types.
+   However, if the class has any ::extension::`FunctionalDependencies`,
+   those given in the hs-boot file must be the same.
+
+   If the class declaration is given in full, the entire class declaration
+   must be identical, up to a renaming of the type variables bound by the
+   class head. This means:
+
+     - The class head must be the same.
+     - The class context must be the same, up to simplification of constraints.
+     - If there are any ::extension::`FunctionalDependencies`, these must
+       be the same.
+     - The order, names, and types of the class methods must be the same.
+     - The arity and kinds of any associated types must be the same.
+     - Default methods as well as default signatures (see ::extension::`DefaultSignatures`)
+       must be provided for the same methods, and must be the same.
+     - Default declarations for associated types must be provided for the
+       same types, and must be the same.
+
+   To declare a class with no methods in an hs-boot file, it must have a superclass.
+   If the class has no superclass constraints, add an empty one, e.g. ::
+
+       class () => C a
+
+   This is a full class declaration, not an abstract declaration in which
+   the methods were omitted.
 
 -  You can include instance declarations just as in Haskell; but omit
    the "where" part.
@@ -845,7 +935,7 @@ GHC 8.2 supports module signatures (``hsig`` files), which allow you to
 write a signature in place of a module implementation, deferring the
 choice of implementation until a later point in time.  This feature is
 not intended to be used without `Cabal
-<http://www.haskell.org/cabal/>`__; this manual entry will focus
+<https://www.haskell.org/cabal/>`__; this manual entry will focus
 on the syntax and semantics of signatures.
 
 To start with an example, suppose you had a module ``A`` which made use of some
@@ -1287,7 +1377,7 @@ following to your ``Makefile``:
 .. code-block:: make
 
     depend :
-            ghc -dep-suffix '' -M $(HC_OPTS) $(SRCS)
+            ghc -M $(HC_OPTS) $(SRCS)
 
 Now, before you start compiling, and any time you change the ``imports``
 in your program, do ``make depend`` before you do ``make cool_pgm``. The command
@@ -1391,8 +1481,7 @@ generation are:
     Multiple ``-dep-suffix`` flags are permitted. For example,
     ``-dep-suffix a_ -dep-suffix b_`` will make dependencies for ``.hs``
     on ``.hi``, ``.a_hs`` on ``.a_hi``, and ``.b_hs`` on ``.b_hi``.
-    Note that you must provide at least one suffix; if you do not want a suffix
-    then pass ``-dep-suffix ''``.
+    If you do not use this flag then the empty suffix is used.
 
 .. ghc-flag:: --exclude-module=⟨file⟩
     :shortdesc: Regard ``⟨file⟩`` as "stable"; i.e., exclude it from having
@@ -1415,6 +1504,20 @@ generation are:
     for home-package modules on external-package modules directly
     imported by the home package module. This option is normally only
     used by the various system libraries.
+
+.. ghc-flag:: -include-cpp-deps
+    :shortdesc: Include preprocessor dependencies
+    :type: dynamic
+    :category:
+
+    Output preprocessor dependencies. This only has an effect when the CPP
+    language extension is enabled. These dependencies are files included with
+    the ``#include`` preprocessor directive (as well as transitive includes) and
+    implicitly included files such as standard c preprocessor headers and a GHC
+    version header. One exception to this is that GHC generates a temporary
+    header file (during compilation) containing package version macros. As this
+    is only a temporary file that GHC will always generate, it is not output as
+    a dependency.
 
 .. _orphan-modules:
 
@@ -1477,7 +1580,6 @@ module:
    instance* or at least one *orphan rule*.
 
 -  An instance declaration in a module ``M`` is an *orphan instance* if
-   orphan instance
 
    -  The class of the instance declaration is not declared in ``M``, and
 

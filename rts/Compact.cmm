@@ -224,7 +224,7 @@ eval:
         CONSTR_1_1: {
 
         (should) = ccall shouldCompact(compact "ptr", p "ptr");
-        if (should == SHOULDCOMPACT_IN_CNF) { P_[pp] = p; return(); }
+        if (should == SHOULDCOMPACT_IN_CNF) { P_[pp] = tag | p; return(); }
 
       constructor:
 
@@ -274,7 +274,7 @@ eval:
 
         (should) = ccall shouldCompact(compact "ptr", p "ptr");
         if (should == SHOULDCOMPACT_IN_CNF ||
-            should == SHOULDCOMPACT_STATIC) { P_[pp] = p; return(); }
+            should == SHOULDCOMPACT_STATIC) { P_[pp] = tag | p; return(); }
 
         goto constructor;
     }}
@@ -297,7 +297,7 @@ stg_compactAddWithSharingzh (P_ compact, P_ p)
     StgCompactNFData_hash(compact) = hash;
 
     // Note [compactAddWorker result]
-    //
+    // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // compactAddWorker needs somewhere to store the result - this is
     // so that it can be tail-recursive.  It must be an address that
     // doesn't move during GC, so we can't use heap or stack.

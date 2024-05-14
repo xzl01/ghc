@@ -13,25 +13,28 @@ module GHCi.UI.Tags (
   createETagsFileCmd
 ) where
 
-import Exception
+import GHC.Utils.Exception
 import GHC
 import GHCi.UI.Monad
-import Outputable
+import GHC.Utils.Outputable
 
 -- ToDo: figure out whether we need these, and put something appropriate
 -- into the GHC API instead
-import Name (nameOccName)
-import OccName (pprOccName)
-import ConLike
-import MonadUtils
+import GHC.Types.Name (nameOccName)
+import GHC.Types.Name.Occurrence (pprOccName)
+import GHC.Core.ConLike
+import GHC.Utils.Monad
+import GHC.Unit.State
+import GHC.Driver.Env
 
 import Control.Monad
 import Data.Function
-import Data.List
+import Data.List (sort, sortBy, groupBy)
 import Data.Maybe
 import Data.Ord
-import DriverPhases
-import Panic
+import GHC.Driver.Phases
+import GHC.Driver.Ppr
+import GHC.Utils.Panic
 import Prelude
 import System.Directory
 import System.IO
@@ -60,6 +63,8 @@ data TagsKind = ETags | CTagsWithLineNumbers | CTagsWithRegExes
 
 ghciCreateTagsFile :: TagsKind -> FilePath -> GHCi ()
 ghciCreateTagsFile kind file = do
+  liftIO $ putStrLn "Tags generation from GHCi will be deprecated in future releases"
+  liftIO $ putStrLn "Use the method described in https://gitlab.haskell.org/ghc/ghc/-/wikis/commentary/GHCi/Tags"
   createTagsFile kind file
 
 -- ToDo:
@@ -92,18 +97,19 @@ listModuleTags m = do
     Nothing -> return []
     Just mInfo -> do
        dflags <- getDynFlags
+       unit_state <- hsc_units <$> getSession
        mb_print_unqual <- GHC.mkPrintUnqualifiedForModule mInfo
        let unqual = fromMaybe GHC.alwaysQualify mb_print_unqual
-       let names = fromMaybe [] $GHC.modInfoTopLevelScope mInfo
+       let names = fromMaybe [] $ GHC.modInfoTopLevelScope mInfo
        let localNames = filter ((m==) . nameModule) names
        mbTyThings <- mapM GHC.lookupName localNames
-       return $! [ tagInfo dflags unqual exported kind name realLoc
+       return $! [ tagInfo dflags unit_state unqual exported kind name realLoc
                      | tyThing <- catMaybes mbTyThings
                      , let name = getName tyThing
                      , let exported = GHC.modInfoIsExportedName mInfo name
                      , let kind = tyThing2TagKind tyThing
                      , let loc = srcSpanStart (nameSrcSpan name)
-                     , RealSrcLoc realLoc <- [loc]
+                     , RealSrcLoc realLoc _ <- [loc]
                      ]
 
   where
@@ -126,12 +132,13 @@ data TagInfo = TagInfo
 
 
 -- get tag info, for later translation into Vim or Emacs style
-tagInfo :: DynFlags -> PrintUnqualified -> Bool -> Char -> Name -> RealSrcLoc
+tagInfo :: DynFlags -> UnitState -> PrintUnqualified
+        -> Bool -> Char -> Name -> RealSrcLoc
         -> TagInfo
-tagInfo dflags unqual exported kind name loc
+tagInfo dflags unit_state unqual exported kind name loc
     = TagInfo exported kind
-        (showSDocForUser dflags unqual $ pprOccName (nameOccName name))
-        (showSDocForUser dflags unqual $ ftext (srcLocFile loc))
+        (showSDocForUser dflags unit_state unqual $ pprOccName (nameOccName name))
+        (showSDocForUser dflags unit_state unqual $ ftext (srcLocFile loc))
         (srcLocLine loc) (srcLocCol loc) Nothing
 
 -- throw an exception when someone tries to overwrite existing source file (fix for #10989)
@@ -152,11 +159,11 @@ collateAndWriteTags CTagsWithLineNumbers file tagInfos = do
 -- ctags style with the Ex expression being a regex searching the line, Vim et al
 collateAndWriteTags CTagsWithRegExes file tagInfos = do -- ctags style, Vim et al
   tagInfoGroups <- makeTagGroupsWithSrcInfo tagInfos
-  let tags = unlines $ sort $ map showCTag $concat tagInfoGroups
+  let tags = unlines $ sort $ map showCTag $ concat tagInfoGroups
   tryIO (writeTagsSafely file tags)
 
 collateAndWriteTags ETags file tagInfos = do -- etags style, Emacs/XEmacs
-  tagInfoGroups <- makeTagGroupsWithSrcInfo $filter tagExported tagInfos
+  tagInfoGroups <- makeTagGroupsWithSrcInfo $ filter tagExported tagInfos
   let tagGroups = map processGroup tagInfoGroups
   tryIO (writeTagsSafely file $ concat tagGroups)
 
@@ -175,7 +182,7 @@ makeTagGroupsWithSrcInfo tagInfos = do
   where
     addTagSrcInfo [] = throwGhcException (CmdLineError "empty tag file group??")
     addTagSrcInfo group@(tagInfo:_) = do
-      file <- readFile $tagFile tagInfo
+      file <- readFile $ tagFile tagInfo
       let sortedGroup = sortBy (comparing tagLine) group
       return $ perFile sortedGroup 1 0 $ lines file
 
@@ -196,7 +203,7 @@ showCTag ti =
   where
     tagCmd =
       case tagSrcInfo ti of
-        Nothing -> show $tagLine ti
+        Nothing -> show $ tagLine ti
         Just (srcLine,_) -> "/^"++ foldr escapeSlashes [] srcLine ++"$/"
 
       where

@@ -3,7 +3,6 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE Trustworthy #-}
 
 -----------------------------------------------------------------------------
@@ -63,6 +62,7 @@ import GHC.Read
 import GHC.Real
 import GHC.Show
 import GHC.Enum
+import GHC.Ix
 
 import Data.Bits
 import Foreign.Storable ( Storable(..) )
@@ -80,13 +80,13 @@ foreign import ccall unsafe "freeHaskellFunctionPtr"
 -- | An unsigned integral type that can be losslessly converted to and from
 -- @Ptr@. This type is also compatible with the C99 type @uintptr_t@, and
 -- can be marshalled to and from that type safely.
-INTEGRAL_TYPE(WordPtr,Word)
+INTEGRAL_TYPE(WordPtr,"uintptr_t",Word)
         -- Word and Int are guaranteed pointer-sized in GHC
 
 -- | A signed integral type that can be losslessly converted to and from
 -- @Ptr@.  This type is also compatible with the C99 type @intptr_t@, and
 -- can be marshalled to and from that type safely.
-INTEGRAL_TYPE(IntPtr,Int)
+INTEGRAL_TYPE(IntPtr,"intptr_t",Int)
         -- Word and Int are guaranteed pointer-sized in GHC
 
 -- | casts a @Ptr@ to a @WordPtr@
@@ -110,7 +110,7 @@ Note [Exporting constructors of marshallable foreign types]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 One might expect that IntPtr, WordPtr, and the other newtypes in the
 Foreign.C.Types and System.Posix.Types modules to be abstract, but this is not
-the case in GHC (see Trac #5229 and #11983). In fact, we deliberately export
+the case in GHC (see #5229 and #11983). In fact, we deliberately export
 the constructors for these datatypes in order to satisfy a requirement of the
 Haskell 2010 Report (§ 8.4.2) that if a newtype is used in a foreign
 declaration, then its constructor must be visible.
@@ -118,7 +118,7 @@ declaration, then its constructor must be visible.
 This requirement was motivated by the fact that using a type in a foreign
 declaration necessarily exposes some information about the type to the user,
 so being able to use abstract types in a foreign declaration breaks their
-abstraction (see Trac #3008). As a result, the constructors of all FFI-related
+abstraction (see #3008). As a result, the constructors of all FFI-related
 newtypes in base must be exported in order to be useful for FFI programming,
 even at the cost of exposing their underlying, architecture-dependent types.
 -}

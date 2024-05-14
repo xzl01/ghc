@@ -9,7 +9,7 @@
 -- License     :  BSD-style (see the file LICENSE)
 --
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  portable
 --
 -- Sums, lifted to functors.
@@ -84,6 +84,9 @@ instance (Show1 f, Show1 g, Show a) => Show (Sum f g a) where
 instance (Functor f, Functor g) => Functor (Sum f g) where
     fmap f (InL x) = InL (fmap f x)
     fmap f (InR y) = InR (fmap f y)
+
+    a <$ (InL x) = InL (a <$ x)
+    a <$ (InR y) = InR (a <$ y)
 
 -- | @since 4.9.0.0
 instance (Foldable f, Foldable g) => Foldable (Sum f g) where

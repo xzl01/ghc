@@ -7,10 +7,11 @@
  *
  * ---------------------------------------------------------------------------*/
 
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
 
 #include "GC.h"
+#include "CheckUnload.h"
 #include "Storage.h"
 #include "Compact.h"
 #include "Task.h"
@@ -60,6 +61,14 @@ isAlive(StgClosure *p)
     // ignore closures in generations that we're not collecting.
     bd = Bdescr((P_)q);
 
+    // isAlive is used when scavenging moving generations, before the mark
+    // phase. Because we don't know alive-ness of objects before the mark phase
+    // we have to conservatively treat objects in the non-moving generation as
+    // alive here.
+    if (bd->flags & BF_NONMOVING) {
+        return p;
+    }
+
     // if it's a pointer into to-space, then we're done
     if (bd->flags & BF_EVACUATED) {
         return p;
@@ -75,7 +84,7 @@ isAlive(StgClosure *p)
         return p;
     }
 
-    info = q->header.info;
+    info = RELAXED_LOAD(&q->header.info);
 
     if (IS_FORWARDING_PTR(info)) {
         // alive!
@@ -137,20 +146,28 @@ revertCAFs( void )
 void
 markCAFs (evac_fn evac, void *user)
 {
-    StgIndStatic *c;
-
-    for (c = dyn_caf_list;
-         c != (StgIndStatic*)END_OF_CAF_LIST;
+    /* N.B. We must both ensure that the indirectee is
+     * evacuated and that we let the linker know that the CAF
+     * itself is still reachable, lest it be collected (see
+     * #20649).
+     */
+    for (StgIndStatic *c = dyn_caf_list;
+         ((StgWord) c | STATIC_FLAG_LIST) != (StgWord)END_OF_CAF_LIST;
          c = (StgIndStatic *)c->static_link)
     {
         c = (StgIndStatic *)UNTAG_STATIC_LIST_PTR(c);
         evac(user, &c->indirectee);
+        // See Note [Object unloading] in CheckUnload.c
+        if (unload_mark_needed) markObjectCode(c);
     }
-    for (c = revertible_caf_list;
-         c != (StgIndStatic*)END_OF_CAF_LIST;
+
+    for (StgIndStatic *c = revertible_caf_list;
+         ((StgWord) c | STATIC_FLAG_LIST) != (StgWord)END_OF_CAF_LIST;
          c = (StgIndStatic *)c->static_link)
     {
         c = (StgIndStatic *)UNTAG_STATIC_LIST_PTR(c);
         evac(user, &c->indirectee);
+        // See Note [Object unloading] in CheckUnload.c
+        if (unload_mark_needed) markObjectCode(c);
     }
 }

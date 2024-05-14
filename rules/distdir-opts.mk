@@ -5,8 +5,8 @@
 # This file is part of the GHC build system.
 #
 # To understand how the build system works and how to modify it, see
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Architecture
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Modifying
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/architecture
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/modifying
 #
 # -----------------------------------------------------------------------------
 
@@ -32,14 +32,22 @@ $1_$2_DIST_GCC_CC_OPTS = \
  $$(CONF_CC_OPTS_STAGE$3) \
  $$($1_$2_DIST_CC_OPTS)
 
+$1_$2_DIST_INCLUDE_DIRS = \
+ $$($1_$2_INCLUDE_DIRS) \
+ $$($1_INCLUDE_DIRS)
+
+$1_$2_DIST_CPP_OPTS = \
+ $$(foreach dir,$$(filter-out /%,$$($1_$2_DIST_INCLUDE_DIRS)),-I$1/$$(dir)) \
+ $$(foreach dir,$$(filter /%,$$($1_$2_DIST_INCLUDE_DIRS)),-I$$(dir)) \
+ $$($1_$2_CPP_OPTS) \
+ $$($1_CPP_OPTS)
+
 $1_$2_DIST_CC_OPTS = \
  $$(SRC_CC_OPTS) \
  $$($1_CC_OPTS) \
  -I$1/$2/build/$$(or $$($1_EXECUTABLE),$$($1_$2_PROGNAME),.)/autogen \
- $$(foreach dir,$$(filter-out /%,$$($1_$2_INCLUDE_DIRS)),-I$1/$$(dir)) \
- $$(foreach dir,$$(filter /%,$$($1_$2_INCLUDE_DIRS)),-I$$(dir)) \
+ $$($1_$2_DIST_CPP_OPTS) \
  $$($1_$2_CC_OPTS) \
- $$($1_$2_CPP_OPTS) \
  $$($1_$2_CC_INC_FLAGS) \
  $$($1_$2_DEP_CC_OPTS) \
  $$(SRC_CC_WARNING_OPTS)
@@ -89,14 +97,6 @@ $1_$2_ALL_HAPPY_OPTS = \
  $$($1_$2_HAPPY_OPTS) \
  $$(EXTRA_HAPPY_OPTS)
 
-# We don't bother splitting the bootstrap packages (built with stage 0)
-ifeq "$$($1_$2_SplitObjs)" ""
-ifeq "$$(SplitObjs) $3" "YES 1"
-$1_$2_SplitObjs = YES
-else
-$1_$2_SplitObjs = NO
-endif
-endif
 # Disable split sections when building with stage0, it won't be supported yet
 # and it's probably not very relevant anyway (smaller stage1 ghc?).
 ifeq "$$($1_$2_SplitSections)" ""

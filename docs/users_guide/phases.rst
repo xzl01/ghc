@@ -38,6 +38,13 @@ given compilation phase:
 
     Use ⟨cmd⟩ as the C compiler.
 
+.. ghc-flag:: -pgmcxx ⟨cmd⟩
+    :shortdesc: Use ⟨cmd⟩ as the C++ compiler
+    :type: dynamic
+    :category: phase-programs
+
+    Use ⟨cmd⟩ as the C++ compiler.
+
 .. ghc-flag:: -pgmlo ⟨cmd⟩
     :shortdesc: Use ⟨cmd⟩ as the LLVM optimiser
     :type: dynamic
@@ -73,6 +80,14 @@ given compilation phase:
 
     Use ⟨cmd⟩ as the linker.
 
+.. ghc-flag:: -pgmlm ⟨cmd⟩
+    :shortdesc: Use ⟨cmd⟩ as the linker when merging object files
+    :type: dynamic
+    :category: phase-programs
+
+    Use ⟨cmd⟩ as the linker when merging object files (e.g. when generating
+    joined objects for loading into GHCi).
+
 .. ghc-flag:: -pgmdll ⟨cmd⟩
     :shortdesc: Use ⟨cmd⟩ as the DLL generator
     :type: dynamic
@@ -81,11 +96,29 @@ given compilation phase:
     Use ⟨cmd⟩ as the DLL generator.
 
 .. ghc-flag:: -pgmF ⟨cmd⟩
-    :shortdesc: Use ⟨cmd⟩ as the pre-processor (with ``-F`` only)
+    :shortdesc: Use ⟨cmd⟩ as the pre-processor (with :ghc-flag:`-F` only)
     :type: dynamic
     :category: phase-programs
 
-    Use ⟨cmd⟩ as the pre-processor (with ``-F`` only).
+    Use ⟨cmd⟩ as the pre-processor (with :ghc-flag:`-F` only).
+
+.. ghc-flag:: -pgmotool ⟨cmd⟩
+    :shortdesc: Use ⟨cmd⟩ as the program to inspect mach-o dylibs on macOS
+    :type: dynamic
+    :category: phase-programs
+
+    Use ⟨cmd⟩ as the program to inspect mach-o dynamic libraries and
+    executables to read the dynamic library dependencies.  We will compute
+    the necessary ``runpath``s to embed for the dependencies based on the
+    result of the ``otool`` call.
+
+.. ghc-flag:: -pgminstall_name_tool ⟨cmd⟩
+    :shortdesc: Use ⟨cmd⟩ as the program to inject ``runpath`` into mach-o dylibs on macOS
+    :type: dynamic
+    :category: phase-programs
+
+    Use ⟨cmd⟩ as the program to inject ``runpath``s into mach-o dynamic
+    libraries and executables.  As detected by the ``otool`` call.
 
 .. ghc-flag:: -pgmwindres ⟨cmd⟩
     :shortdesc: Use ⟨cmd⟩ as the program for embedding manifests on Windows.
@@ -98,20 +131,20 @@ given compilation phase:
     :ref:`options-linker`.
 
 .. ghc-flag:: -pgmlibtool ⟨cmd⟩
-    :shortdesc: Use ⟨cmd⟩ as the command for libtool (with ``-staticlib`` only).
+    :shortdesc: Use ⟨cmd⟩ as the command for libtool (with :ghc-flag:`-staticlib` only).
     :type: dynamic
     :category: phase-programs
 
-    Use ⟨cmd⟩ as the libtool command (when using ``-staticlib`` only).
+    Use ⟨cmd⟩ as the libtool command (when using :ghc-flag:`-staticlib` only).
 
 .. ghc-flag:: -pgmi ⟨cmd⟩
     :shortdesc: Use ⟨cmd⟩ as the external interpreter command.
     :type: dynamic
     :category: phase-programs
 
-    Use ⟨cmd⟩ as the external interpreter command (see:
+    Use ⟨cmd⟩ as the external interpreter command (see
     :ref:`external-interpreter`).  Default: ``ghc-iserv-prof`` if
-    ``-prof`` is enabled, ``ghc-iserv-dyn`` if ``-dynamic`` is
+    :ghc-flag:`-prof` is enabled, ``ghc-iserv-dyn`` if :ghc-flag:`-dynamic` is
     enabled, or ``ghc-iserv`` otherwise.
 
 .. _forcing-options-through:
@@ -154,6 +187,37 @@ the following flags:
 
     Pass ⟨option⟩ to the C compiler.
 
+.. ghc-flag:: -pgmc-supports-no-pie
+    :shortdesc: *(deprecated)*
+        Indicate that the linker supports ``-no-pie``
+    :type: dynamic
+    :category: phase-options
+
+    Does the same thing as ``-pgml-supports-no-pie``, which replaced it.
+
+.. ghc-flag:: -pgml-supports-no-pie
+    :shortdesc: Indicate that the linker supports ``-no-pie``
+    :type: dynamic
+    :category: phase-options
+
+    When ``-pgml`` is used, GHC by default will never pass the ``-no-pie``
+    command line flag. The rationale is that it is not known whether the
+    specified compiler used for linking (recall we use a C compiler to
+    invoke the linker on our behalf) will support it. This flag can be
+    used to indicate that ``-no-pie`` is supported. It has to be passed
+    after ``-pgml``.
+
+    This flag is not necessary when ``-pgmc`` is not used, since GHC
+    remembers whether the default C compiler supports ``-no-pie`` in
+    an internal settings file.
+
+.. ghc-flag:: -optcxx ⟨option⟩
+    :shortdesc: pass ⟨option⟩ to the C++ compiler
+    :type: dynamic
+    :category: phase-options
+
+    Pass ⟨option⟩ to the C++ compiler.
+
 .. ghc-flag:: -optlo ⟨option⟩
     :shortdesc: pass ⟨option⟩ to the LLVM optimiser
     :type: dynamic
@@ -181,6 +245,14 @@ the following flags:
     :category: phase-options
 
     Pass ⟨option⟩ to the linker.
+
+.. ghc-flag:: -optlm ⟨option⟩
+    :shortdesc: pass ⟨option⟩ to the linker when merging object files.
+    :type: dynamic
+    :category: phase-options
+
+    Pass ⟨option⟩ to the linker when merging object files. In the case of a
+    standard ``ld``-style linker this should generally include the ``-r`` flag.
 
 .. ghc-flag:: -optdll ⟨option⟩
     :shortdesc: pass ⟨option⟩ to the DLL generator
@@ -226,6 +298,19 @@ Options affecting the C pre-processor
 
     :since: 6.8.1
 
+    The :extension:`CPP` language extension enables the C pre-processor.
+    This can be turned into a command-line flag by prefixing it with
+    ``-X``; For example:
+
+    .. code-block:: sh
+
+        $ ghc -XCPP foo.hs
+
+    The :extension:`CPP` language extension can also be enabled using
+    the :ref:`LANGUAGE <language-pragma>` pragma; For example: ::
+
+        {-# LANGUAGE CPP #-}
+
 .. index::
    single: pre-processing: cpp
    single: C pre-processor options
@@ -236,8 +321,8 @@ Options affecting the C pre-processor
     :type: dynamic
     :category: cpp
 
-    The C pre-processor :command:`cpp` is run over your Haskell code only if
-    the ``-cpp`` option -cpp option is given. Unless you are building a
+    The C pre-processor :command:`cpp` is run over your Haskell code if
+    the ``-cpp`` option or ``-XCPP`` extension are given. Unless you are building a
     large system with significant doses of conditional compilation, you
     really shouldn't need it.
 
@@ -312,6 +397,13 @@ defined by your local GHC installation, the following trick is useful:
     source, including the C source generated from a Haskell module (i.e.
     ``.hs``, ``.lhs``, ``.c`` and ``.hc`` files).
 
+``__GLASGOW_HASKELL_FULL_VERSION__``
+    .. index::
+       single: __GLASGOW_HASKELL_FULL_VERSION__
+       This macro exposes the full version string.
+       For instance: ``__GLASGOW_HASKELL_FULL_VERSION__==8.11.0.20200319``.
+       Its value comes from the ``ProjectVersion`` Autotools variable.
+
 ``__GLASGOW_HASKELL_PATCHLEVEL1__``; \ ``__GLASGOW_HASKELL_PATCHLEVEL2__``
     .. index::
        single: __GLASGOW_HASKELL_PATCHLEVEL2__
@@ -358,7 +450,7 @@ defined by your local GHC installation, the following trick is useful:
 
     .. code-block:: c
 
-        #ifdef MIN_VERSION_GLASGOW_HASKELL
+        #if defined(MIN_VERSION_GLASGOW_HASKELL)
         #if MIN_VERSION_GLASGOW_HASKELL(7,10,2,0)
         /* code that applies only to GHC 7.10.2 or later */
         #endif
@@ -382,7 +474,7 @@ defined by your local GHC installation, the following trick is useful:
     .. index::
        single: __GLASGOW_HASKELL_LLVM__
 
-    Only defined when ``-fllvm`` is specified. When GHC is using version
+    Only defined when `:ghc-flag:`-fllvm` is specified. When GHC is using version
     ``x.y.z`` of LLVM, the value of ``__GLASGOW_HASKELL_LLVM__`` is the
     integer ⟨xyy⟩ (if ⟨y⟩ is a single digit, then a leading zero
     is added, so for example when using version 3.7 of LLVM,
@@ -529,8 +621,8 @@ Options affecting code generation
 
     .. note::
 
-        Note that this GHC release expects an LLVM version in the |llvm-version|
-        release series.
+        Note that this GHC release expects an LLVM version between |llvm-version-min|
+        and |llvm-version-max|.
 
 .. ghc-flag:: -fno-code
     :shortdesc: Omit code generation
@@ -632,6 +724,35 @@ Options affecting code generation
     and ``-dynhisuf`` are the counterparts of ``-o``, ``-osuf``, and
     ``-hisuf`` respectively, but applying to the dynamic compilation.
 
+    ``-dynamic-too`` is ignored if :ghc-flag:`-dynamic` is also specified.
+
+.. ghc-flag:: -split-objs
+    :shortdesc: Split generated object files into smaller files
+    :type: dynamic
+    :category: codegen
+
+    When using this option, the object file is split into many smaller objects.
+    This feature is used when building libraries, so that a program statically
+    linked against the library will pull in less of the library.
+
+    Since this uses platform specific techniques, it may not be available on
+    all target platforms. See the :ghc-flag:`--print-object-splitting-supported`
+    flag to check whether your GHC supports object splitting.
+
+.. ghc-flag:: -fexpose-internal-symbols
+    :shortdesc: Produce symbols for all functions, including internal functions.
+    :type: dynamic
+    :category: codegen
+
+    Request that GHC emits verbose symbol tables which include local symbols
+    for module-internal functions. These can be useful for tools like
+    `perf <https://perf.wiki.kernel.org/>`__ but increase object file sizes.
+    This is implied by :ghc-flag:`-g2 <-g>` and above.
+
+    :ghc-flag:`-fno-expose-internal-symbols <-fexpose-internal-symbols>`
+    suppresses all non-global symbol table entries, resulting in smaller object
+    file sizes at the expense of debuggability.
+
 .. _options-linker:
 
 Options affecting linking
@@ -666,6 +787,13 @@ for example).
 
     You can use an external main function if you initialize the RTS manually
     and pass ``-no-hs-main``. See also :ref:`using-own-main`.
+
+.. ghc-flag:: -no-link
+    :shortdesc: Stop after generating object (``.o``) file
+    :type: mode
+    :category: linking
+
+    Omits the link step.
 
 .. ghc-flag:: -c
     :shortdesc: Stop after generating object (``.o``) file
@@ -708,6 +836,8 @@ for example).
     :type: dynamic
     :category: linking
 
+    :implies: :ghc-flag:`-flink-rts`
+
     Link all passed files into a static library suitable for linking.
     To control the name, use the :ghc-flag:`-o ⟨file⟩` option
     as usual. The default name is ``liba.a``.
@@ -719,6 +849,18 @@ for example).
 
     Where to find user-supplied libraries… Prepend the directory ⟨dir⟩
     to the library directories path.
+
+.. ghc-flag:: -fuse-rpaths
+    :shortdesc: Set the rpath based on -L flags
+    :type: dynamic
+    :category: linking
+
+    This flag is enabled by default and will set the rpath of the linked
+    object to the library directories of dependent packages.
+
+    When building binaries to distribute it can be useful to pass your own
+    linker options to control the rpath and disable the automatic injection of
+    rpath entries by disabling this flag.
 
 .. ghc-flag:: -framework-path ⟨dir⟩
     :shortdesc: On Darwin/OS X/iOS only, add ⟨dir⟩ to the list of directories
@@ -732,21 +874,6 @@ for example).
     option for Apple's Linker (``-F`` already means something else for
     GHC).
 
-.. ghc-flag:: -split-objs
-    :shortdesc: Split objects (for libraries)
-    :type: dynamic
-    :category: linking
-
-    Tell the linker to split the single object file that would normally
-    be generated into multiple object files, one per top-level Haskell
-    function or type in the module. This only makes sense for libraries,
-    where it means that executables linked against the library are
-    smaller as they only link against the object files that they need.
-    However, assembling all the sections separately is expensive, so
-    this is slower than compiling normally. Additionally, the size of
-    the library itself (the ``.a`` file) can be a factor of 2 to 2.5
-    larger.
-
 .. ghc-flag:: -split-sections
     :shortdesc: Split sections for link-time dead-code stripping
     :type: dynamic
@@ -758,9 +885,7 @@ for example).
     output file.
 
     When linking, the linker can automatically remove all unreferenced sections
-    and thus produce smaller executables. The effect is similar to
-    :ghc-flag:`-split-objs`, but somewhat more efficient - the generated library
-    files are about 30% smaller than with :ghc-flag:`-split-objs`.
+    and thus produce smaller executables.
 
 .. ghc-flag:: -static
     :shortdesc: Use static Haskell libraries
@@ -777,8 +902,8 @@ for example).
 
     This flag tells GHC to link against shared Haskell libraries. This
     flag only affects the selection of dependent libraries, not the form
-    of the current target (see -shared). See :ref:`using-shared-libs` on
-    how to create them.
+    of the current target (see :ghc-flag:`-shared`).
+    See :ref:`using-shared-libs` on how to create them.
 
     Note that this option also has an effect on code generation (see
     above).
@@ -804,7 +929,8 @@ for example).
 
     When creating shared objects for Haskell packages, the shared object
     must be named properly, so that GHC recognizes the shared object
-    when linked against this package. See shared object name mangling.
+    when linking against this package.
+    See :ref:`shared object name mangling <building-packages>` for details.
 
 .. ghc-flag:: -dynload
     :shortdesc: Selects one of a number of modes for finding shared libraries at runtime.
@@ -814,6 +940,23 @@ for example).
     This flag selects one of a number of modes for finding shared
     libraries at runtime. See :ref:`finding-shared-libs` for a
     description of each mode.
+
+.. ghc-flag:: -flink-rts
+    :shortdesc: Link the runtime when generating a shared or static library
+    :type: dynamic
+    :category: linking
+
+    When linking shared libraries (:ghc-flag:`-shared`) GHC does not
+    automatically link the RTS.  This is to allow choosing the RTS flavour
+    (:ghc-flag:`-threaded`, :ghc-flag:`-eventlog`, etc) when linking an
+    executable.
+    However when the shared library is the intended product it is useful to be
+    able to reverse this default. See :ref:`shared-libraries-c-api` for an
+    usage example.
+
+    When linking a static library (:ghc-flag:`-staticlib`) GHC links the RTS
+    automatically, you can reverse this behaviour by reversing this flag:
+    ``-fno-link-rts``.
 
 .. ghc-flag:: -main-is ⟨thing⟩
     :shortdesc: Set main module and function
@@ -924,14 +1067,16 @@ for example).
     :type: dynamic
     :category: linking
 
+    :since: Unconditionally enabled with 9.4 and later
+
     Link the program with the "eventlog" version of the runtime system.
     A program linked in this way can generate a runtime trace of events
     (such as thread start/stop) to a binary file :file:`{program}.eventlog`,
     which can then be interpreted later by various tools. See
     :ref:`rts-eventlog` for more information.
 
-    :ghc-flag:`-eventlog` can be used with :ghc-flag:`-threaded`. It is implied by
-    :ghc-flag:`-debug`.
+    Note that as of GHC 9.4 and later eventlog support is included in
+    the RTS by default and the :ghc-flag:`-eventlog` is deprecated.
 
 .. ghc-flag:: -rtsopts[=⟨none|some|all|ignore|ignoreAll⟩]
     :shortdesc: Control whether the RTS behaviour can be tweaked via command-line
@@ -947,11 +1092,11 @@ for example).
     :type: dynamic
     :category: linking
 
-    :default: all
+    :default: some
 
     This option affects the processing of RTS control options given
     either on the command line or via the :envvar:`GHCRTS` environment
-    variable. There are three possibilities:
+    variable. There are five possibilities:
 
     ``-rtsopts=none``
         Disable all processing of RTS options. If ``+RTS`` appears
@@ -1029,7 +1174,7 @@ for example).
     :type: dynamic
     :category: linking
 
-    On Windows, GHC normally generates a manifestmanifest file when
+    On Windows, GHC normally generates a manifest file when
     linking a binary. The manifest is placed in the file
     :file:`{prog}.exe.manifest`` where ⟨prog.exe⟩ is the name of the
     executable. The manifest file currently serves just one purpose: it
@@ -1149,6 +1294,7 @@ for example).
 .. ghc-flag:: -pie
     :shortdesc: Instruct the linker to produce a position-independent executable.
     :type: dynamic
+    :reverse: -no-pie
     :category: linking
 
     :since: 8.2.2
@@ -1170,7 +1316,16 @@ for example).
     Also, you may need to use the :ghc-flag:`-rdynamic` flag to ensure that
     that symbols are not dropped from your PIE objects.
 
-.. ghc-flag:: -keep-cafs
+.. ghc-flag:: -no-pie
+    :shortdesc: Don't instruct the linker to produce a position-independent executable.
+    :type: dynamic
+    :reverse: -pie
+    :category: linking
+
+    If required, the C compiler will still produce a PIE. Otherwise, this is the default.
+    Refer to -pie for more information about PIEs.
+
+.. ghc-flag:: -fkeep-cafs
     :shortdesc: Do not garbage-collect CAFs (top-level expressions) at runtime
     :type: dynamic
     :category: linking
@@ -1183,3 +1338,19 @@ for example).
     that do runtime dynamic linking, where code dynamically linked in
     the future might require the value of a CAF that would otherwise
     be garbage-collected.
+
+.. ghc-flag:: -fcompact-unwind
+    :shortdesc: Instruct the linker to produce a `__compact_unwind` section.
+    :type: dynamic
+    :category: linking
+
+    :default: on
+
+    :since: 9.4.1
+
+    This instructs the linker to produce an executable that supports Apple's
+    compact unwinding sections. These are used by C++ and Objective-C code
+    to unwind the stack when an exception occurs.
+
+    In theory, the older `__eh_frame` section should also be usable for this
+    purpose, but this does not always work.

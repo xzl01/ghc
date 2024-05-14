@@ -9,23 +9,22 @@ import Prelude ()
 import Distribution.Client.Compat.Prelude
 
 import Control.Arrow ((&&&))
-import Control.DeepSeq (force)
 import Data.Either (lefts)
-import Data.Function (on)
 import Data.Hashable (Hashable(..))
 import Data.List (groupBy, isInfixOf)
-import Data.Ord (comparing)
 
 import Text.Show.Pretty (parseValue, valToStr)
 
 import Test.Tasty (TestTree)
-import Test.Tasty.QuickCheck
+import Test.QuickCheck (Arbitrary (..), Gen, Positive (..), frequency, oneof, shrinkList, shuffle, listOf, shrinkNothing, vectorOf, elements, sublistOf, counterexample, (===), (==>), Blind (..))
+import Test.QuickCheck.Instances.Cabal ()
 
-import Distribution.Types.GenericPackageDescription (FlagName)
+import Distribution.Types.Flag (FlagName)
 import Distribution.Utils.ShortText (ShortText)
 
 import Distribution.Client.Setup (defaultMaxBackjumps)
 
+import           Distribution.Types.LibraryVisibility
 import           Distribution.Types.PackageName
 import           Distribution.Types.UnqualComponentName
 
@@ -57,8 +56,8 @@ tests = [
             let r1 = solve' mGoalOrder1 test
                 r2 = solve' mGoalOrder2 test { testTargets = targets2 }
                 solve' goalOrder =
-                    solve (EnableBackjumping True) (ReorderGoals False)
-                          (CountConflicts True) indepGoals
+                    solve (EnableBackjumping True) (FineGrainedConflicts True)
+                          (ReorderGoals False) (CountConflicts True) indepGoals
                           (getBlind <$> goalOrder)
                 targets = testTargets test
                 targets2 = case targetOrder of
@@ -73,8 +72,9 @@ tests = [
           \test reorderGoals ->
             let r1 = solve' (IndependentGoals False) test
                 r2 = solve' (IndependentGoals True)  test
-                solve' indep = solve (EnableBackjumping True) reorderGoals
-                                     (CountConflicts True) indep Nothing
+                solve' indep =
+                    solve (EnableBackjumping True) (FineGrainedConflicts True)
+                          reorderGoals (CountConflicts True) indep Nothing
              in counterexample (showResults r1 r2) $
                 noneReachedBackjumpLimit [r1, r2] ==>
                 isRight (resultPlan r1) `implies` isRight (resultPlan r2)
@@ -83,26 +83,52 @@ tests = [
           \test reorderGoals indepGoals ->
             let r1 = solve' (EnableBackjumping True)  test
                 r2 = solve' (EnableBackjumping False) test
-                solve' enableBj = solve enableBj reorderGoals
-                                        (CountConflicts True) indepGoals Nothing
+                solve' enableBj =
+                    solve enableBj (FineGrainedConflicts False) reorderGoals
+                          (CountConflicts True) indepGoals Nothing
              in counterexample (showResults r1 r2) $
                 noneReachedBackjumpLimit [r1, r2] ==>
                 isRight (resultPlan r1) === isRight (resultPlan r2)
 
-    -- This test uses --no-count-conflicts, because the goal order used with
-    -- --count-conflicts depends on the total set of conflicts seen by the
+    , testPropertyWithSeed "fine-grained conflicts does not affect solvability" $
+          \test reorderGoals indepGoals ->
+            let r1 = solve' (FineGrainedConflicts True)  test
+                r2 = solve' (FineGrainedConflicts False) test
+                solve' fineGrainedConflicts =
+                    solve (EnableBackjumping True) fineGrainedConflicts
+                    reorderGoals (CountConflicts True) indepGoals Nothing
+             in counterexample (showResults r1 r2) $
+                noneReachedBackjumpLimit [r1, r2] ==>
+                isRight (resultPlan r1) === isRight (resultPlan r2)
+
+    -- The next two tests use --no-count-conflicts, because the goal order used
+    -- with --count-conflicts depends on the total set of conflicts seen by the
     -- solver. The solver explores more of the tree and encounters more
     -- conflicts when it doesn't backjump. The different goal orders can lead to
     -- different solutions and cause the test to fail.
     -- TODO: Find a faster way to randomly sort goals, and then use a random
-    -- goal order in this test.
+    -- goal order in these tests.
+
     , testPropertyWithSeed
           "backjumping does not affect the result (with static goal order)" $
           \test reorderGoals indepGoals ->
             let r1 = solve' (EnableBackjumping True)  test
                 r2 = solve' (EnableBackjumping False) test
-                solve' enableBj = solve enableBj reorderGoals
-                                  (CountConflicts False) indepGoals Nothing
+                solve' enableBj =
+                    solve enableBj (FineGrainedConflicts False) reorderGoals
+                          (CountConflicts False) indepGoals Nothing
+             in counterexample (showResults r1 r2) $
+                noneReachedBackjumpLimit [r1, r2] ==>
+                resultPlan r1 === resultPlan r2
+
+    , testPropertyWithSeed
+          "fine-grained conflicts does not affect the result (with static goal order)" $
+          \test reorderGoals indepGoals ->
+            let r1 = solve' (FineGrainedConflicts True)  test
+                r2 = solve' (FineGrainedConflicts False) test
+                solve' fineGrainedConflicts =
+                    solve (EnableBackjumping True) fineGrainedConflicts
+                          reorderGoals (CountConflicts False) indepGoals Nothing
              in counterexample (showResults r1 r2) $
                 noneReachedBackjumpLimit [r1, r2] ==>
                 resultPlan r1 === resultPlan r2
@@ -132,10 +158,15 @@ newtype VarOrdering = VarOrdering {
       unVarOrdering :: Variable P.QPN -> Variable P.QPN -> Ordering
     }
 
-solve :: EnableBackjumping -> ReorderGoals -> CountConflicts -> IndependentGoals
+solve :: EnableBackjumping
+      -> FineGrainedConflicts
+      -> ReorderGoals
+      -> CountConflicts
+      -> IndependentGoals
       -> Maybe VarOrdering
-      -> SolverTest -> Result
-solve enableBj reorder countConflicts indep goalOrder test =
+      -> SolverTest
+      -> Result
+solve enableBj fineGrainedConflicts reorder countConflicts indep goalOrder test =
   let (lg, result) =
         runProgress $ exResolve (unTestDb (testDb test)) Nothing Nothing
                   (pkgConfigDbFromList [])
@@ -143,7 +174,8 @@ solve enableBj reorder countConflicts indep goalOrder test =
                   -- The backjump limit prevents individual tests from using
                   -- too much time and memory.
                   (Just defaultMaxBackjumps)
-                  countConflicts (MinimizeConflictSet False) indep reorder
+                  countConflicts fineGrainedConflicts
+                  (MinimizeConflictSet False) indep reorder
                   (AllowBootLibInstalls False) OnlyConstrainedNone enableBj
                   (SolveExecutables True) (unVarOrdering <$> goalOrder)
                   (testConstraints test) (testPreferences test) normal
@@ -277,8 +309,8 @@ arbitraryExInst pn v pkgs = do
   deps <- randomSubset numDeps pkgs
   return $ ExInst (unPN pn) (unPV v) pkgHash (map exInstHash deps)
 
-arbitraryComponentDeps :: PN -> TestDb -> Gen (ComponentDeps [ExampleDependency])
-arbitraryComponentDeps _  (TestDb []) = return $ CD.fromLibraryDeps []
+arbitraryComponentDeps :: PN -> TestDb -> Gen (ComponentDeps Dependencies)
+arbitraryComponentDeps _  (TestDb []) = return $ CD.fromLibraryDeps (dependencies [])
 arbitraryComponentDeps pn db          = do
   -- dedupComponentNames removes components with duplicate names, for example,
   -- 'ComponentExe x' and 'ComponentTest x', and then CD.fromList combines
@@ -288,7 +320,7 @@ arbitraryComponentDeps pn db          = do
   return $ if isCompleteComponentDeps cds
            then cds
            else -- Add a library if the ComponentDeps isn't complete.
-                CD.fromLibraryDeps [] <> cds
+                CD.fromLibraryDeps (dependencies []) <> cds
   where
     isValid :: Component -> Bool
     isValid (ComponentSubLib name) = name /= mkUnqualComponentName (unPN pn)
@@ -319,13 +351,20 @@ isCompleteComponentDeps = any (completesPkg . fst) . CD.toList
     completesPkg (ComponentFLib   _) = False
     completesPkg ComponentSetup      = False
 
-arbitraryComponentDep :: TestDb -> Gen (ComponentDep [ExampleDependency])
+arbitraryComponentDep :: TestDb -> Gen (ComponentDep Dependencies)
 arbitraryComponentDep db = do
   comp <- arbitrary
   deps <- case comp of
             ComponentSetup -> smallListOf (arbitraryExDep db SetupDep)
             _              -> boundedListOf 5 (arbitraryExDep db NonSetupDep)
-  return (comp, deps)
+  return ( comp
+         , Dependencies {
+             depsExampleDependencies = deps
+
+           -- TODO: Test different values for visibility and buildability.
+           , depsVisibility = LibraryVisibilityPublic
+           , depsIsBuildable = True
+           } )
 
 -- | Location of an 'ExampleDependency'. It determines which values are valid.
 data ExDepLocation = SetupDep | NonSetupDep
@@ -354,8 +393,8 @@ arbitraryExDep db@(TestDb pkgs) level =
 
 arbitraryDeps :: TestDb -> Gen Dependencies
 arbitraryDeps db = frequency
-    [ (1, return NotBuildable)
-    , (20, Buildable <$> smallListOf (arbitraryExDep db NonSetupDep))
+    [ (1, return unbuildableDependencies)
+    , (20, dependencies <$> smallListOf (arbitraryExDep db NonSetupDep))
     ]
 
 arbitraryFlagName :: Gen String
@@ -399,26 +438,26 @@ instance Arbitrary IndependentGoals where
 
   shrink (IndependentGoals indep) = [IndependentGoals False | indep]
 
-instance Arbitrary UnqualComponentName where
-  -- The "component-" prefix prevents component names and build-depends
-  -- dependency names from overlapping.
-  -- TODO: Remove the prefix once the QuickCheck tests support dependencies on
-  -- internal libraries.
-  arbitrary =
-      mkUnqualComponentName <$> (\c -> "component-" ++ [c]) <$> elements "ABC"
-
 instance Arbitrary Component where
   arbitrary = oneof [ return ComponentLib
-                    , ComponentSubLib <$> arbitrary
-                    , ComponentExe <$> arbitrary
-                    , ComponentFLib <$> arbitrary
-                    , ComponentTest <$> arbitrary
-                    , ComponentBench <$> arbitrary
+                    , ComponentSubLib <$> arbitraryUQN
+                    , ComponentExe <$> arbitraryUQN
+                    , ComponentFLib <$> arbitraryUQN
+                    , ComponentTest <$> arbitraryUQN
+                    , ComponentBench <$> arbitraryUQN
                     , return ComponentSetup
                     ]
 
   shrink ComponentLib = []
   shrink _ = [ComponentLib]
+
+-- The "component-" prefix prevents component names and build-depends
+-- dependency names from overlapping.
+-- TODO: Remove the prefix once the QuickCheck tests support dependencies on
+-- internal libraries.
+arbitraryUQN :: Gen UnqualComponentName
+arbitraryUQN =
+    mkUnqualComponentName <$> (\c -> "component-" ++ [c]) <$> elements "ABC"
 
 instance Arbitrary ExampleInstalled where
   arbitrary = error "arbitrary not implemented: ExampleInstalled"
@@ -443,19 +482,18 @@ instance Arbitrary ExampleDependency where
   shrink (ExFix "base" _) = [] -- preserve bounds on base
   shrink (ExFix pn _) = [ExAny pn]
   shrink (ExFlagged flag th el) =
-         deps th ++ deps el
+         depsExampleDependencies th ++ depsExampleDependencies el
       ++ [ExFlagged flag th' el | th' <- shrink th]
       ++ [ExFlagged flag th el' | el' <- shrink el]
-    where
-      deps NotBuildable = []
-      deps (Buildable ds) = ds
   shrink dep = error $ "Dependency not handled: " ++ show dep
 
 instance Arbitrary Dependencies where
   arbitrary = error "arbitrary not implemented: Dependencies"
 
-  shrink NotBuildable = [Buildable []]
-  shrink (Buildable deps) = map Buildable (shrink deps)
+  shrink deps =
+         [ deps { depsVisibility = v } | v <- shrink $ depsVisibility deps ]
+      ++ [ deps { depsIsBuildable = b } | b <- shrink $ depsIsBuildable deps ]
+      ++ [ deps { depsExampleDependencies = ds } | ds <- shrink $ depsExampleDependencies deps ]
 
 instance Arbitrary ExConstraint where
   arbitrary = error "arbitrary not implemented: ExConstraint"
@@ -478,11 +516,6 @@ instance Arbitrary OptionalStanza where
 
   shrink BenchStanzas = [TestStanzas]
   shrink TestStanzas  = []
-
-instance Arbitrary VersionRange where
-  arbitrary = error "arbitrary not implemented: VersionRange"
-
-  shrink vr = [noVersion | vr /= noVersion]
 
 -- Randomly sorts solver variables using 'hash'.
 -- TODO: Sorting goals with this function is very slow.

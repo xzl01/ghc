@@ -6,14 +6,16 @@ Index: b/utils/haddock/haddock-api/src/Haddock/Backends/Xhtml.hs
 ===================================================================
 --- a/utils/haddock/haddock-api/src/Haddock/Backends/Xhtml.hs
 +++ b/utils/haddock/haddock-api/src/Haddock/Backends/Xhtml.hs
-@@ -127,13 +127,13 @@ headHtml docTitle themes mathjax_url =
-     , thetitle << docTitle
-     , styleSheet themes
-     , thelink ! [ rel "stylesheet", thetype "text/css", href quickJumpCssFile] << noHtml
+@@ -145,7 +145,7 @@ headHtml docTitle themes mathjax_url bas
+                 , thetype "text/css"
+                 , href (withBaseURL base_url quickJumpCssFile) ]
+              << noHtml
 -    , thelink ! [ rel "stylesheet", thetype "text/css", href fontUrl] << noHtml
 +    -- , thelink ! [ rel "stylesheet", thetype "text/css", href fontUrl] << noHtml
-     , script ! [src haddockJsFile, emptyAttr "async", thetype "text/javascript"] << noHtml
-     , script ! [thetype "text/x-mathjax-config"] << primHtml mjConf
+     , script ! [ src (withBaseURL base_url haddockJsFile)
+                , emptyAttr "async"
+                , thetype "text/javascript" ]
+@@ -154,7 +154,7 @@ headHtml docTitle themes mathjax_url bas
      , script ! [src mjUrl, thetype "text/javascript"] << noHtml
      ]
    where

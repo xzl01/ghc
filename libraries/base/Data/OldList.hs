@@ -26,6 +26,7 @@ module Data.OldList
    , tail
    , init
    , uncons
+   , singleton
    , null
    , length
 
@@ -241,9 +242,9 @@ infix 5 \\ -- comment to fool cpp: https://downloads.haskell.org/~ghc/latest/doc
 dropWhileEnd :: (a -> Bool) -> [a] -> [a]
 dropWhileEnd p = foldr (\x xs -> if p x && null xs then [] else x : xs) []
 
--- | /O(min(m,n))/. The 'stripPrefix' function drops the given prefix from a
--- list. It returns 'Nothing' if the list did not start with the prefix given,
--- or 'Just' the list after the prefix, if it does.
+-- | \(\mathcal{O}(\min(m,n))\). The 'stripPrefix' function drops the given
+-- prefix from a list. It returns 'Nothing' if the list did not start with the
+-- prefix given, or 'Just' the list after the prefix, if it does.
 --
 -- >>> stripPrefix "foo" "foobar"
 -- Just "bar"
@@ -319,8 +320,8 @@ findIndices p ls = build $ \c n ->
   in foldr go (\_ -> n) ls 0#
 #endif  /* USE_REPORT_PRELUDE */
 
--- | /O(min(m,n))/. The 'isPrefixOf' function takes two lists and returns 'True'
--- iff the first list is a prefix of the second.
+-- | \(\mathcal{O}(\min(m,n))\). The 'isPrefixOf' function takes two lists and
+-- returns 'True' iff the first list is a prefix of the second.
 --
 -- >>> "Hello" `isPrefixOf` "Hello World!"
 -- True
@@ -388,11 +389,10 @@ dropLengthMaybe (_:x') (_:y') = dropLengthMaybe x' y'
 isInfixOf               :: (Eq a) => [a] -> [a] -> Bool
 isInfixOf needle haystack = any (isPrefixOf needle) (tails haystack)
 
--- | /O(n^2)/. The 'nub' function removes duplicate elements from a list.
--- In particular, it keeps only the first occurrence of each element.
--- (The name 'nub' means \`essence\'.)
--- It is a special case of 'nubBy', which allows the programmer to supply
--- their own equality test.
+-- | \(\mathcal{O}(n^2)\). The 'nub' function removes duplicate elements from a
+-- list. In particular, it keeps only the first occurrence of each element. (The
+-- name 'nub' means \`essence\'.) It is a special case of 'nubBy', which allows
+-- the programmer to supply their own equality test.
 --
 -- >>> nub [1,2,3,4,3,2,1,2,4,3,5]
 -- [1,2,3,4,5]
@@ -431,8 +431,8 @@ elem_by eq y (x:xs)     =  x `eq` y || elem_by eq y xs
 #endif
 
 
--- | /O(n)/. 'delete' @x@ removes the first occurrence of @x@ from its list
--- argument. For example,
+-- | \(\mathcal{O}(n)\). 'delete' @x@ removes the first occurrence of @x@ from
+-- its list argument. For example,
 --
 -- >>> delete 'a' "banana"
 -- "bnana"
@@ -442,8 +442,8 @@ elem_by eq y (x:xs)     =  x `eq` y || elem_by eq y xs
 delete                  :: (Eq a) => a -> [a] -> [a]
 delete                  =  deleteBy (==)
 
--- | /O(n)/. The 'deleteBy' function behaves like 'delete', but takes a
--- user-supplied equality predicate.
+-- | \(\mathcal{O}(n)\). The 'deleteBy' function behaves like 'delete', but
+-- takes a user-supplied equality predicate.
 --
 -- >>> deleteBy (<=) 4 [1..10]
 -- [1,2,3,5,6,7,8,9,10]
@@ -509,9 +509,9 @@ intersectBy _  [] _     =  []
 intersectBy _  _  []    =  []
 intersectBy eq xs ys    =  [x | x <- xs, any (eq x) ys]
 
--- | /O(n)/. The 'intersperse' function takes an element and a list and
--- \`intersperses\' that element between the elements of the list.
--- For example,
+-- | \(\mathcal{O}(n)\). The 'intersperse' function takes an element and a list
+-- and \`intersperses\' that element between the elements of the list. For
+-- example,
 --
 -- >>> intersperse ',' "abcde"
 -- "a,b,c,d,e"
@@ -547,13 +547,57 @@ intercalate xs xss = concat (intersperse xs xss)
 --
 -- >>> transpose [[10,11],[20],[],[30,31,32]]
 -- [[10,20,30],[11,31],[32]]
-transpose               :: [[a]] -> [[a]]
-transpose []             = []
-transpose ([]   : xss)   = transpose xss
-transpose ((x:xs) : xss) = (x : [h | (h:_) <- xss]) : transpose (xs : [ t | (_:t) <- xss])
+transpose :: [[a]] -> [[a]]
+transpose [] = []
+transpose ([] : xss) = transpose xss
+transpose ((x : xs) : xss) = combine x hds xs tls
+  where
+    -- We tie the calculations of heads and tails together
+    -- to prevent heads from leaking into tails and vice versa.
+    -- unzip makes the selector thunk arrangements we need to
+    -- ensure everything gets cleaned up properly.
+    (hds, tls) = unzip [(hd, tl) | hd : tl <- xss]
+    combine y h ys t = (y:h) : transpose (ys:t)
+    {-# NOINLINE combine #-}
+  {- Implementation note:
+  If the bottom part of the function was written as such:
+
+  ```
+  transpose ((x : xs) : xss) = (x:hds) : transpose (xs:tls)
+  where
+    (hds,tls) = hdstls
+    hdstls = unzip [(hd, tl) | hd : tl <- xss]
+    {-# NOINLINE hdstls #-}
+  ```
+  Here are the steps that would take place:
+
+  1. We allocate a thunk, `hdstls`, representing the result of unzipping.
+  2. We allocate selector thunks, `hds` and `tls`, that deconstruct `hdstls`.
+  3. Install `hds` as the tail of the result head and pass `xs:tls` to
+     the recursive call in the result tail.
+
+  Once optimised, this code would amount to:
+
+  ```
+  transpose ((x : xs) : xss) = (x:hds) : (let tls = snd hdstls in transpose (xs:tls))
+  where
+    hds = fst hdstls
+    hdstls = unzip [(hd, tl) | hd : tl <- xss]
+    {-# NOINLINE hdstls #-}
+  ```
+
+  In particular, GHC does not produce the `tls` selector thunk immediately;
+  rather, it waits to do so until the tail of the result is actually demanded.
+  So when `hds` is demanded, that does not resolve `snd hdstls`; the tail of the
+  result keeps `hdstls` alive.
+
+  By writing `combine` and making it NOINLINE, we prevent GHC from delaying
+  the selector thunk allocation, requiring that `hds` and `tls` are actually
+  allocated to be passed to `combine`.
+  -}
 
 
--- | The 'partition' function takes a predicate a list and returns
+-- | The 'partition' function takes a predicate and a list, and returns
 -- the pair of lists of elements which do and do not satisfy the
 -- predicate, respectively; i.e.,
 --
@@ -618,18 +662,18 @@ mapAccumR f s (x:xs)    =  (s'', y:ys)
                            where (s'',y ) = f s' x
                                  (s', ys) = mapAccumR f s xs
 
--- | /O(n)/. The 'insert' function takes an element and a list and inserts the
--- element into the list at the first position where it is less than or equal to
--- the next element. In particular, if the list is sorted before the call, the
--- result will also be sorted. It is a special case of 'insertBy', which allows
--- the programmer to supply their own comparison function.
+-- | \(\mathcal{O}(n)\). The 'insert' function takes an element and a list and
+-- inserts the element into the list at the first position where it is less than
+-- or equal to the next element. In particular, if the list is sorted before the
+-- call, the result will also be sorted. It is a special case of 'insertBy',
+-- which allows the programmer to supply their own comparison function.
 --
 -- >>> insert 4 [1,2,3,5,6,7]
 -- [1,2,3,4,5,6,7]
 insert :: Ord a => a -> [a] -> [a]
 insert e ls = insertBy (compare) e ls
 
--- | /O(n)/. The non-overloaded version of 'insert'.
+-- | \(\mathcal{O}(n)\). The non-overloaded version of 'insert'.
 insertBy :: (a -> a -> Ordering) -> a -> [a] -> [a]
 insertBy _   x [] = [x]
 insertBy cmp x ys@(y:ys')
@@ -669,16 +713,29 @@ minimumBy cmp xs        =  foldl1 minBy xs
                                        GT -> y
                                        _  -> x
 
--- | /O(n)/. The 'genericLength' function is an overloaded version of 'length'.
--- In particular, instead of returning an 'Int', it returns any type which is an
--- instance of 'Num'. It is, however, less efficient than 'length'.
+-- | \(\mathcal{O}(n)\). The 'genericLength' function is an overloaded version
+-- of 'length'. In particular, instead of returning an 'Int', it returns any
+-- type which is an instance of 'Num'. It is, however, less efficient than
+-- 'length'.
 --
 -- >>> genericLength [1, 2, 3] :: Int
 -- 3
 -- >>> genericLength [1, 2, 3] :: Float
 -- 3.0
+--
+-- Users should take care to pick a return type that is wide enough to contain
+-- the full length of the list. If the width is insufficient, the overflow
+-- behaviour will depend on the @(+)@ implementation in the selected 'Num'
+-- instance. The following example overflows because the actual list length
+-- of 200 lies outside of the 'Int8' range of @-128..127@.
+--
+-- >>> genericLength [1..200] :: Int8
+-- -56
 genericLength           :: (Num i) => [a] -> i
-{-# NOINLINE [1] genericLength #-}
+{-# NOINLINE [2] genericLength #-}
+    -- Give time for the RULEs for (++) to fire in InitialPhase
+    -- It's recursive, so won't inline anyway,
+    -- but saying so is more explicit
 genericLength []        =  0
 genericLength (_:l)     =  1 + genericLength l
 
@@ -929,8 +986,27 @@ foldr7_left _  z _ _ _      _      _      _      _      _      = z
 
  #-}
 
+{-
+
+Note [Inline @unzipN@ functions]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The inline principle for @unzip{4,5,6,7}@ is the same as 'unzip'/'unzip3' in
+"GHC.List".
+The 'unzip'/'unzip3' functions are inlined so that the `foldr` with which they
+are defined has an opportunity to fuse.
+
+As such, since there are not any differences between 2/3-ary 'unzip' and its
+n-ary counterparts below aside from the number of arguments, the `INLINE`
+pragma should be replicated in the @unzipN@ functions below as well.
+
+-}
+
 -- | The 'unzip4' function takes a list of quadruples and returns four
 -- lists, analogous to 'unzip'.
+{-# INLINE unzip4 #-}
+-- Inline so that fusion with `foldr` has an opportunity to fire.
+-- See Note [Inline @unzipN@ functions] above.
 unzip4                  :: [(a,b,c,d)] -> ([a],[b],[c],[d])
 unzip4                  =  foldr (\(a,b,c,d) ~(as,bs,cs,ds) ->
                                         (a:as,b:bs,c:cs,d:ds))
@@ -938,6 +1014,9 @@ unzip4                  =  foldr (\(a,b,c,d) ~(as,bs,cs,ds) ->
 
 -- | The 'unzip5' function takes a list of five-tuples and returns five
 -- lists, analogous to 'unzip'.
+{-# INLINE unzip5 #-}
+-- Inline so that fusion with `foldr` has an opportunity to fire.
+-- See Note [Inline @unzipN@ functions] above.
 unzip5                  :: [(a,b,c,d,e)] -> ([a],[b],[c],[d],[e])
 unzip5                  =  foldr (\(a,b,c,d,e) ~(as,bs,cs,ds,es) ->
                                         (a:as,b:bs,c:cs,d:ds,e:es))
@@ -945,6 +1024,9 @@ unzip5                  =  foldr (\(a,b,c,d,e) ~(as,bs,cs,ds,es) ->
 
 -- | The 'unzip6' function takes a list of six-tuples and returns six
 -- lists, analogous to 'unzip'.
+{-# INLINE unzip6 #-}
+-- Inline so that fusion with `foldr` has an opportunity to fire.
+-- See Note [Inline @unzipN@ functions] above.
 unzip6                  :: [(a,b,c,d,e,f)] -> ([a],[b],[c],[d],[e],[f])
 unzip6                  =  foldr (\(a,b,c,d,e,f) ~(as,bs,cs,ds,es,fs) ->
                                         (a:as,b:bs,c:cs,d:ds,e:es,f:fs))
@@ -952,6 +1034,9 @@ unzip6                  =  foldr (\(a,b,c,d,e,f) ~(as,bs,cs,ds,es,fs) ->
 
 -- | The 'unzip7' function takes a list of seven-tuples and returns
 -- seven lists, analogous to 'unzip'.
+{-# INLINE unzip7 #-}
+-- Inline so that fusion with `foldr` has an opportunity to fire.
+-- See Note [Inline @unzipN@ functions] above.
 unzip7          :: [(a,b,c,d,e,f,g)] -> ([a],[b],[c],[d],[e],[f],[g])
 unzip7          =  foldr (\(a,b,c,d,e,f,g) ~(as,bs,cs,ds,es,fs,gs) ->
                                 (a:as,b:bs,c:cs,d:ds,e:es,f:fs,g:gs))
@@ -1001,8 +1086,8 @@ inits                   = map toListSB . scanl' snocSB emptySB
 -- if it fuses with a consumer, and it would generally lead to serious
 -- loss of sharing if allowed to fuse with a producer.
 
--- | /O(n)/. The 'tails' function returns all final segments of the argument,
--- longest first.  For example,
+-- | \(\mathcal{O}(n)\). The 'tails' function returns all final segments of the
+-- argument, longest first. For example,
 --
 -- >>> tails "abc"
 -- ["abc","bc","c",""]
@@ -1057,7 +1142,7 @@ permutations xs0        =  xs0 : perms xs0 []
 -- It is a special case of 'sortBy', which allows the programmer to supply
 -- their own comparison function.
 --
--- Elements are arranged from from lowest to highest, keeping duplicates in
+-- Elements are arranged from lowest to highest, keeping duplicates in
 -- the order they appeared in the input.
 --
 -- >>> sort [1,6,4,3,2,5]
@@ -1084,7 +1169,7 @@ and possibly to bear similarities to a 1982 paper by Richard O'Keefe:
 "A smooth applicative merge sort".
 
 Benchmarks show it to be often 2x the speed of the previous implementation.
-Fixes ticket http://ghc.haskell.org/trac/ghc/ticket/2143
+Fixes ticket https://gitlab.haskell.org/ghc/ghc/issues/2143
 -}
 
 sort = sortBy compare
@@ -1230,7 +1315,7 @@ rqpart cmp x (y:ys) rle rgt r =
 -- input list.  This is called the decorate-sort-undecorate paradigm, or
 -- Schwartzian transform.
 --
--- Elements are arranged from from lowest to highest, keeping duplicates in
+-- Elements are arranged from lowest to highest, keeping duplicates in
 -- the order they appeared in the input.
 --
 -- >>> sortOn fst [(2, "world"), (4, "!"), (1, "Hello")]
@@ -1240,6 +1325,16 @@ rqpart cmp x (y:ys) rle rgt r =
 sortOn :: Ord b => (a -> b) -> [a] -> [a]
 sortOn f =
   map snd . sortBy (comparing fst) . map (\x -> let y = f x in y `seq` (y, x))
+
+-- | Produce singleton list.
+--
+-- >>> singleton True
+-- [True]
+--
+-- @since 4.15.0.0
+--
+singleton :: a -> [a]
+singleton x = [x]
 
 -- | The 'unfoldr' function is a \`dual\' to 'foldr': while 'foldr'
 -- reduces a list to a summary value, 'unfoldr' builds a list from
@@ -1266,6 +1361,7 @@ sortOn f =
 --
 
 -- Note [INLINE unfoldr]
+-- ~~~~~~~~~~~~~~~~~~~~~
 -- We treat unfoldr a little differently from some other forms for list fusion
 -- for two reasons:
 --
@@ -1300,35 +1396,40 @@ unfoldr f b0 = build (\c n ->
 -- -----------------------------------------------------------------------------
 -- Functions on strings
 
--- | 'lines' breaks a string up into a list of strings at newline
--- characters.  The resulting strings do not contain newlines.
+-- | Splits the argument into a list of /lines/ stripped of their terminating
+-- @\n@ characters.  The @\n@ terminator is optional in a final non-empty
+-- line of the argument string.
 --
--- Note that after splitting the string at newline characters, the
--- last part of the string is considered a line even if it doesn't end
--- with a newline. For example,
+-- For example:
 --
--- >>> lines ""
+-- >>> lines ""           -- empty input contains no lines
 -- []
 --
--- >>> lines "\n"
+-- >>> lines "\n"         -- single empty line
 -- [""]
 --
--- >>> lines "one"
+-- >>> lines "one"        -- single unterminated line
 -- ["one"]
 --
--- >>> lines "one\n"
+-- >>> lines "one\n"      -- single non-empty line
 -- ["one"]
 --
--- >>> lines "one\n\n"
+-- >>> lines "one\n\n"    -- second line is empty
 -- ["one",""]
 --
--- >>> lines "one\ntwo"
+-- >>> lines "one\ntwo"   -- second line is unterminated
 -- ["one","two"]
 --
--- >>> lines "one\ntwo\n"
+-- >>> lines "one\ntwo\n" -- two non-empty lines
 -- ["one","two"]
 --
--- Thus @'lines' s@ contains at least as many elements as newlines in @s@.
+-- When the argument string is empty, or ends in a @\n@ character, it can be
+-- recovered by passing the result of 'lines' to the 'unlines' function.
+-- Otherwise, 'unlines' appends the missing terminating @\n@.  This makes
+-- @unlines . lines@ /idempotent/:
+--
+-- > (unlines . lines) . (unlines . lines) = (unlines . lines)
+--
 lines                   :: String -> [String]
 lines ""                =  []
 -- Somehow GHC doesn't detect the selector thunks in the below code,
@@ -1342,11 +1443,18 @@ lines s                 =  cons (case break (== '\n') s of
   where
     cons ~(h, t)        =  h : t
 
--- | 'unlines' is an inverse operation to 'lines'.
--- It joins lines, after appending a terminating newline to each.
+-- | Appends a @\n@ character to each input string, then concatenates the
+-- results. Equivalent to @'foldMap' (\s -> s '++' "\n")@.
 --
 -- >>> unlines ["Hello", "World", "!"]
 -- "Hello\nWorld\n!\n"
+--
+-- = Note
+--
+-- @'unlines' '.' 'lines' '/=' 'id'@ when the input is not @\n@-terminated:
+--
+-- >>> unlines . lines $ "foo\nbar"
+-- "foo\nbar\n"
 unlines                 :: [String] -> String
 #if defined(USE_REPORT_PRELUDE)
 unlines                 =  concatMap (++ "\n")

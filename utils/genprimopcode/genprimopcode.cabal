@@ -15,7 +15,11 @@ Description:
     * an LaTeX document describing the primitive operations.
 Category: Development
 build-type: Simple
-cabal-version: >=1.10
+cabal-version: 2.0
+
+Flag build-tool-depends
+    Description: Use build-tool-depends
+    Default: True
 
 Executable genprimopcode
     Default-Language: Haskell2010
@@ -26,3 +30,5 @@ Executable genprimopcode
                    Syntax
     Build-Depends: base       >= 4   && < 5,
                    array
+    if flag(build-tool-depends)
+      build-tool-depends: alex:alex >= 3.2.6, happy:happy >= 1.20.0

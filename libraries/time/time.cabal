@@ -1,7 +1,8 @@
+cabal-version:  3.0
 name:           time
-version:        1.9.3
+version:        1.12.2
 stability:      stable
-license:        BSD3
+license:        BSD-2-Clause
 license-file:   LICENSE
 author:         Ashley Yakeley
 maintainer:     <ashley@semantic.org>
@@ -11,8 +12,10 @@ synopsis:       A time library
 description:    Time, clocks and calendars
 category:       Time
 build-type:     Configure
-cabal-version:  >=1.10
-tested-with:    GHC == 8.0.1, GHC == 7.10.3, GHC == 7.8.4
+tested-with:
+    GHC == 8.10.7,
+    GHC == 9.0.2,
+    GHC == 9.2.2
 x-follows-version-policy:
 
 extra-source-files:
@@ -41,11 +44,12 @@ library
         Rank2Types
         DeriveDataTypeable
         StandaloneDeriving
-        CPP
+        PatternSynonyms
+        ViewPatterns
     ghc-options: -Wall -fwarn-tabs
     c-sources: lib/cbits/HsTime.c
     build-depends:
-        base >= 4.7 && < 5,
+        base >= 4.14 && < 5,
         deepseq >= 1.1
     if os(windows)
         build-depends: Win32
@@ -56,6 +60,8 @@ library
         Data.Time.Calendar.WeekDate,
         Data.Time.Calendar.Julian,
         Data.Time.Calendar.Easter,
+        Data.Time.Calendar.Month,
+        Data.Time.Calendar.Quarter,
         Data.Time.Clock,
         Data.Time.Clock.System,
         Data.Time.Clock.POSIX,
@@ -66,13 +72,14 @@ library
         Data.Time.Format.ISO8601,
         Data.Time
     other-modules:
-        Data.Format
-        Data.Time.Calendar.Private,
+        Data.Format,
+        Data.Time.Calendar.CalendarDiffDays,
         Data.Time.Calendar.Days,
         Data.Time.Calendar.Gregorian,
-        Data.Time.Calendar.CalendarDiffDays,
-        Data.Time.Calendar.Week,
         Data.Time.Calendar.JulianYearDay,
+        Data.Time.Calendar.Private,
+        Data.Time.Calendar.Types,
+        Data.Time.Calendar.Week,
         Data.Time.Clock.Internal.DiffTime,
         Data.Time.Clock.Internal.AbsoluteTime,
         Data.Time.Clock.Internal.NominalDiffTime,
@@ -85,7 +92,7 @@ library
         Data.Time.Clock.Internal.UTCDiff,
         Data.Time.LocalTime.Internal.TimeZone,
         Data.Time.LocalTime.Internal.TimeOfDay,
-        Data.Time.LocalTime.Internal.CalendarDiffTime
+        Data.Time.LocalTime.Internal.CalendarDiffTime,
         Data.Time.LocalTime.Internal.LocalTime,
         Data.Time.LocalTime.Internal.ZonedTime,
         Data.Time.Format.Parse,
@@ -99,6 +106,8 @@ library
         install-includes:
             HsTime.h
     else
+        autogen-includes:
+            HsTimeConfig.h
         install-includes:
             HsTime.h
             HsTimeConfig.h
@@ -113,13 +122,23 @@ test-suite ShowDefaultTZAbbreviations
         time
     main-is: ShowDefaultTZAbbreviations.hs
 
+test-suite ShowTime
+    type: exitcode-stdio-1.0
+    hs-source-dirs: test
+    default-language: Haskell2010
+    ghc-options: -Wall -fwarn-tabs
+    build-depends:
+        base,
+        time
+    main-is: ShowTime.hs
+
 test-suite test-main
     type: exitcode-stdio-1.0
     hs-source-dirs: test/main
     default-language: Haskell2010
     default-extensions:
         Rank2Types
-        CPP
+        GeneralizedNewtypeDeriving
         DeriveDataTypeable
         StandaloneDeriving
         ExistentialQuantification
@@ -133,16 +152,19 @@ test-suite test-main
         base,
         deepseq,
         time,
+        random,
         QuickCheck,
         tasty,
         tasty-hunit,
         tasty-quickcheck
     main-is: Main.hs
     other-modules:
+        Test.Types
         Test.TestUtil
         Test.Arbitrary
         Test.Calendar.AddDays
         Test.Calendar.AddDaysRef
+        Test.Calendar.CalendarProps
         Test.Calendar.Calendars
         Test.Calendar.CalendarsRef
         Test.Calendar.ClipDates
@@ -151,15 +173,19 @@ test-suite test-main
         Test.Calendar.Duration
         Test.Calendar.Easter
         Test.Calendar.EasterRef
+        Test.Calendar.DayPeriod
         Test.Calendar.LongWeekYears
         Test.Calendar.LongWeekYearsRef
         Test.Calendar.MonthDay
         Test.Calendar.MonthDayRef
+        Test.Calendar.MonthOfYear
         Test.Calendar.Valid
         Test.Calendar.Week
+        Test.Calendar.Year
         Test.Clock.Conversion
         Test.Clock.Resolution
         Test.Clock.TAI
+        Test.Format.Compile
         Test.Format.Format
         Test.Format.ParseTime
         Test.Format.ISO8601
@@ -176,7 +202,6 @@ test-suite test-unix
     default-language: Haskell2010
     default-extensions:
         Rank2Types
-        CPP
         DeriveDataTypeable
         StandaloneDeriving
         ExistentialQuantification
@@ -195,10 +220,20 @@ test-suite test-unix
         tasty,
         tasty-hunit,
         tasty-quickcheck
-    if !os(windows)
-        build-depends: unix
     main-is: Main.hs
     other-modules:
         Test.TestUtil
         Test.Format.Format
         Test.LocalTime.TimeZone
+
+benchmark time-bench
+    type: exitcode-stdio-1.0
+    hs-source-dirs: benchmark
+    default-language: Haskell2010
+    ghc-options: -Wall -fwarn-tabs
+    build-depends:
+        base,
+        deepseq,
+        time,
+        criterion
+    main-is: Main.hs

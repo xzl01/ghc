@@ -1,7 +1,5 @@
-{-# LANGUAGE CPP, BangPatterns #-}
-#if __GLASGOW_HASKELL__ >= 701
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE Trustworthy #-}
-#endif
 -- | Copyright   : (c) 2010-2011 Simon Meier
 -- License       : BSD3-style (see LICENSE)
 --
@@ -55,7 +53,6 @@ module Data.ByteString.Builder.Prim.Binary (
   ) where
 
 import Data.ByteString.Builder.Prim.Internal
-import Data.ByteString.Builder.Prim.Internal.UncheckedShifts
 import Data.ByteString.Builder.Prim.Internal.Floating
 
 import Foreign
@@ -86,18 +83,14 @@ word16BE :: FixedPrim Word16
 #ifdef WORDS_BIGENDIAN
 word16BE = word16Host
 #else
-word16BE = fixedPrim 2 $ \w p -> do
-    poke p               (fromIntegral (shiftr_w16 w 8) :: Word8)
-    poke (p `plusPtr` 1) (fromIntegral (w)              :: Word8)
+word16BE = byteSwap16 >$< word16Host
 #endif
 
 -- | Encoding 'Word16's in little endian format.
 {-# INLINE word16LE #-}
 word16LE :: FixedPrim Word16
 #ifdef WORDS_BIGENDIAN
-word16LE = fixedPrim 2 $ \w p -> do
-    poke p               (fromIntegral (w)              :: Word8)
-    poke (p `plusPtr` 1) (fromIntegral (shiftr_w16 w 8) :: Word8)
+word16LE = byteSwap16 >$< word16Host
 #else
 word16LE = word16Host
 #endif
@@ -108,22 +101,14 @@ word32BE :: FixedPrim Word32
 #ifdef WORDS_BIGENDIAN
 word32BE = word32Host
 #else
-word32BE = fixedPrim 4 $ \w p -> do
-    poke p               (fromIntegral (shiftr_w32 w 24) :: Word8)
-    poke (p `plusPtr` 1) (fromIntegral (shiftr_w32 w 16) :: Word8)
-    poke (p `plusPtr` 2) (fromIntegral (shiftr_w32 w  8) :: Word8)
-    poke (p `plusPtr` 3) (fromIntegral (w)               :: Word8)
+word32BE = byteSwap32 >$< word32Host
 #endif
 
 -- | Encoding 'Word32's in little endian format.
 {-# INLINE word32LE #-}
 word32LE :: FixedPrim Word32
 #ifdef WORDS_BIGENDIAN
-word32LE = fixedPrim 4 $ \w p -> do
-    poke p               (fromIntegral (w)               :: Word8)
-    poke (p `plusPtr` 1) (fromIntegral (shiftr_w32 w  8) :: Word8)
-    poke (p `plusPtr` 2) (fromIntegral (shiftr_w32 w 16) :: Word8)
-    poke (p `plusPtr` 3) (fromIntegral (shiftr_w32 w 24) :: Word8)
+word32LE = byteSwap32 >$< word32Host
 #else
 word32LE = word32Host
 #endif
@@ -137,64 +122,14 @@ word64BE :: FixedPrim Word64
 #ifdef WORDS_BIGENDIAN
 word64BE = word64Host
 #else
-#if WORD_SIZE_IN_BITS < 64
---
--- To avoid expensive 64 bit shifts on 32 bit machines, we cast to
--- Word32, and write that
---
-word64BE =
-    fixedPrim 8 $ \w p -> do
-        let a = fromIntegral (shiftr_w64 w 32) :: Word32
-            b = fromIntegral w                 :: Word32
-        poke p               (fromIntegral (shiftr_w32 a 24) :: Word8)
-        poke (p `plusPtr` 1) (fromIntegral (shiftr_w32 a 16) :: Word8)
-        poke (p `plusPtr` 2) (fromIntegral (shiftr_w32 a  8) :: Word8)
-        poke (p `plusPtr` 3) (fromIntegral (a)               :: Word8)
-        poke (p `plusPtr` 4) (fromIntegral (shiftr_w32 b 24) :: Word8)
-        poke (p `plusPtr` 5) (fromIntegral (shiftr_w32 b 16) :: Word8)
-        poke (p `plusPtr` 6) (fromIntegral (shiftr_w32 b  8) :: Word8)
-        poke (p `plusPtr` 7) (fromIntegral (b)               :: Word8)
-#else
-word64BE = fixedPrim 8 $ \w p -> do
-    poke p               (fromIntegral (shiftr_w64 w 56) :: Word8)
-    poke (p `plusPtr` 1) (fromIntegral (shiftr_w64 w 48) :: Word8)
-    poke (p `plusPtr` 2) (fromIntegral (shiftr_w64 w 40) :: Word8)
-    poke (p `plusPtr` 3) (fromIntegral (shiftr_w64 w 32) :: Word8)
-    poke (p `plusPtr` 4) (fromIntegral (shiftr_w64 w 24) :: Word8)
-    poke (p `plusPtr` 5) (fromIntegral (shiftr_w64 w 16) :: Word8)
-    poke (p `plusPtr` 6) (fromIntegral (shiftr_w64 w  8) :: Word8)
-    poke (p `plusPtr` 7) (fromIntegral (w)               :: Word8)
-#endif
+word64BE = byteSwap64 >$< word64Host
 #endif
 
 -- | Encoding 'Word64's in little endian format.
 {-# INLINE word64LE #-}
 word64LE :: FixedPrim Word64
 #ifdef WORDS_BIGENDIAN
-#if WORD_SIZE_IN_BITS < 64
-word64LE =
-    fixedPrim 8 $ \w p -> do
-        let b = fromIntegral (shiftr_w64 w 32) :: Word32
-            a = fromIntegral w                 :: Word32
-        poke (p)             (fromIntegral (a)               :: Word8)
-        poke (p `plusPtr` 1) (fromIntegral (shiftr_w32 a  8) :: Word8)
-        poke (p `plusPtr` 2) (fromIntegral (shiftr_w32 a 16) :: Word8)
-        poke (p `plusPtr` 3) (fromIntegral (shiftr_w32 a 24) :: Word8)
-        poke (p `plusPtr` 4) (fromIntegral (b)               :: Word8)
-        poke (p `plusPtr` 5) (fromIntegral (shiftr_w32 b  8) :: Word8)
-        poke (p `plusPtr` 6) (fromIntegral (shiftr_w32 b 16) :: Word8)
-        poke (p `plusPtr` 7) (fromIntegral (shiftr_w32 b 24) :: Word8)
-#else
-word64LE = fixedPrim 8 $ \w p -> do
-    poke p               (fromIntegral (w)               :: Word8)
-    poke (p `plusPtr` 1) (fromIntegral (shiftr_w64 w  8) :: Word8)
-    poke (p `plusPtr` 2) (fromIntegral (shiftr_w64 w 16) :: Word8)
-    poke (p `plusPtr` 3) (fromIntegral (shiftr_w64 w 24) :: Word8)
-    poke (p `plusPtr` 4) (fromIntegral (shiftr_w64 w 32) :: Word8)
-    poke (p `plusPtr` 5) (fromIntegral (shiftr_w64 w 40) :: Word8)
-    poke (p `plusPtr` 6) (fromIntegral (shiftr_w64 w 48) :: Word8)
-    poke (p `plusPtr` 7) (fromIntegral (shiftr_w64 w 56) :: Word8)
-#endif
+word64LE = byteSwap64 >$< word64Host
 #else
 word64LE = word64Host
 #endif
@@ -332,5 +267,3 @@ floatHost = storableToF
 {-# INLINE doubleHost #-}
 doubleHost :: FixedPrim Double
 doubleHost = storableToF
-
-

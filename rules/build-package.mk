@@ -5,8 +5,8 @@
 # This file is part of the GHC build system.
 #
 # To understand how the build system works and how to modify it, see
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Architecture
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Modifying
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/architecture
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/modifying
 #
 # -----------------------------------------------------------------------------
 
@@ -99,7 +99,7 @@ endif
 # Each Haskell compilation in this package will depend on the
 # package-data.mk file because e.g. if the version of the package
 # changes we need to recompile everything in it.
-$1_$2_PKGDATA_DEP = $1/$2/package-data.mk
+$1_$2_PKGDATA_DEP = $$($1_$2_PKGDATA)
 endif
 
 $(call hs-sources,$1,$2)
@@ -112,7 +112,8 @@ $(call dependencies,$1,$2,$3)
 # Now generate all the build rules for each way in this directory:
 $$(foreach way,$$($1_$2_WAYS),$$(eval \
     $$(call c-objs,$1,$2,$$(way)) \
-    $$(call c-suffix-rules,$1,$2,$$(way),YES) \
+		$$(call c-suffix-rules,$1,$2,$$(way),YES) \
+    $$(call cxx-suffix-rules,$1,$2,$$(way),YES) \
     $$(call cmm-objs,$1,$2,$$(way)) \
     $$(call cmm-suffix-rules,$1,$2,$$(way)) \
     $$(call build-package-way,$1,$2,$$(way),$3) \
@@ -138,6 +139,9 @@ endif
 ifeq "$$(BuildSharedLibs)" "YES"
 $(call c-objs,$1,$2,dyn)
 $(call c-suffix-rules,$1,$2,dyn,YES)
+$(call cxx-suffix-rules,$1,$2,dyn,YES)
+$(call cmm-objs,$1,$2,dyn)
+$(call cmm-suffix-rules,$1,$2,dyn,YES)
 endif
 $$(foreach dir,$$($1_$2_HS_SRC_DIRS),\
   $$(eval $$(call hs-suffix-rules-srcdir,$1,$2,$$(dir))))
@@ -154,6 +158,10 @@ $(call haddock,$1,$2)
 endif
 
 # Don't put bootstrapping packages in the bindist
+#
+# See Note [inconsistent distdirs] in rules/build-package-way.mk for why
+# we hard-code dist-install; GHC will use stage2/stage3 here so we
+# cannot use the distdir parameter.
 ifneq "$3" "0"
 BINDIST_EXTRAS += $1/*.cabal $$(wildcard $1/*.buildinfo) $$(wildcard $1/dist-install/build/*.buildinfo) $1/$2/setup-config $1/LICENSE
 BINDIST_EXTRAS += $$($1_$2_INSTALL_INCLUDES_SRCS)

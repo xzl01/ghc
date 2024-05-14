@@ -1,3 +1,45 @@
+Changed in version 0.8.2:
+   * Add versions of `completeWord{,withPrev}` that take predicates for word break chars (#164)
+
+Changed in version 0.8.1.3:
+   * Use the capi calling convention for ioctl (#163).
+
+Changed in version 0.8.1.2:
+   * Add import list to Data.List (#153)
+
+Changed in version 0.8.1.1:
+   * Allow bytestring-0.11 and base-4.16
+   * Fix name conflicts with Win32-2.9 (#145)
+
+Changed in version 0.8.1.0:
+   * Use grapheme's width to align a list of completions (#143)
+   * Add withRunInBase to help decompose InputT (#131)
+   * Add support for WINIO to haskeline. (#140)
+   * Allow base-4.15
+   * Eta expand as required by simplified subsumption rules in newer GHC
+   * Remove unused iconv cbits (#135)
+   * Support non-BMP characters (or, surrogate pairs) on Windows (#125)
+
+Changed in version 0.8.0.1:
+   * Add a Cabal flag to disable the example executable as well as
+     the test that uses it.
+Changed in version 0.8.0.0:
+   * Breaking changes:
+     * Add a `MonadFail` instance for `InputT`.
+     * Switch the LICENSE file from BSD2 to BSD3, to be consistent
+       with the .cabal file.
+   * Backwards-compatible changes
+     * Improve the documentation around when input functions return
+       `Nothing`.
+     * Allow binding keys to incremental search, as
+       `ReverseSearchHistory` and `ForwardSearchHistory`.
+     * Handling `STX`-wrapped control sequences on any lines of the
+       prompt, not just the last one.
+     * Add `debugTerminalKeys` to help debug input problems
+     * Add `waitForAnyKey` to wait for a single key press.
+     * Define test targest in the .cabal file
+     * Bump the upper bound to base-4.15.
+
 Changed in version 0.7.5.0:
    * Add the new function `fallbackCompletion` to combine
      multiple `CompletionFunc`s

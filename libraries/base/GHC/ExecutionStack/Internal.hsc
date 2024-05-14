@@ -41,7 +41,7 @@ import Foreign.Marshal.Alloc (allocaBytes)
 import Foreign.Storable (Storable(..))
 import System.IO.Unsafe (unsafePerformIO, unsafeInterleaveIO)
 
--- N.B. See includes/rts/Libdw.h for notes on stack representation.
+-- N.B. See rts/include/rts/Libdw.h for notes on stack representation.
 
 -- | A location in the original program source.
 data SrcLoc = SrcLoc { sourceFile   :: String
@@ -150,7 +150,7 @@ stackFrames st@(StackTrace fptr) = unsafePerformIO $ withSession $ \sess -> do
     unknown symbols). I think this is a reasonable price to pay, however, as
     module loading/unloading is a rather rare event.
 
-    Morover, we stand to gain a great deal by lazy lookups as the stack frames
+    Moreover, we stand to gain a great deal by lazy lookups as the stack frames
     may never even be requested, meaning the only effort wasted is the
     collection of the stack frames themselves.
 
@@ -171,7 +171,7 @@ stackFrames st@(StackTrace fptr) = unsafePerformIO $ withSession $ \sess -> do
             frame' = frame `plusPtr` sizeOf (undefined :: Addr)
 
         lookupFrame :: Addr -> IO (Maybe Location)
-        lookupFrame pc = withForeignPtr fptr $ const $ do
+        lookupFrame pc = withForeignPtr fptr $ const $
             allocaBytes locationSize $ \buf -> do
                 ret <- withForeignPtr sess $ \sessPtr -> libdw_lookup_location sessPtr buf pc
                 case ret of

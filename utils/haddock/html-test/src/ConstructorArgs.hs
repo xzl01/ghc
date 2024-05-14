@@ -1,3 +1,4 @@
+{-# LANGUAGE Haskell2010 #-}
 {-# LANGUAGE GADTs, PatternSynonyms #-}
 
 module ConstructorArgs (Foo(..), Boo(Foo, Foa, Fo, Fo'), pattern Bo, pattern Bo') where
@@ -49,7 +50,7 @@ pattern Bo :: Int    -- ^ an 'Int'
            -> Boo -- ^ a 'Boo' pattern
 pattern Bo x y = Foo x y
 
--- | Not bunded and no argument docs
+-- | Not bundled and no argument docs
 pattern Bo' :: Int -> String -> Boo
 pattern Bo' x y = Foo x y
 

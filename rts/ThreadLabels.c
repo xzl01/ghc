@@ -7,7 +7,7 @@
  *
  * ---------------------------------------------------------------------------*/
 
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
 
 #include "ThreadLabels.h"
@@ -17,8 +17,6 @@
 
 #include <stdlib.h>
 #include <string.h>
-
-#if defined(DEBUG)
 
 #if defined(THREADED_RTS)
 static Mutex threadLabels_mutex;
@@ -52,7 +50,7 @@ freeThreadLabelTable(void)
 }
 
 static void
-updateThreadLabel(StgWord key, void *data)
+updateThreadLabel(StgThreadID key, void *data)
 {
   removeThreadLabel(key);
 
@@ -64,7 +62,7 @@ updateThreadLabel(StgWord key, void *data)
 }
 
 void *
-lookupThreadLabel(StgWord key)
+lookupThreadLabel(StgThreadID key)
 {
   void * result;
   ACQUIRE_LOCK(&threadLabels_mutex);
@@ -77,7 +75,7 @@ lookupThreadLabel(StgWord key)
 }
 
 void
-removeThreadLabel(StgWord key)
+removeThreadLabel(StgThreadID key)
 {
   ACQUIRE_LOCK(&threadLabels_mutex);
 
@@ -90,23 +88,21 @@ removeThreadLabel(StgWord key)
   RELEASE_LOCK(&threadLabels_mutex);
 }
 
-#endif /* DEBUG */
-
 void
 labelThread(Capability *cap   STG_UNUSED,
             StgTSO     *tso   STG_UNUSED,
             char       *label STG_UNUSED)
 {
-#if defined(DEBUG)
   int len;
   void *buf;
 
   /* Caveat: Once set, you can only set the thread name to "" */
   len = strlen(label)+1;
-  buf = stgMallocBytes(len * sizeof(char), "Schedule.c:labelThread()");
+  buf = stgMallocBytes(len * sizeof(char), "ThreadLabels.c:labelThread()");
   strncpy(buf,label,len);
+
   /* Update will free the old memory for us */
   updateThreadLabel(tso->id,buf);
-#endif
+
   traceThreadLabel(cap, tso, label);
 }

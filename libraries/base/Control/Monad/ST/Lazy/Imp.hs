@@ -8,7 +8,7 @@
 -- Module      :  Control.Monad.ST.Lazy.Imp
 -- Copyright   :  (c) The University of Glasgow 2001
 -- License     :  BSD-style (see the file libraries/base/LICENSE)
--- 
+--
 -- Maintainer  :  libraries@haskell.org
 -- Stability   :  provisional
 -- Portability :  non-portable (requires universal quantification for runST)
@@ -42,14 +42,13 @@ import Control.Monad.Fix
 import qualified Control.Monad.ST as ST
 import qualified Control.Monad.ST.Unsafe as ST
 
-import qualified GHC.ST as GHC.ST
+import qualified GHC.ST
 import GHC.Base
-import qualified Control.Monad.Fail as Fail
 
--- | The lazy @'ST' monad.
--- The ST monad allows for destructive updates, but is escapable (unlike IO).
+-- | The lazy @'ST'@ monad.
+-- The ST monad allows for destructive updates, but is escapable (unlike @IO@).
 -- A computation of type @'ST' s a@ returns a value of type @a@, and
--- execute in "thread" @s@. The @s@ parameter is either
+-- executes in "thread" @s@. The @s@ parameter is either
 --
 -- * an uninstantiated type variable (inside invocations of 'runST'), or
 --
@@ -69,7 +68,7 @@ newtype ST s a = ST { unST :: State s -> (a, State s) }
 data State s = S# (State# s)
 
 {- Note [Lazy ST and multithreading]
-
+   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 We used to imagine that passing a polymorphic state token was all that we
 needed to keep state threads separate (see Launchbury and Peyton Jones, 1994:
 https://www.microsoft.com/en-us/research/publication/lazy-functional-state-threads/).
@@ -88,7 +87,7 @@ one we get from the previous computation, and the unlifted one we pull out of
 thin air. -}
 
 {- Note [Lazy ST: not producing lazy pairs]
-
+   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 The fixST and strictToLazyST functions used to construct functions that
 produced lazy pairs. Why don't we need that laziness? The ST type is kept
 abstract, so no one outside this module can ever get their hands on a (result,
@@ -191,10 +190,6 @@ instance Monad (ST s) where
        in
          unST (k r) new_s
 
--- | @since 4.10
-instance Fail.MonadFail (ST s) where
-    fail s = errorWithoutStackTrace s
-
 -- | Return the value computed by an 'ST' computation.
 -- The @forall@ ensures that the internal state used by the 'ST'
 -- computation is inaccessible to the rest of the program.
@@ -205,8 +200,8 @@ runST (ST st) = runRW# (\s -> case st (S# s) of (r, _) -> r)
 -- inside the computation.
 -- Note that if @f@ is strict, @'fixST' f = _|_@.
 fixST :: (a -> ST s a) -> ST s a
-fixST m = ST (\ s -> 
-                let 
+fixST m = ST (\ s ->
+                let
                    q@(r,_s') = unST (m r) s
                 in q)
 -- Why don't we need unsafePerformIO in fixST? We create a thunk, q,
@@ -233,7 +228,7 @@ strictToLazyST (GHC.ST.ST m) = ST $ \(S# s) ->
     (# s', a #) -> (a, S# s')
 -- See Note [Lazy ST: not producing lazy pairs]
 
-{-| 
+{-|
 Convert a lazy 'ST' computation into a strict one.
 -}
 lazyToStrictST :: ST s a -> ST.ST s a

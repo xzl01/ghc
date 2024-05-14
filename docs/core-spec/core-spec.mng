@@ -7,6 +7,7 @@
 \usepackage{xcolor}
 \usepackage{fullpage}
 \usepackage{multirow}
+\usepackage{hyperref}
 \usepackage{url}
 
 \newcommand{\ghcfile}[1]{\textsl{#1}}
@@ -30,7 +31,7 @@ System FC, as implemented in GHC\footnote{This
 document was originally prepared by Richard Eisenberg (\texttt{eir@cis.upenn.edu}),
 but it should be maintained by anyone who edits the functions or data structures
 mentioned in this file. Please feel free to contact Richard for more information.}\\
-\Large 26 January, 2018
+\Large 26 May, 2020
 \end{center}
 
 \section{Introduction}
@@ -71,8 +72,8 @@ Literals do not play a major role, so we leave them abstract:
 
 \gram{\ottlit}
 
-We also leave abstract the function \coderef{basicTypes/Literal.hs}{literalType}
-and the judgment \coderef{coreSyn/CoreLint.hs}{lintTyLit} (written $[[G |-tylit lit : k]]$).
+We also leave abstract the function \coderef{GHC/Types/Literal.hs}{literalType}
+and the judgment \coderef{GHC/Core/Lint.hs}{lintTyLit} (written $[[G |-tylit lit : k]]$).
 
 \subsection{Variables}
 \enlargethispage{10pt} % without this first line of "z" definition is placed on
@@ -106,10 +107,10 @@ There are a few key invariants about expressions:
 \item The right-hand sides of all top-level and recursive $[[let]]$s
 must be of lifted type, with one exception: the right-hand side of a top-level
 $[[let]]$ may be of type \texttt{Addr\#} if it's a primitive string literal.
-See \verb|#top_level_invariant#| in \ghcfile{coreSyn/CoreSyn.hs}.
+See \verb|#top_level_invariant#| in \ghcfile{GHC.Core}.
 \item The right-hand side of a non-recursive $[[let]]$ and the argument
 of an application may be of unlifted type, but only if the expression
-is ok-for-speculation. See \verb|#let_app_invariant#| in \ghcfile{coreSyn/CoreSyn.hs}.
+is ok-for-speculation. See \verb|#let_app_invariant#| in \ghcfile{GHC.Core}.
 \item We allow a non-recursive $[[let]]$ for bind a type variable.
 \item The $[[_]]$ case for a $[[case]]$ must come first.
 \item The list of case alternatives must be exhaustive.
@@ -119,9 +120,9 @@ In other words, the payload inside of a \texttt{Type} constructor must not turn 
 to be built with \texttt{CoercionTy}.
 \item Join points (introduced by $[[join]]$ expressions) follow the invariants
 laid out in \verb|Note [Invariants on join points]| in
-\ghcfile{coreSyn/CoreSyn.hs}:
+\ghcfile{GHC.Core}:
 \begin{enumerate}
-    \item All occurences must be tail calls. This is enforced in our typing
+    \item All occurrences must be tail calls. This is enforced in our typing
     rules using the label environment $[[D]]$.
     \item Each join point has a \emph{join arity}. In this document, we write
     each label as $[[p/I_t]]$ for the name $[[p]]$, the type $[[t]]$, and the
@@ -166,13 +167,14 @@ A program is just a list of bindings:
 \gram{\ottprogram}
 
 \subsection{Types}
+\label{sec:types}
 
 \gram{\ottt}
 
 \ctor{FunTy} is the special case for non-dependent function type. The
-\ctor{TyBinder} in \ghcfile{types/TyCoRep.hs} distinguishes whether a binder is
+\ctor{TyBinder} in \ghcfile{GHC.Core.TyCo.Rep} distinguishes whether a binder is
 anonymous (\ctor{FunTy}) or named (\ctor{ForAllTy}). See
-\verb|Note [TyBinders]| in \ghcfile{types/TyCoRep.hs}.
+\verb|Note [TyBinders]| in \ghcfile{GHC.Core.TyCo.Rep}.
 
 There are some invariants on types:
 \begin{itemize}
@@ -191,7 +193,7 @@ a term-level literal, but we are ignoring this distinction here.
 \item If $[[forall n. t]]$ is a polymorphic type over a coercion variable (i.e.
   $[[n]]$ is a coercion variable), then $[[n]]$ must appear in $[[t]]$;
   otherwise it should be represented as a \texttt{FunTy}. See \texttt{Note
-    [Unused coercion variable in ForAllTy]} in \ghcfile{types/TyCoRep.hs}.
+    [Unused coercion variable in ForAllTy]} in \ghcfile{GHC.Core.TyCo.Rep}.
 \end{itemize}
 
 Note that the use of the $[[T </ ti // i />]]$ form and the $[[t1 -> t2]]$ form
@@ -216,14 +218,15 @@ Invariants on coercions:
 reflexive, use $[[T_R </ gi // i />]]$, never $[[<T> g1 g2]] \ldots$.
 \item The $[[T]]$ in $[[T_R </gi//i/>]]$ is never a type synonym, though it could
 be a type function.
-\item Every non-reflexive coercion coerces between two distinct types.
 \item The name in a coercion must be a term-level name (\ctor{Id}).
 \item The contents of $[[<t>]]$ must not be a coercion. In other words,
 the payload in a \texttt{Refl} must not be built with \texttt{CoercionTy}.
 \item If $[[forall z: h .g]]$ is a polymorphic coercion over a coercion variable
   (i.e. $[[z]]$ is a coercion variable), then $[[z]]$ can only appear in
-  \texttt{Refl} and \texttt{GRefl} in $[[g]]$. See \texttt{Note[Unused coercion
-    variable in ForAllCo] in \ghcfile{types/Coercion.hs}}.
+  \texttt{Refl} and \texttt{GRefl} in $[[g]]$. See \texttt{Note [Unused coercion
+    variable in ForAllCo] in \ghcfile{GHC.Core.Coercion}}.
+\item Prefer $[[g1 ->_R g2]]$ over $[[(->)_R g1 g2]]$; that is, we use \ctor{FunCo},
+never \ctor{TyConAppCo}, for coercions over saturated uses of $[[->]]$.
 \end{itemize}
 
 The \texttt{UnivCo} constructor takes several arguments: the two types coerced
@@ -235,12 +238,12 @@ and a provenance. The provenance states what created the universal coercion:
 Roles label what equality relation a coercion is a witness of. Nominal equality
 means that two types are identical (have the same name); representational equality
 means that two types have the same representation (introduced by newtypes); and
-phantom equality includes all types. See \url{http://ghc.haskell.org/trac/ghc/wiki/Roles} and \url{http://research.microsoft.com/en-us/um/people/simonpj/papers/ext-f/coercible.pdf}
+phantom equality includes all types. See \url{https://gitlab.haskell.org/ghc/ghc/wikis/roles} and \url{http://research.microsoft.com/en-us/um/people/simonpj/papers/ext-f/coercible.pdf}
 for more background.
 
 \gram{\ottR}
 
-The \texttt{GRefl} constructor taks an $[[mg]]$. It wraps a kind coercion, which
+The \texttt{GRefl} constructor takes an $[[mg]]$. It wraps a kind coercion, which
 might be reflexive or any coercion:
 
 \gram{\ottmg}
@@ -284,8 +287,8 @@ type arity $[[I]]$, a list of roles $[[role_list]]$ for its coercion parameters,
 and an output role $[[R']]$. The definition within GHC also includes a field named
 $[[coaxrProves]]$ which computes the output coercion from a list of types and
 a list of coercions. This is elided in this presentation, as we simply identify
-axiom rules by their names $[[M]]$. See also \coderef{typecheck/TcTypeNats.hs}{mkBinAxiom}
-and \coderef{typecheck/TcTypeNats.hs}{mkAxiom1}.
+axiom rules by their names $[[M]]$. See also \coderef{GHC.Builtin.Types.Literals}{mkBinAxiom}
+and \coderef{GHC.Builtin.Types.Literals}{mkAxiom1}.
 
 In \ottdrulename{Co\_UnivCo}, function $ \textsf{compatibleUnBoxedTys} $ stands for following checks:
 \begin{itemize}
@@ -296,8 +299,8 @@ In \ottdrulename{Co\_UnivCo}, function $ \textsf{compatibleUnBoxedTys} $ stands 
     \item unboxed tuples should have same length and each element should be coercible to
     appropriate element of the target tuple;
 \end{itemize}
-For function implementation see \coderef{coreSyn/CoreLint.hs}{checkTypes}.
-For further discussion see \url{https://ghc.haskell.org/trac/ghc/wiki/BadUnsafeCoercions}.
+For function implementation see \coderef{GHC.Core.Lint}{checkTypes}.
+For further discussion see \url{https://gitlab.haskell.org/ghc/ghc/wikis/bad-unsafe-coercions}.
 
 \subsection{Type constructors}
 
@@ -306,7 +309,8 @@ for this formalism:
 
 \gram{\ottT}
 
-We include some representative primitive type constructors. There are many more in \ghcfile{prelude/TysPrim.hs}.
+We include some representative primitive type constructors. There are many more
+in \ghcfile{GHC.Builtin.Types.Prim}.
 
 \gram{\ottH}
 
@@ -327,7 +331,7 @@ synonym for $[[TYPE 'Unlifted]]$.
 
 \section{Contexts}
 
-The functions in \ghcfile{coreSyn/CoreLint.hs} use the \texttt{LintM} monad.
+The functions in \ghcfile{GHC.Core.Lint} use the \texttt{LintM} monad.
 This monad contains a context with a set of bound variables $[[G]]$ and a set
 of bound labels $[[D]]$. The formalism treats $[[G]]$ and $[[D]]$ as ordered
 lists, but GHC uses sets as its
@@ -347,13 +351,13 @@ fresh in the context. In the implementation, of course, some work is done
 to guarantee this freshness. In particular, adding a new type variable to
 the context sometimes requires creating a new, fresh variable name and then
 applying a substitution. We elide these details in this formalism, but
-see \coderef{types/Type.hs}{substTyVarBndr} for details.
+see \coderef{GHC/Core/Type.hs}{substTyVarBndr} for details.
 
 \section{Typing judgments}
 
 The following functions are used from GHC. Their names are descriptive, and they
-are not formalized here: \coderef{types/TyCon.hs}{tyConKind},
-\coderef{types/TyCon.hs}{tyConArity}, \coderef{basicTypes/DataCon.hs}{dataConTyCon}, \coderef{types/TyCon.hs}{isNewTyCon}, \coderef{basicTypes/DataCon.hs}{dataConRepType}.
+are not formalized here: \coderef{GHC/Core/TyCon.hs}{tyConKind},
+\coderef{GHC/Core/TyCon.hs}{tyConArity}, \coderef{GHC/Core/DataCon.hs}{dataConTyCon}, \coderef{GHC/Core/TyCon.hs}{isNewTyCon}, \coderef{GHC/Core/DataCon.hs}{dataConRepType}.
 
 \subsection{Program consistency}
 
@@ -363,7 +367,7 @@ and then check each binding.
 
 \ottdefnlintCoreBindings{}
 
-Here is the definition of $[[vars_of]]$, taken from \coderef{coreSyn/CoreSyn.hs}{bindersOf}:
+Here is the definition of $[[vars_of]]$, taken from \coderef{GHC/Core.hs}{bindersOf}:
 
 \[
 \begin{array}{ll}
@@ -409,11 +413,11 @@ to check each substituted type $[[s'i]]$ in a context containing all the types
 that come before it in the list of bindings. The $[[G'i]]$ are contexts
 containing the names and kinds of all type variables (and term variables,
 for that matter) up to the $i$th binding. This logic is extracted from
-\coderef{coreSyn/CoreLint.hs}{lintAndScopeIds}.
+\coderef{GHC/Core/Lint.hs}{lintAndScopeIds}.
 
 \item The GHC source code checks all arguments in an application expression
-all at once using \coderef{coreSyn/CoreSyn.hs}{collectArgs}
-and \coderef{coreSyn/CoreLint.hs}{lintCoreArgs}. The operation
+all at once using \coderef{GHC/Core.hs}{collectArgs}
+and \coderef{GHC/Core/Lint.hs}{lintCoreArgs}. The operation
 has been unfolded for presentation here.
 
 \item If a $[[tick]]$ contains breakpoints, the GHC source performs additional
@@ -431,6 +435,15 @@ a dead id and for one-tuples. These checks are omitted here.
 \subsection{Kinding}
 
 \ottdefnlintType{}
+
+Note the contrast between \ottdrulename{Ty\_ForAllTy\_Tv} and \ottdrulename{Ty\_ForAllTy\_Cv}.
+The former checks type abstractions, which are erased at runtime. Thus, the kind of the
+body must be the same as the kind of the $[[forall]]$-type (as these kinds indicate
+the runtime representation). The latter checks coercion abstractions, which are \emph{not}
+erased at runtime. Accordingly, the kind of a coercion abstraction is $[[*]]$. The
+\ottdrulename{Ty\_ForAllTy\_Cv} rule also asserts that the bound variable $[[x]]$ is
+actually used in $[[t]]$: this is to uphold a representation invariant, documented
+with the grammar for types, Section~\ref{sec:types}.
 
 \subsection{Kind validity}
 
@@ -451,11 +464,24 @@ and \ottdrulename{Co\_CoVarCoRepr}.
 See Section~\ref{sec:tyconroles} for more information about $[[tyConRolesX]]$, and
 see Section~\ref{sec:axiom_rules} for more information about $[[coaxrProves]]$.
 
+The $[[downgradeRole R g]]$ function returns a new coercion that relates the same
+types as $[[g]]$ but with role $[[R]]$. It assumes that the role of $[[g]]$ is a
+sub-role ($\leq$) of $[[R]]$.
+
+The $[[almostDevoid x g]]$ function makes sure that, if $[[x]]$ appears at all
+in $[[g]]$, it appears only within a \ctor{Refl} or \ctor{GRefl} node. See
+Section 5.8.5.2 of Richard Eisenberg's thesis for the details, or the ICFP'17
+paper ``A Specification for Dependently-Typed Haskell''. (Richard's thesis
+uses a technical treatment of this idea that's very close to GHC's implementation.
+The ICFP'17 paper approaches the same restriction in a different way, by using
+\emph{available sets} $\Delta$, as explained in Section 4.2 of that paper.
+We believe both technical approaches are equivalent in what coercions they accept.)
+
 \subsection{Name consistency}
 \label{sec:name_consistency}
 
 There are three very similar checks for names, two performed as part of
-\coderef{coreSyn/CoreLint.hs}{lintSingleBinding}:
+\coderef{GHC/Core/Lint.hs}{lintSingleBinding}:
 
 \ottdefnlintSingleBindingXXlintBinder{}
 
@@ -463,7 +489,7 @@ There are three very similar checks for names, two performed as part of
 
 The point of the extra checks on $[[t']]$ is that a join point's type cannot be
 polymorphic in its return type; see \texttt{Note [The polymorphism rule of join
-points]} in \ghcfile{coreSyn/CoreSyn.hs}.
+points]} in \ghcfile{GHC.Core}.
 
 \ottdefnlintBinder{}
 
@@ -505,7 +531,7 @@ $[[tyConRoles]]$, but with an arbitrary number of $[[Nom]]$ at the end, to accou
 for potential oversaturation.
 
 The checks encoded in the following
-judgments are run from \coderef{typecheck/TcTyClsDecls.hs}{checkValidTyCon}
+judgments are run from \coderef{GHC/Tc/TyCl.hs}{checkValidTyCon}
 when \texttt{-dcore-lint} is set.
 
 \ottdefncheckValidRoles{}
@@ -539,13 +565,44 @@ The judgment $[[apart]]$ checks to see whether two lists of types are surely
 apart. $[[apart( </ ti // i />, </ si // i /> )]]$, where $[[ </ ti // i />
 ]]$ is a list of types and $[[ </ si // i /> ]]$ is a list of type
 \emph{patterns} (as in a type family equation), first flattens the $[[ </ ti
-    // i /> ]]$ using \coderef{types/FamInstEnv.hs}{flattenTys} and then checks to
-see if \coderef{types/Unify.hs}{tcUnifyTysFG} returns \texttt{SurelyApart}.
+    // i /> ]]$ using \coderef{GHC/Core/FamInstEnv.hs}{flattenTys} and then checks to
+see if \coderef{GHC/Core/Unify.hs}{tcUnifyTysFG} returns \texttt{SurelyApart}.
 Flattening takes all type family applications and replaces them with fresh variables,
 taking care to map identical type family applications to the same fresh variable.
 
-The algorithm $[[unify]]$ is implemented in \coderef{types/Unify.hs}{tcUnifyTys}.
+The algorithm $[[unify]]$ is implemented in \coderef{GHC/Core/Unify.hs}{tcUnifyTys}.
 It performs a standard unification, returning a substitution upon success.
+
+\subsection{Axioms}
+
+After type-checking the type and class declarations of a file, the axioms
+in the file are optionally linted. This is done from \coderef{GHC/Tc/Types.hs}{lintGblEnv},
+which calls \coderef{GHC/Core/Lint.hs}{lintAxioms}. That function ensures
+the following judgement on each axiom:
+
+\ottdefnlintXXaxiom{}
+
+\ottdefnlintXXfamilyXXbranch{}
+
+In addition to these checks, the linter will also check several other conditions:
+
+\begin{itemize}
+\item Every \texttt{CoAxBranch} has a \texttt{cab\_cvs} field. This is unused
+currently and should always be empty.
+\item Every \texttt{CoAxBranch} has a \texttt{cab\_eta\_tvs} field. This is used
+only for data family instances, but is not involved in type correctness. (It is
+used for pretty-printing.) The implemented linter checks to make sure this field
+is empty for axioms that are not associated with data family instances.
+\item Every \texttt{CoAxBranch} has a \texttt{cab\_incomps} field that stores
+a list of incompatible branches. The implemented linter checks that these
+branches are indeed incompatible with the current one.
+\item The linter checks that newtypes are associated with exactly one axiom,
+as are closed type families.
+\item The linter checks that all instances of the same open family are compatible.
+\end{itemize}
+
+A nice summary of the required checks is in Section F.1 of the \emph{Safe Coercions}
+paper (JFP'16).
 
 \section{Operational semantics}
 
@@ -553,7 +610,7 @@ It performs a standard unification, returning a substitution upon success.
 GHC does not implement an operational semantics in any concrete form. Most
 of the rules below are implied by algorithms in, for example, the simplifier
 and optimizer. Yet, there is no one place in GHC that states these rules,
-analogously to \texttt{CoreLint.hs}.
+analogously to \texttt{GHC/Core/Lint.hs}.
 Nevertheless, these rules are included in this document to help the reader
 understand System FC.
 
@@ -581,17 +638,17 @@ to the constructor. The terms are the regular term arguments stored in an
 algebraic datatype. Coercions (say, in a GADT) are considered term arguments.
 \item The rule \ottdrulename{S\_CasePush} is the most complex rule.
 \begin{itemize}
-\item The logic in this rule is implemented in \coderef{coreSyn/CoreSubst.hs}{exprIsConApp\_maybe}.
-\item The $[[coercionKind]]$ function (\coderef{types/Coercion.hs}{coercionKind})
+\item The logic in this rule is implemented in \coderef{GHC/Core/Subst.hs}{exprIsConApp\_maybe}.
+\item The $[[coercionKind]]$ function (\coderef{GHC/Core/Coercion.hs}{coercionKind})
 extracts the two types (and their kinds) from
 a coercion. It does not require a typing context, as it does not \emph{check} the
 coercion, just extracts its types.
-\item The $[[dataConRepType]]$ function (\coderef{basicTypes/DataCon.hs}{dataConRepType}) extracts the full type of a data constructor. Following the notation for
+\item The $[[dataConRepType]]$ function (\coderef{GHC/Core/DataCon.hs}{dataConRepType}) extracts the full type of a data constructor. Following the notation for
 constructor expressions, the parameters to the constructor are broken into three
 groups: universally quantified types, existentially quantified types, and terms.
 \item The substitutions in the last premise to the rule are unusual: they replace
 \emph{type} variables with \emph{coercions}. This substitution is called lifting
-and is implemented in \coderef{types/Coercion.hs}{liftCoSubst}. The notation is
+and is implemented in \coderef{GHC/Core/Coercion.hs}{liftCoSubst}. The notation is
 essentially a pun on the fact that types and coercions have such similar structure.
 This operation is quite non-trivial. Please see \emph{System FC with Explicit
 Kind Equality} for details.

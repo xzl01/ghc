@@ -1,5 +1,6 @@
 {-# OPTIONS_GHC -Wwarn #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ViewPatterns #-}
   -----------------------------------------------------------------------------
 -- |
@@ -14,6 +15,7 @@
 -----------------------------------------------------------------------------
 module Haddock.Interface.LexParseRn
   ( processDocString
+  , processDocStringFromString
   , processDocStringParas
   , processDocStrings
   , processModuleHeader
@@ -21,21 +23,22 @@ module Haddock.Interface.LexParseRn
 
 import Control.Arrow
 import Control.Monad
-import Data.Functor (($>))
-import Data.List
+import Data.Functor
+import Data.List ((\\), maximumBy)
 import Data.Ord
 import Documentation.Haddock.Doc (metaDocConcat)
-import DynFlags (languageExtensions)
+import GHC.Driver.Session (languageExtensions)
 import qualified GHC.LanguageExtensions as LangExt
 import GHC
 import Haddock.Interface.ParseModuleHeader
 import Haddock.Parser
 import Haddock.Types
-import Name
-import Outputable ( showPpr, showSDoc )
-import RdrName
-import RdrHsSyn (setRdrNameSpace)
-import EnumSet
+import GHC.Types.Name
+import GHC.Types.Avail ( availName )
+import GHC.Parser.PostProcess
+import GHC.Driver.Ppr ( showPpr, showSDoc )
+import GHC.Types.Name.Reader
+import GHC.Data.EnumSet as EnumSet
 
 processDocStrings :: DynFlags -> Maybe Package -> GlobalRdrEnv -> [HsDocString]
                   -> ErrMsgM (Maybe (MDoc Name))
@@ -50,20 +53,24 @@ processDocStrings dflags pkg gre strs = do
 
 processDocStringParas :: DynFlags -> Maybe Package -> GlobalRdrEnv -> HsDocString -> ErrMsgM (MDoc Name)
 processDocStringParas dflags pkg gre hds =
-  overDocF (rename dflags gre) $ parseParas dflags pkg (unpackHDS hds)
+  overDocF (rename dflags gre) $ parseParas dflags pkg (renderHsDocString hds)
 
 processDocString :: DynFlags -> GlobalRdrEnv -> HsDocString -> ErrMsgM (Doc Name)
 processDocString dflags gre hds =
-  rename dflags gre $ parseString dflags (unpackHDS hds)
+  processDocStringFromString dflags gre (renderHsDocString hds)
 
-processModuleHeader :: DynFlags -> Maybe Package -> GlobalRdrEnv -> SafeHaskellMode -> Maybe LHsDocString
+processDocStringFromString :: DynFlags -> GlobalRdrEnv -> String -> ErrMsgM (Doc Name)
+processDocStringFromString dflags gre hds =
+  rename dflags gre $ parseString dflags hds
+
+processModuleHeader :: DynFlags -> Maybe Package -> GlobalRdrEnv -> SafeHaskellMode -> Maybe HsDocString
                     -> ErrMsgM (HaddockModInfo Name, Maybe (MDoc Name))
 processModuleHeader dflags pkgName gre safety mayStr = do
   (hmi, doc) <-
     case mayStr of
       Nothing -> return failure
-      Just (L _ hds) -> do
-        let str = unpackHDS hds
+      Just hds -> do
+        let str = renderHsDocString hds
             (hmi, doc) = parseModuleHeader dflags pkgName str
         !descr <- case hmi_description hmi of
                     Just hmi_descr -> Just <$> rename dflags gre hmi_descr
@@ -81,6 +88,10 @@ processModuleHeader dflags pkgName gre safety mayStr = do
               } , doc)
   where
     failure = (emptyHaddockModInfo, Nothing)
+
+traverseSnd :: (Traversable t, Applicative f) => (a -> f b) -> t (x, a) -> f (t (x, b))
+traverseSnd f = traverse (\(x, a) ->
+                             (\b -> (x, b)) <$> f a)
 
 -- | Takes a 'GlobalRdrEnv' which (hopefully) contains all the
 -- definitions and a parsed comment and we attempt to make sense of
@@ -134,7 +145,7 @@ rename dflags gre = rn
 
           -- There is only one name in the environment that matches so
           -- use it.
-          [a] -> pure (DocIdentifier (i $> gre_name a))
+          [a] -> pure $ DocIdentifier (i $> greMangledName a)
 
           -- There are multiple names available.
           gres -> ambiguous dflags i gres
@@ -144,11 +155,11 @@ rename dflags gre = rn
       DocBold doc -> DocBold <$> rn doc
       DocMonospaced doc -> DocMonospaced <$> rn doc
       DocUnorderedList docs -> DocUnorderedList <$> traverse rn docs
-      DocOrderedList docs -> DocOrderedList <$> traverse rn docs
+      DocOrderedList docs -> DocOrderedList <$> traverseSnd rn docs
       DocDefList list -> DocDefList <$> traverse (\(a, b) -> (,) <$> rn a <*> rn b) list
       DocCodeBlock doc -> DocCodeBlock <$> rn doc
       DocIdentifierUnchecked x -> pure (DocIdentifierUnchecked x)
-      DocModule str -> pure (DocModule str)
+      DocModule (ModLink m l) -> DocModule . ModLink m <$> traverse rn l
       DocHyperlink (Hyperlink u l) -> DocHyperlink . Hyperlink u <$> traverse rn l
       DocPic str -> pure (DocPic str)
       DocMathInline str -> pure (DocMathInline str)
@@ -165,7 +176,7 @@ rename dflags gre = rn
 -- 'GlobalReaderEnv' during 'rename') in an appropriate doc. Currently
 -- we simply monospace the identifier in most cases except when the
 -- identifier is qualified: if the identifier is qualified then we can
--- still try to guess and generate anchors accross modules but the
+-- still try to guess and generate anchors across modules but the
 -- users shouldn't rely on this doing the right thing. See tickets
 -- #253 and #375 on the confusion this causes depending on which
 -- default we pick in 'rename'.
@@ -199,9 +210,10 @@ ambiguous :: DynFlags
           -> [GlobalRdrElt] -- ^ More than one @gre@s sharing the same `RdrName` above.
           -> ErrMsgM (Doc Name)
 ambiguous dflags x gres = do
-  let dflt = maximumBy (comparing (gre_lcl &&& isTyConName . gre_name)) gres
+  let noChildren = map availName (gresToAvailInfo gres)
+      dflt = maximumBy (comparing (isLocalName &&& isTyConName)) noChildren
       msg = "Warning: " ++ showNsRdrName dflags x ++ " is ambiguous. It is defined\n" ++
-            concatMap (\n -> "    * " ++ defnLoc n ++ "\n") gres ++
+            concatMap (\n -> "    * " ++ defnLoc n ++ "\n") (map greMangledName gres) ++
             "    You may be able to disambiguate the identifier by qualifying it or\n" ++
             "    by specifying the type/value namespace explicitly.\n" ++
             "    Defaulting to the one defined " ++ defnLoc dflt
@@ -210,10 +222,12 @@ ambiguous dflags x gres = do
   -- of the same name, but not the only constructor.
   -- For example, for @data D = C | D@, someone may want to reference the @D@
   -- constructor.
-  when (length (gresToAvailInfo gres) > 1) $ tell [msg]
-  pure (DocIdentifier (x $> gre_name dflt))
+  when (length noChildren > 1) $ tell [msg]
+  pure (DocIdentifier (x $> dflt))
   where
-    defnLoc = showSDoc dflags . pprNameDefnLoc . gre_name
+    isLocalName (nameSrcLoc -> RealSrcLoc {}) = True
+    isLocalName _ = False
+    defnLoc = showSDoc dflags . pprNameDefnLoc
 
 -- | Handle value-namespaced names that cannot be for values.
 --

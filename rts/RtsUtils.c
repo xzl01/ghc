@@ -6,7 +6,7 @@
  *
  * ---------------------------------------------------------------------------*/
 
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
 #include "RtsAPI.h"
 
@@ -59,9 +59,9 @@ extern char *ctime_r(const time_t *, char *);
 void *
 stgMallocBytes (size_t n, char *msg)
 {
-    void *space;
+    void *space = malloc(n);
 
-    if ((space = malloc(n)) == NULL) {
+    if (space == NULL) {
       /* Quoting POSIX.1-2008 (which says more or less the same as ISO C99):
        *
        *   "Upon successful completion with size not equal to 0, malloc() shall
@@ -79,7 +79,7 @@ stgMallocBytes (size_t n, char *msg)
       rtsConfig.mallocFailHook((W_) n, msg);
       stg_exit(EXIT_INTERNAL_ERROR);
     }
-    IF_DEBUG(sanity, memset(space, 0xbb, n));
+    IF_DEBUG(zero_on_gc, memset(space, 0xbb, n));
     return space;
 }
 
@@ -97,13 +97,13 @@ stgReallocBytes (void *p, size_t n, char *msg)
 }
 
 void *
-stgCallocBytes (size_t n, size_t m, char *msg)
+stgCallocBytes (size_t count, size_t size, char *msg)
 {
     void *space;
 
-    if ((space = calloc(n, m)) == NULL) {
+    if ((space = calloc(count, size)) == NULL) {
       /* don't fflush(stdout); WORKAROUND bug in Linux glibc */
-      rtsConfig.mallocFailHook((W_) n*m, msg);
+      rtsConfig.mallocFailHook((W_) count*size, msg);
       stg_exit(EXIT_INTERNAL_ERROR);
     }
     return space;
@@ -130,6 +130,53 @@ stgFree(void* p)
   free(p);
 }
 
+// N.B. Allocations resulting from this function must be freed by
+// `stgFreeAligned`, not `stgFree`. This is necessary due to the properties of Windows' `_aligned_malloc`
+void *
+stgMallocAlignedBytes (size_t n, size_t align, char *msg)
+{
+    void *space;
+
+#if defined(mingw32_HOST_OS)
+    space = _aligned_malloc(n, align);
+#else
+    if (posix_memalign(&space, align, n)) {
+        space = NULL; // Allocation failed
+    }
+#endif
+
+    if (space == NULL) {
+      /* Quoting POSIX.1-2008 (which says more or less the same as ISO C99):
+       *
+       *   "Upon successful completion with size not equal to 0, malloc() shall
+       *   return a pointer to the allocated space. If size is 0, either a null
+       *   pointer or a unique pointer that can be successfully passed to free()
+       *   shall be returned. Otherwise, it shall return a null pointer and set
+       *   errno to indicate the error."
+       *
+       * Consequently, a NULL pointer being returned by `malloc()` for a 0-size
+       * allocation is *not* to be considered an error.
+       */
+      if (n == 0) return NULL;
+
+      /* don't fflush(stdout); WORKAROUND bug in Linux glibc */
+      rtsConfig.mallocFailHook((W_) n, msg);
+      stg_exit(EXIT_INTERNAL_ERROR);
+    }
+    IF_DEBUG(zero_on_gc, memset(space, 0xbb, n));
+    return space;
+}
+
+void
+stgFreeAligned (void *p)
+{
+#if defined(mingw32_HOST_OS)
+    _aligned_free(p);
+#else
+    free(p);
+#endif
+}
+
 /* -----------------------------------------------------------------------------
    Stack/heap overflow
    -------------------------------------------------------------------------- */
@@ -150,6 +197,31 @@ reportHeapOverflow(void)
     /* don't fflush(stdout); WORKAROUND bug in Linux glibc */
     rtsConfig.outOfHeapHook(0/*unknown request size*/,
                             (W_)RtsFlags.GcFlags.maxHeapSize * BLOCK_SIZE);
+}
+
+/* -----------------------------------------------------------------------------
+   Sleep for the given period of time.
+   -------------------------------------------------------------------------- */
+
+/* Returns -1 on failure but handles EINTR internally. On Windows this will
+ * only have millisecond precision. */
+int rtsSleep(Time t)
+{
+#if defined(_WIN32)
+    // N.B. we can't use nanosleep on Windows as it would incur a pthreads
+    // dependency. See #18272.
+    Sleep(TimeToMS(t));
+    return 0;
+#else
+    struct timespec req;
+    req.tv_sec = TimeToSeconds(t);
+    req.tv_nsec = TimeToNS(t - req.tv_sec * TIME_RESOLUTION);
+    int ret;
+    do {
+        ret = nanosleep(&req, &req);
+    } while (ret == -1 && errno == EINTR);
+    return ret;
+#endif /* _WIN32 */
 }
 
 /* -----------------------------------------------------------------------------
@@ -304,9 +376,14 @@ void printRtsInfo(const RtsConfig rts_config) {
     mkRtsInfoPair("Target OS",               TargetOS);
     mkRtsInfoPair("Target vendor",           TargetVendor);
     mkRtsInfoPair("Word size",               TOSTRING(WORD_SIZE_IN_BITS));
+    // TODO(@Ericson2314) This is a joint property of the RTS and generated
+    // code. The compiler will soon be multi-target so it doesn't make sense to
+    // say the target is <ABI adj>, unless we are talking about the host
+    // platform of the compiler / ABI used by a compiler plugin. This is *not*
+    // that, so I think a rename is in order to avoid confusion.
     mkRtsInfoPair("Compiler unregisterised", GhcUnregisterised);
-    mkRtsInfoPair("Tables next to code",     GhcEnableTablesNextToCode);
-    mkRtsInfoPair("Flag -with-rtsopts",      /* See Trac #15261 */
+    mkRtsInfoPair("Tables next to code",     TablesNextToCode);
+    mkRtsInfoPair("Flag -with-rtsopts",      /* See #15261 */
         rts_config.rts_opts != NULL ? rts_config.rts_opts : "");
     printf(" ]\n");
 }
@@ -327,6 +404,39 @@ int rts_isProfiled(void)
 int rts_isDynamic(void)
 {
 #if defined(DYNAMIC)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+// Provides a way for Haskell programs to tell whether they're
+// linked with the threaded runtime or not.
+int rts_isThreaded(void)
+{
+#if defined(THREADED_RTS)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+// Provides a way for Haskell programs to tell whether they're
+// linked with the debug runtime or not.
+int rts_isDebugged(void)
+{
+#if defined(DEBUG)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+// Provides a way for Haskell programs to tell whether they're
+// linked with the tracing runtime or not.
+int rts_isTracing(void)
+{
+#if defined(TRACING)
     return 1;
 #else
     return 0;

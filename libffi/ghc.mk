@@ -5,8 +5,8 @@
 # This file is part of the GHC build system.
 #
 # To understand how the build system works and how to modify it, see
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Architecture
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Modifying
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/architecture
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/modifying
 #
 # -----------------------------------------------------------------------------
 
@@ -32,8 +32,8 @@ libffi_EnableShared    = no
 endif
 
 libffi_STATIC_LIB  = libffi/build/inst/lib/libffi.a
-libffi_HEADERS     = rts/dist/build/ffi.h \
-                     rts/dist/build/ffitarget.h
+libffi_HEADERS     = rts/dist-install/build/include/ffi.h \
+                     rts/dist-install/build/include/ffitarget.h
 
 ifeq "$(HostOS_CPP)" "mingw32"
 LIBFFI_NAME = ffi-6
@@ -130,4 +130,3 @@ $(eval $(call clean-target,libffi,, \
     libffi/build $(wildcard libffi/stamp.ffi.*) libffi/dist-install))
 
 endif
-

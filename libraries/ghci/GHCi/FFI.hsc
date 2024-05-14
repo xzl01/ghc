@@ -6,6 +6,14 @@
 --
 -----------------------------------------------------------------------------
 
+-- See Note [FFI_GO_CLOSURES workaround] in ghc_ffi.h
+-- We can't include ghc_ffi.h here as we must build with stage0
+#if defined(darwin_HOST_OS)
+#if !defined(FFI_GO_CLOSURES)
+#define FFI_GO_CLOSURES 0
+#endif
+#endif
+
 #include <ffi.h>
 
 {-# LANGUAGE CPP, DeriveGeneric, DeriveAnyClass #-}
@@ -58,14 +66,28 @@ prepForeignCall cconv arg_types result_type = do
   cif <- mallocBytes (#const sizeof(ffi_cif))
   let abi = convToABI cconv
   r <- ffi_prep_cif cif abi (fromIntegral n_args) (ffiType result_type) arg_arr
-  if (r /= fFI_OK)
-     then throwIO (ErrorCall ("prepForeignCallFailed: " ++ show r))
-     else return (castPtr cif)
+  if r /= fFI_OK then
+    throwIO $ ErrorCall $ concat
+      [ "prepForeignCallFailed: ", strError r,
+        "(cconv: ", show cconv,
+        " arg tys: ", show arg_types,
+        " res ty: ", show result_type, ")" ]
+  else
+    return (castPtr cif)
 
 freeForeignCallInfo :: Ptr C_ffi_cif -> IO ()
 freeForeignCallInfo p = do
   free ((#ptr ffi_cif, arg_types) p)
   free p
+
+strError :: C_ffi_status -> String
+strError r
+  | r == fFI_BAD_ABI
+  = "invalid ABI (FFI_BAD_ABI)"
+  | r == fFI_BAD_TYPEDEF
+  = "invalid type description (FFI_BAD_TYPEDEF)"
+  | otherwise
+  = "unknown error: " ++ show r
 
 convToABI :: FFIConv -> C_ffi_abi
 convToABI FFICCall  = fFI_DEFAULT_ABI
@@ -108,12 +130,10 @@ foreign import ccall "&ffi_type_float"  ffi_type_float   :: Ptr C_ffi_type
 foreign import ccall "&ffi_type_double" ffi_type_double  :: Ptr C_ffi_type
 foreign import ccall "&ffi_type_pointer"ffi_type_pointer :: Ptr C_ffi_type
 
-fFI_OK            :: C_ffi_status
-fFI_OK            = (#const FFI_OK)
---fFI_BAD_ABI     :: C_ffi_status
---fFI_BAD_ABI     = (#const FFI_BAD_ABI)
---fFI_BAD_TYPEDEF :: C_ffi_status
---fFI_BAD_TYPEDEF = (#const FFI_BAD_TYPEDEF)
+fFI_OK, fFI_BAD_ABI, fFI_BAD_TYPEDEF :: C_ffi_status
+fFI_OK = (#const FFI_OK)
+fFI_BAD_ABI = (#const FFI_BAD_ABI)
+fFI_BAD_TYPEDEF = (#const FFI_BAD_TYPEDEF)
 
 fFI_DEFAULT_ABI :: C_ffi_abi
 fFI_DEFAULT_ABI = (#const FFI_DEFAULT_ABI)

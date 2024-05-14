@@ -1,6 +1,103 @@
 # Changelog for [`template-haskell` package](http://hackage.haskell.org/package/template-haskell)
 
-## 2.15.0.0 *May 2019
+## 2.19.0.0
+
+  * Add `DefaultD` constructor to support Haskell `default` declarations.
+
+  * Add support for Overloaded Record Dot.
+    Introduces `getFieldE :: Quote m => m Exp -> String -> m Exp` and
+    `projectionE :: Quote m => [String] -> m Exp`.
+  * Add `instance Lift ByteArray`.
+
+  * Add `PromotedInfixT` and `PromotedUInfixT`, which are analogs to `InfixT`
+    and `UInfixT` that ensure that if a dynamically bound name (i.e. a name
+    with `NameFlavour` `NameS` or `NameQ`; the flavours produced by `mkName`)
+    is used as operator, it will be bound to a promoted data constructor rather
+    than a type constructor, if both are in scope.
+
+  * Add a `vendor-filepath` Cabal flag to the `template-haskell` package. If
+    this flag is set then `template-haskell` will not depend on the `filepath`
+    package and will instead use  some modules from `filepath` that have been
+    copied into the  `template-haskell` source tree.
+
+## 2.18.0.0
+  * The types of `ConP` and `conP` have been changed to allow for an additional list
+    of type applications preceding the argument patterns.
+
+  * Add support for the `Char` kind (#11342): we extend the `TyLit` data type with
+    the constructor `CharTyLit` that reflects type-level characters.
+
+  * Add `putDoc` and `getDoc` which allow Haddock documentation to be attached
+    to module headers, declarations, function arguments and instances, as well
+    as queried. These are quite low level operations, so for convenience there
+    are several combinators that can be used with `Dec`s directly, including
+    `withDecDoc`/`withDecsDoc` as well as `_doc` counterparts to many of the
+    `Dec` helper functions.
+
+  * Add `newDeclarationGroup` to document the effect of visibility while
+    reifying types and instances.
+
+## 2.17.0.0
+  * Typed Quotations now return a value of type `Code m a` (GHC Proposal #195).
+    The main motiviation is to make writing instances easier and make it easier to
+    store `Code` values in type-indexed maps.
+
+  * Implement Overloaded Quotations (GHC Proposal #246). This patch modifies a
+    few fundamental things in the API. All the library combinators are generalised
+    to be in terms of a new minimal class `Quote`. The types of `lift`, `liftTyped`,
+    and `liftData` are modified to return `m Exp` rather than `Q Exp`. Instances
+    written in terms of `Q` are now disallowed. The types of `unsafeTExpCoerce`
+    and `unTypeQ` are also generalised in terms of `Quote` rather than specific
+    to `Q`.
+
+  * Implement Explicit specificity in type variable binders (GHC Proposal #99).
+    In `Language.Haskell.TH.Syntax`, `TyVarBndr` is now annotated with a `flag`,
+    denoting the additional argument to its constructors `PlainTV` and `KindedTV`.
+    `flag` is either the `Specificity` of the type variable (`SpecifiedSpec` or
+    `InferredSpec`) or `()`.
+
+  * Fix Eq/Ord instances for `Bytes`: we were comparing pointers while we should
+    compare the actual bytes (#16457).
+
+  * Fix Show instance for `Bytes`: we were showing the pointer value while we
+    want to show the contents (#16457).
+
+  * Add `Semigroup` and `Monoid` instances for `Q` (#18123).
+
+  * Add `MonadFix` instance for `Q` (#12073).
+
+  * Add support for QualifiedDo. The data constructors `DoE` and `MDoE` got a new
+    `Maybe ModName` argument to describe the qualifier of do blocks.
+
+  * The argument to `TExpQ` can now be levity polymorphic.
+
+## 2.16.0.0 *Jan 2020*
+
+  * Bundled with GHC 8.10.1
+
+  * Add support for tuple sections. (#15843) The type signatures of `TupE` and
+    `UnboxedTupE` have changed from `[Exp] -> Exp` to `[Maybe Exp] -> Exp`.
+    The type signatures of `tupE` and `unboxedTupE` remain the same for
+    backwards compatibility.
+
+  * Introduce a `liftTyped` method to the `Lift` class and set the default
+    implementations of `lift` in terms of `liftTyped`.
+
+  * Add a `ForallVisT` constructor to `Type` to represent visible, dependent
+    quantification.
+
+  * Introduce support for `Bytes` literals (raw bytes embedded into the output
+    binary)
+
+  * Make the `Lift` typeclass levity-polymorphic and add instances for unboxed
+    tuples, unboxed sums, `Int#`, `Word#`, `Addr#`, `Float#`, and `Double#`.
+
+  * Introduce `reifyType` to reify the type or kind of a thing referenced by
+    `Name`.
+
+## 2.15.0.0 *May 2019*
+
+  * Bundled with GHC 8.8.1
 
   * In `Language.Haskell.TH.Syntax`, `DataInstD`, `NewTypeInstD`, `TySynEqn`,
     and `RuleP` now all have a `Maybe [TyVarBndr]` argument, which contains a
@@ -22,7 +119,9 @@
 
   * `addForeignFilePath` now support assembler sources (#16180).
 
-## 2.14.0.0 *September 2018
+## 2.14.0.0 *September 2018*
+
+  * Bundled with GHC 8.6.1
 
   * Introduce an `addForeignFilePath` function, as well as a corresponding
     `qAddForeignFile` class method to `Quasi`. Unlike `addForeignFile`, which

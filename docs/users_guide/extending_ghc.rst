@@ -69,7 +69,7 @@ A number of restrictions apply to use of annotations:
    albeit redundant).
 
 If you feel strongly that any of these restrictions are too onerous,
-:ghc-wiki:`please give the GHC team a shout <MailingListsAndIRC>`.
+:ghc-wiki:`please give the GHC team a shout <mailing-lists-and-irc>`.
 
 However, apart from these restrictions, many things are allowed,
 including expressions which are not fully evaluated! Annotation
@@ -130,7 +130,7 @@ when invoked:
 
     import GHC
     import GHC.Paths ( libdir )
-    import DynFlags ( defaultFatalMessager, defaultFlushOut )
+    import GHC.Driver.Session ( defaultFatalMessager, defaultFlushOut )
 
     main =
         defaultErrorHandler defaultFatalMessager defaultFlushOut $ do
@@ -163,7 +163,7 @@ Compiling it results in:
 
 For more information on using the API, as well as more samples and
 references, please see `this Haskell.org wiki
-page <http://haskell.org/haskellwiki/GHC/As_a_library>`__.
+page <https://haskell.org/haskellwiki/GHC/As_a_library>`__.
 
 .. _compiler-plugins:
 
@@ -172,7 +172,7 @@ Compiler Plugins
 
 GHC has the ability to load compiler plugins at compile time. The
 feature is similar to the one provided by
-`GCC <http://gcc.gnu.org/wiki/plugins>`__, and allows users to write
+`GCC <https://gcc.gnu.org/wiki/plugins>`__, and allows users to write
 plugins that can adjust the behaviour of the constraint solver, inspect
 and modify the compilation pipeline, as well as transform and inspect
 GHC's intermediate language, Core. Plugins are suitable for experimental
@@ -183,7 +183,7 @@ Plugins cannot optimize/inspect C-\\-, nor can they implement things like
 parser/front-end modifications like GCC, apart from limited changes to
 the constraint solver. If you feel strongly that any of these
 restrictions are too onerous,
-:ghc-wiki:`please give the GHC team a shout <MailingListsAndIRC>`.
+:ghc-wiki:`please give the GHC team a shout <mailing-lists-and-irc>`.
 
 Plugins do not work with ``-fexternal-interpreter``. If you need to run plugins
 with ``-fexternal-interpreter`` let GHC developers know in :ghc-ticket:`14335`.
@@ -195,9 +195,11 @@ Using compiler plugins
 
 Plugins can be added on the command line with the :ghc-flag:`-fplugin=⟨module⟩`
 option where ⟨module⟩ is a module in a registered package that exports the
-plugin. Arguments can be passed to the plugins with the
-:ghc-flag:`-fplugin-opt=⟨module⟩:⟨args⟩` option. The list of enabled plugins can
-be reset with the :ghc-flag:`-fclear-plugins` option.
+plugin. Plugins are loaded in order, with command-line and Cabal flags preceding
+those in OPTIONS pragmas which are processed in file order. Arguments can be
+passed to the plugins with the :ghc-flag:`-fplugin-opt=⟨module⟩:⟨args⟩`
+option. The list of enabled plugins can be reset with the
+:ghc-flag:`-fclear-plugins` option.
 
 .. ghc-flag:: -fplugin=⟨module⟩
     :shortdesc: Load a plugin exported by a given module
@@ -214,7 +216,46 @@ be reset with the :ghc-flag:`-fclear-plugins` option.
     :category: plugins
 
     Give arguments to a plugin module; module must be specified with
-    :ghc-flag:`-fplugin=⟨module⟩`.
+    :ghc-flag:`-fplugin=⟨module⟩`. The order of plugin pragmas matter but the
+    order of arg pragmas does not. The same set of arguments go to all plugins
+    from the same module.
+
+    ::
+
+      -- Two Echo plugins will both get args A and B.
+      {-# OPTIONS -fplugin Echo -fplugin-opt Echo:A #-}
+      {-# OPTIONS -fplugin Echo -fplugin-opt Echo:B #-}
+
+      -- While order of the plugins matters, arg order does not.
+      {-# OPTIONS -fplugin-opt Echo2:B #-}
+
+      {-# OPTIONS -fplugin Echo1 #-}
+      {-# OPTIONS -fplugin-opt Echo1:A #-}
+
+      {-# OPTIONS -fplugin Echo2 #-}
+
+    If you want to use the same plugin with different arguments then rexport the
+    same plugin from different lightweight modules.
+
+    ::
+
+      -- Echo1 and Echo2 as lightweight modules re-exporting Echo.plugin.
+      module Echo1 (plugin) where import Echo (plugin)
+      module Echo2 (plugin) where import Echo (plugin)
+
+      -- Echo1 gets arg A while Echo2 gets arg B.
+      {-# OPTIONS -fplugin Echo1 -fplugin-opt Echo1:A #-}
+      {-# OPTIONS -fplugin Echo2 -fplugin-opt Echo2:B #-}
+
+.. ghc-flag:: -fplugin-trustworthy
+    :shortdesc: Trust the used plugins and no longer mark the compiled module
+        as unsafe
+    :type: dynamic
+    :category: plugins
+
+    By default, when a module is compiled with plugins, it will be marked as
+    unsafe. With this flag passed, all plugins are treated as trustworthy
+    and the safety inference will no longer be affected.
 
 .. ghc-flag:: -fclear-plugins
     :shortdesc: Clear the list of active plugins
@@ -222,9 +263,10 @@ be reset with the :ghc-flag:`-fclear-plugins` option.
     :category: plugins
 
     Clear the list of plugins previously specified with
-    :ghc-flag:`-fplugin`. This is useful in GHCi where simply removing the
-    :ghc-flag:`-fplugin` options from the command line is not possible. Instead
-    `:set -fclear-plugins` can be used.
+    :ghc-flag:`-fplugin <-fplugin=⟨module⟩>`. This is useful in GHCi where
+    simply removing the :ghc-flag:`-fplugin <-fplugin=⟨module⟩>` options from
+    the command line is not possible. Instead ``:set -fclear-plugins`` can be
+    used.
 
 
 As an example, in order to load the plugin exported by ``Foo.Plugin`` in
@@ -313,13 +355,13 @@ Writing compiler plugins
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 Plugins are modules that export at least a single identifier,
-``plugin``, of type ``GhcPlugins.Plugin``. All plugins should
-``import GhcPlugins`` as it defines the interface to the compilation
+``plugin``, of type ``GHC.Plugins.Plugin``. All plugins should
+``import GHC.Plugins`` as it defines the interface to the compilation
 pipeline.
 
 A ``Plugin`` effectively holds a function which installs a compilation
 pass into the compiler pipeline. By default there is the empty plugin
-which does nothing, ``GhcPlugins.defaultPlugin``, which you should
+which does nothing, ``GHC.Plugins.defaultPlugin``, which you should
 override with record syntax to specify your installation function. Since
 the exact fields of the ``Plugin`` type are open to change, this is the
 best way to ensure your plugins will continue to work in the future with
@@ -339,7 +381,7 @@ just returns the original compilation pipeline, unmodified, and says
 ::
 
     module DoNothing.Plugin (plugin) where
-    import GhcPlugins
+    import GHC.Plugins
 
     plugin :: Plugin
     plugin = defaultPlugin {
@@ -355,6 +397,23 @@ Provided you compiled this plugin and registered it in a package (with
 cabal for instance,) you can then use it by just specifying
 ``-fplugin=DoNothing.Plugin`` on the command line, and during the
 compilation you should see GHC say 'Hello'.
+
+Running multiple plugins is also supported, by passing
+multiple ``-fplugin=...`` options. GHC will load the plugins
+in the order in which they are specified on the command line
+and, when appropriate, compose their effects in the same
+order. That is, if we had two Core plugins, ``Plugin1`` and
+``Plugin2``, each defining an ``install`` function like
+the one above, then GHC would first run ``Plugin1.install``
+on the default ``[CoreToDo]``, take the result and feed it to
+``Plugin2.install``. ``-fplugin=Plugin1 -fplugin=Plugin2``
+will update the Core pipeline by applying
+``Plugin1.install opts1 >=> Plugin2.install opts2`` (where
+``opts1`` and ``opts2`` are the options passed to each plugin
+using ``-fplugin-opt=...``). This is not specific to Core
+plugins but holds for all the types of plugins that can be
+composed or sequenced in some way: the first plugin to appear
+on the GHC command line will always act first.
 
 .. _core-plugins-in-more-detail:
 
@@ -419,7 +478,7 @@ in a module it compiles:
 ::
 
     module SayNames.Plugin (plugin) where
-    import GhcPlugins
+    import GHC.Plugins
 
     plugin :: Plugin
     plugin = defaultPlugin {
@@ -464,7 +523,7 @@ will print out the name of any top-level non-recursive binding with the
 
     {-# LANGUAGE DeriveDataTypeable #-}
     module SayAnnNames.Plugin (plugin, SomeAnn(..)) where
-    import GhcPlugins
+    import GHC.Plugins
     import Control.Monad (unless)
     import Data.Data
 
@@ -492,8 +551,8 @@ will print out the name of any top-level non-recursive binding with the
 
     annotationsOn :: Data a => ModGuts -> CoreBndr -> CoreM [a]
     annotationsOn guts bndr = do
-      anns <- getAnnotations deserializeWithData guts
-      return $ lookupWithDefaultUFM anns [] (varUnique bndr)
+      (_, anns) <- getAnnotations deserializeWithData guts
+      return $ lookupWithDefaultUFM_Directly anns [] (varUnique bndr)
 
 Please see the GHC API documentation for more about how to use internal
 APIs, etc.
@@ -517,14 +576,29 @@ is defined thus:
 ::
 
     data TcPlugin = forall s . TcPlugin
-      { tcPluginInit  :: TcPluginM s
-      , tcPluginSolve :: s -> TcPluginSolver
-      , tcPluginStop  :: s -> TcPluginM ()
+      { tcPluginInit    :: TcPluginM s
+      , tcPluginSolve   :: s -> TcPluginSolver
+      , tcPluginRewrite :: s -> UniqFM TyCon TcPluginRewriter
+      , tcPluginStop    :: s -> TcPluginM ()
       }
 
-    type TcPluginSolver = [Ct] -> [Ct] -> [Ct] -> TcPluginM TcPluginResult
+    type TcPluginSolver = EvBindsVar -> [Ct] -> [Ct] -> [Ct] -> TcPluginM TcPluginSolveResult
 
-    data TcPluginResult = TcPluginContradiction [Ct] | TcPluginOk [(EvTerm,Ct)] [Ct]
+    type TcPluginRewriter = RewriteEnv -> [Ct] -> [Type] -> TcPluginM TcPluginRewriteResult
+
+  data TcPluginSolveResult
+    = TcPluginSolveResult
+        { tcPluginInsolubleCts :: [Ct]
+        , tcPluginSolvedCts    :: [(EvTerm, Ct)]
+        , tcPluginNewCts       :: [Ct]
+        }
+
+    data TcPluginRewriteResult
+      = TcPluginNoRewrite
+      | TcPluginRewriteTo
+          { tcPluginRewriteTo    :: Reduction
+          , tcRewriterNewWanteds :: [Ct]
+          }
 
 (The details of this representation are subject to change as we gain
 more experience writing typechecker plugins. It should not be assumed to
@@ -537,14 +611,21 @@ The basic idea is as follows:
    in the context, initialise mutable state or open a connection to an
    external process (e.g. an external SMT solver). The plugin can return
    a result of any type it likes, and the result will be passed to the
-   other two fields.
+   other fields of the ``TcPlugin`` record.
 
 -  During constraint solving, GHC repeatedly calls ``tcPluginSolve``.
    This function is provided with the current set of constraints, and
-   should return a ``TcPluginResult`` that indicates whether a
+   should return a ``TcPluginSolveResult`` that indicates whether a
    contradiction was found or progress was made. If the plugin solver
    makes progress, GHC will re-start the constraint solving pipeline,
    looping until a fixed point is reached.
+
+-  When rewriting type family applications, GHC calls ``tcPluginRewriter``.
+   The plugin supplies a collection of type families which it is interested
+   in rewriting. For each of those, the rewriter is provided with the
+   the arguments to that type family, as well as the current collection of
+   Given constraints. The plugin can then specify a rewriting for this
+   type family application, if desired.
 
 -  Finally, GHC calls ``tcPluginStop`` after constraint solving is
    finished, allowing the plugin to dispose of any resources it has
@@ -571,26 +652,35 @@ The key component of a typechecker plugin is a function of type
 
 ::
 
-    solve :: [Ct] -> [Ct] -> [Ct] -> TcPluginM TcPluginResult
-    solve givens deriveds wanteds = ...
+    solve :: EvBindsVar -> [Ct] -> [Ct] -> TcPluginM TcPluginResult
+    solve binds givens wanteds = ...
 
-This function will be invoked at two points in the constraint solving
-process: after simplification of given constraints, and after
-unflattening of wanted constraints. The two phases can be distinguished
-because the deriveds and wanteds will be empty in the first case. In
-each case, the plugin should either
+This function will be invoked in two different ways:
 
--  return ``TcPluginContradiction`` with a list of impossible
-   constraints (which must be a subset of those passed in), so they can
-   be turned into errors; or
+1. after simplification of Given constraints, where the plugin gets the
+   opportunity to rewrite givens,
 
--  return ``TcPluginOk`` with lists of solved and new constraints (the
-   former must be a subset of those passed in and must be supplied with
-   corresponding evidence terms).
+2. after GHC has attempted to solve Wanted constraints.
+
+The two ways can be distinguished by checking the Wanted constraints: in the
+first case (and the first case only), the plugin will be passed an empty list
+of Wanted constraints.
+
+The plugin can then respond with:
+
+* solved constraints, which will be removed from the inert set,
+
+* new constraints, which will be added to the work list,
+
+* insoluble constraints, which will be reported as errors.
+
+The plugin must respond with constraints of the same flavour,
+i.e. in (1) it should return only Givens, and for (2) it should return only
+Wanteds; all other constraints will be ignored.
 
 If the plugin cannot make any progress, it should return
-``TcPluginOk [] []``. Otherwise, if there were any new constraints, the
-main constraint solver will be re-invoked to simplify them, then the
+``TcPluginSolveResult [] [] []``. Otherwise, if there were any new constraints,
+the main constraint solver will be re-invoked to simplify them, then the
 plugin will be invoked again. The plugin is responsible for making sure
 that this process eventually terminates.
 
@@ -602,14 +692,66 @@ by solving or contradicting them).
 
 Constraints that have been solved by the plugin must be provided with
 evidence in the form of an ``EvTerm`` of the type of the constraint.
-This evidence is ignored for given and derived constraints, which GHC
+This evidence is ignored for Given constraints, which GHC
 "solves" simply by discarding them; typically this is used when they are
-uninformative (e.g. reflexive equations). For wanted constraints, the
+uninformative (e.g. reflexive equations). For Wanted constraints, the
 evidence will form part of the Core term that is generated after
 typechecking, and can be checked by ``-dcore-lint``. It is possible for
 the plugin to create equality axioms for use in evidence terms, but GHC
 does not check their consistency, and inconsistent axiom sets may lead
 to segfaults or other runtime misbehaviour.
+
+Evidence is required also when creating new Given constraints, which are
+usually implied by old ones. It is not uncommon that the evidence of a new
+Given constraint contains a removed constraint: the new one has replaced the
+removed one.
+
+.. _type-family-rewriting-with-plugins:
+
+Type family rewriting with plugins
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Typechecker plugins can also directly rewrite type family applications,
+by supplying the ``tcPluginRewrite`` field of the ``TcPlugin`` record.
+
+::
+
+    tcPluginRewrite :: s -> UniqFM TyCon TcPluginRewriter
+
+That is, the plugin registers a map, from a type family's ``TyCon`` to its
+associated rewriting function: ::
+
+    type TcPluginRewriter = [Ct] -> [Type] -> TcPluginM TcPluginRewriteResult
+
+This rewriting function is supplied with the Given constraints from the current
+context, and the type family arguments.
+Note that the type family application is guaranteed to be exactly saturated.
+This function should then return a possible rewriting of the type family
+application, by means of the following datatype: ::
+
+    data TcPluginRewriteResult
+      = TcPluginNoRewrite
+      | TcPluginRewriteTo
+          { tcPluginRewriteTo    :: Reduction
+          , tcRewriterNewWanteds :: [Ct]
+          }
+
+That is, the rewriter can specify a rewriting of the type family application --
+in which case it can also emit new Wanted constraints -- or it can do nothing.
+
+To specify a rewriting, the plugin must provide a ``Reduction``, which is
+defined as follows: ::
+
+    data Reduction = Reduction Coercion !Type
+
+That is, on top of specifying what type the type-family application rewrites to,
+the plugin must also supply a coercion which witnesses this rewriting: ::
+
+  co :: F orig_arg_1 ... orig_arg_n ~ rewritten_ty
+
+Note in particular that the LHS type of the coercion should be the original
+type-family application, while its RHS type is the type that the plugin wants
+to rewrite the type-family application to.
 
 .. _source-plugins:
 
@@ -623,7 +765,7 @@ plugins is to make it easier to implement development tools.
 There are several different access points that you can use for defining plugins
 that access the representations. All these fields receive the list of
 ``CommandLineOption`` strings that are passed to the compiler using the
-:ghc-flag:`-fplugin-opt` flags.
+:ghc-flag:`-fplugin-opt=⟨module⟩:⟨args⟩` flags.
 
 ::
 
@@ -646,14 +788,24 @@ in the source code as well as the original syntax tree of the compiled module.
 
 ::
 
-    parsed :: [CommandLineOption] -> ModSummary -> HsParsedModule
-                -> Hsc HsParsedModule
+    parsed :: [CommandLineOption] -> ModSummary
+                -> ParsedResult -> Hsc ParsedResult
 
 The ``ModSummary`` contains useful
-meta-information about the compiled module. The ``HsParsedModule`` contains the
-lexical and syntactical information we mentioned before. The result that you
-return will change the result of the parsing. If you don't want to change the
-result, just return the ``HsParsedModule`` that you received as the argument.
+meta-information about the compiled module. The ``ParsedResult`` contains a
+``HsParsedModule``, which contains the lexical and syntactical information we
+mentioned before. The result that you return will change the result of the
+parsing. If you don't want to change the result, just return the
+``ParsedResult`` that you received as the argument.
+
+If the parser encounters any errors that prevent an AST from being constructed,
+the plugin will not be run, but other kinds of errors, as well as warnings,
+will be given to the plugin via the ``PsMessages`` value of the
+``ParsedResult``. This allows you to modify, remove, and add warnings or errors
+before they are displayed to the user, although in most cases, you will likely
+want to return the messages unmodified. The parsing pass will fail if the
+``Messages PsError`` collection inside the return ``ParsedResult`` is not empty
+after all parsing plugins have been run.
 
 Type checked representation
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -721,6 +873,33 @@ NOT be invoked with your own modules.
 In the ``ModIface`` datatype you can find lots of useful information, including
 the exported definitions and type class instances.
 
+The ``ModIface`` datatype also contains facilities for extending it with extra
+data, stored in a ``Map`` of serialised fields, indexed by field names and using
+GHC's internal ``Binary`` class. The interface to work with these fields is:
+
+::
+
+    readIfaceField :: Binary a => FieldName -> ModIface -> IO (Maybe a)
+    writeIfaceField :: Binary a => FieldName -> a -> ModIface -> IO ModIface
+    deleteIfaceField :: FieldName -> ModIface -> ModIface
+
+The ``FieldName`` is open-ended, but typically it should contain the producing
+package name, along with the actual field name. Then, the version number can either
+be attached to the serialised data for that field, or in cases where multiple versions
+of a field could exist in the same interface file, included in the field name.
+
+Depending on if the field version advances with the package version, or independently,
+the version can be attached to either the package name or the field name. Examples of
+each case:
+
+::
+
+    package/field
+    ghc-n.n.n/core
+    package/field-n
+
+To read an interface file from an external tool without linking to GHC, the format
+is described at `Extensible Interface Files <https://gitlab.haskell.org/ghc/ghc/wikis/Extensible-Interface-Files>`_.
 
 Source plugin example
 ^^^^^^^^^^^^^^^^^^^^^
@@ -737,17 +916,18 @@ displayed.
     module SourcePlugin where
 
     import Control.Monad.IO.Class
-    import DynFlags (getDynFlags)
-    import Plugins
-    import HscTypes
-    import TcRnTypes
-    import HsExtension
-    import HsDecls
-    import HsExpr
-    import HsImpExp
-    import Avail
-    import Outputable
-    import HsDoc
+    import GHC.Driver.Session (getDynFlags)
+    import GHC.Driver.Plugins
+    import GHC.Plugins
+    import GHC.Tc.Types
+    import Language.Haskell.Syntax.Extension
+    import GHC.Hs.Decls
+    import GHC.Hs.Expr
+    import GHC.Hs.ImpExp
+    import GHC.Types.Avail
+    import GHC.Utils.Outputable
+    import GHC.Hs.Doc
+    import GHC
 
     plugin :: Plugin
     plugin = defaultPlugin
@@ -758,11 +938,14 @@ displayed.
       , interfaceLoadAction = interfaceLoadPlugin
       }
 
-    parsedPlugin :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
-    parsedPlugin _ _ pm
-      = do dflags <- getDynFlags
-           liftIO $ putStrLn $ "parsePlugin: \n" ++ (showSDoc dflags $ ppr $ hpm_module pm)
-           return pm
+    parsedPlugin :: [CommandLineOption] -> ModSummary
+                 -> ParsedResult -> Hsc ParsedResult
+    parsedPlugin _ _ parsed@(ParsedResult pm msgs)
+         = do dflags <- getDynFlags
+              liftIO $ putStrLn $ "parsePlugin: \n" ++ (showSDoc dflags $ ppr $ hpm_module pm)
+              liftIO $ putStrLn $ "parsePlugin warnings: \n" ++ (showSDoc dflags $ ppr $ psWarnings msgs)
+              liftIO $ putStrLn $ "parsePlugin errors: \n" ++ (showSDoc dflags $ ppr $ psErrors msgs)
+              return parsed
 
     renamedAction :: [CommandLineOption] -> TcGblEnv -> HsGroup GhcRn -> TcM (TcGblEnv, HsGroup GhcRn)
     renamedAction _ tc gr = do
@@ -799,7 +982,7 @@ When you compile a simple module that contains Template Haskell splice
 
     a = ()
 
-$(return [])
+    $(return [])
 
 with the compiler flags ``-fplugin SourcePlugin`` it will give the following
 output:
@@ -810,19 +993,400 @@ output:
     module A where
     a = ()
     $(return [])
-    interface loaded: Prelude
-    interface loaded: GHC.Float
-    interface loaded: GHC.Base
+    parsePlugin warnings:
+
+    parsePlugin errors:
+
+    typeCheckPlugin (rn): a = ()
     interface loaded: Language.Haskell.TH.Lib.Internal
-    interface loaded: Language.Haskell.TH.Syntax
-    interface loaded: GHC.Types
     meta: return []
-    interface loaded: GHC.Integer.Type
     typeCheckPlugin (rn):
-    Just a = ()
+    typeCheckPlugin (rn):
+    Nothing
     typeCheckPlugin (tc):
     {$trModule = Module (TrNameS "main"#) (TrNameS "A"#), a = ()}
 
+.. _hole-fit-plugins:
+
+Hole fit plugins
+~~~~~~~~~~~~~~~~
+
+Hole-fit plugins are plugins that are called when a typed-hole error message is
+being generated, and allows you to access information about the typed-hole at
+compile time, and allows you to customize valid hole fit suggestions.
+
+Using hole-fit plugins, you can extend the behavior of valid hole fit
+suggestions to use e.g. Hoogle or other external tools to find and/or synthesize
+valid hole fits, with the same information about the typed-hole that GHC uses.
+
+There are two access points are bundled together for defining hole fit plugins,
+namely a candidate plugin and a fit plugin, for modifying the candidates to be
+checked and fits respectively.
+
+
+::
+
+    type CandPlugin = TypedHole -> [HoleFitCandidate] -> TcM [HoleFitCandidate]
+
+    type FitPlugin =  TypedHole -> [HoleFit] -> TcM [HoleFit]
+
+    data HoleFitPlugin = HoleFitPlugin
+      { candPlugin :: CandPlugin
+         -- ^ A plugin for modifying hole fit candidates before they're checked
+      , fitPlugin :: FitPlugin
+         -- ^ A plugin for modifying valid hole fits after they've been found.
+      }
+
+Where ``TypedHole`` contains all the information about the hole available to GHC
+at error generation.
+
+::
+
+    data TypedHole = TyH { tyHRelevantCts :: Cts
+                          -- ^ Any relevant Cts to the hole
+                        , tyHImplics :: [Implication]
+                          -- ^ The nested implications of the hole with the
+                          --   innermost implication first.
+                        , tyHCt :: Maybe Ct
+                          -- ^ The hole constraint itself, if available.
+                        }
+
+``HoleFitPlugins`` are then defined as follows
+
+::
+
+    plugin :: Plugin
+    plugin = defaultPlugin {
+        holeFitPlugin = (fmap . fmap) fromPureHFPlugin hfPlugin
+      }
+
+
+    hfPlugin :: [CommandLineOption] -> Maybe HoleFitPlugin
+
+
+Where ``fromPureHFPlugin :: HoleFitPlugin -> HoleFitPluginR`` is a convenience
+function provided in the ``GHC.Tc.Errors.Hole`` module, for defining plugins that do
+not require internal state.
+
+
+Stateful hole fit plugins
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+``HoleFitPlugins`` are wrapped in a ``HoleFitPluginR``, which provides a
+``TcRef`` for the plugin to use to track internal state, and to facilitate
+communication between the candidate and fit plugin.
+
+::
+
+    -- | HoleFitPluginR adds a TcRef to hole fit plugins so that plugins can
+    -- track internal state. Note the existential quantification, ensuring that
+    -- the state cannot be modified from outside the plugin.
+    data HoleFitPluginR = forall s. HoleFitPluginR
+      { hfPluginInit :: TcM (TcRef s)
+        -- ^ Initializes the TcRef to be passed to the plugin
+      , hfPluginRun :: TcRef s -> HoleFitPlugin
+        -- ^ The function defining the plugin itself
+      , hfPluginStop :: TcRef s -> TcM ()
+        -- ^ Cleanup of state, guaranteed to be called even on error
+      }
+
+The plugin is then defined as by providing a value for the ``holeFitPlugin``
+field, a function that takes the ``CommandLineOption`` strings that are passed
+to the compiler using the :ghc-flag:`-fplugin-opt=⟨module⟩:⟨args⟩` flags and returns a
+``HoleFitPluginR``. This function can be used to pass the ``CommandLineOption``
+strings along to the candidate and fit plugins respectively.
+
+
+
+Hole fit plugin example
+^^^^^^^^^^^^^^^^^^^^^^^
+
+The following plugins allows users to limit the search for valid hole fits to
+certain modules, to sort the hole fits by where they originated (in ascending or
+descending order), as well as allowing users to put a limit on how much time is
+spent on searching for valid hole fits, after which new searches are aborted.
+
+::
+
+    {-# LANGUAGE TypeApplications, RecordWildCards #-}
+    module HolePlugin where
+
+    import GHC.Plugins hiding ((<>))
+
+    import GHC.Tc.Errors.Hole
+
+    import Data.List (stripPrefix, sortOn)
+
+    import GHC.Tc.Types
+
+    import GHC.Tc.Utils.Monad
+
+    import Data.Time (UTCTime, NominalDiffTime)
+    import qualified Data.Time as Time
+
+    import Text.Read
+
+
+    data HolePluginState = HPS { timeAlloted :: Maybe NominalDiffTime
+                              , elapsedTime :: NominalDiffTime
+                              , timeCurStarted :: UTCTime }
+
+    bumpElapsed :: NominalDiffTime -> HolePluginState -> HolePluginState
+    bumpElapsed ad (HPS a e t) = HPS a (e + ad) t
+
+    setAlloted :: Maybe NominalDiffTime -> HolePluginState -> HolePluginState
+    setAlloted a (HPS _ e t) = HPS a e t
+
+    setCurStarted :: UTCTime -> HolePluginState -> HolePluginState
+    setCurStarted nt (HPS a e _) = HPS a e nt
+
+    hpStartState :: HolePluginState
+    hpStartState = HPS Nothing zero undefined
+      where zero = fromInteger @NominalDiffTime 0
+
+    initPlugin :: [CommandLineOption] -> TcM (TcRef HolePluginState)
+    initPlugin [msecs] = newTcRef $ hpStartState { timeAlloted = alloted }
+      where
+        errMsg = "Invalid amount of milliseconds given to plugin: " <> show msecs
+        alloted = case readMaybe @Integer msecs of
+          Just millisecs -> Just $ fromInteger @NominalDiffTime millisecs / 1000
+          _ -> error errMsg
+    initPlugin _ = newTcRef hpStartState
+
+    fromModule :: HoleFitCandidate -> [String]
+    fromModule (GreHFCand gre) =
+      map (moduleNameString . importSpecModule) $ gre_imp gre
+    fromModule _ = []
+
+    toHoleFitCommand :: TypedHole -> String -> Maybe String
+    toHoleFitCommand TyH{tyHCt = Just (CHoleCan _ h)} str
+        = stripPrefix ("_" <> str) $ occNameString $ holeOcc h
+    toHoleFitCommand _ _ = Nothing
+
+    -- | This candidate plugin filters the candidates by module,
+    -- using the name of the hole as module to search in
+    modFilterTimeoutP :: [CommandLineOption] -> TcRef HolePluginState -> CandPlugin
+    modFilterTimeoutP _ ref hole cands = do
+      curTime <- liftIO Time.getCurrentTime
+      HPS {..} <- readTcRef ref
+      updTcRef ref (setCurStarted curTime)
+      return $ case timeAlloted of
+        -- If we're out of time we remove all the candidates. Then nothing is checked.
+        Just sofar | elapsedTime > sofar -> []
+        _ -> case toHoleFitCommand hole "only_" of
+
+              Just modName -> filter (inScopeVia modName) cands
+              _ -> cands
+      where inScopeVia modNameStr cand@(GreHFCand _) =
+              elem (toModName modNameStr) $ fromModule cand
+            inScopeVia _ _ = False
+            toModName = replace '_' '.'
+            replace :: Eq a => a -> a -> [a] -> [a]
+            replace _ _ [] = []
+            replace a b (x:xs) = (if x == a then b else x):replace a b xs
+
+    modSortP :: [CommandLineOption] -> TcRef HolePluginState -> FitPlugin
+    modSortP _ ref hole hfs = do
+      curTime <- liftIO Time.getCurrentTime
+      HPS {..} <- readTcRef ref
+      updTcRef ref $ bumpElapsed (Time.diffUTCTime curTime timeCurStarted)
+      return $ case timeAlloted of
+        -- If we're out of time, remove any candidates, so nothing is checked.
+        Just sofar | elapsedTime > sofar -> [RawHoleFit $ text msg]
+        _ -> case toHoleFitCommand hole "sort_by_mod" of
+                -- If only_ is on, the fits will all be from the same module.
+                Just ('_':'d':'e':'s':'c':_) -> reverse hfs
+                Just _ -> orderByModule hfs
+                _ ->  hfs
+      where orderByModule :: [HoleFit] -> [HoleFit]
+            orderByModule = sortOn (fmap fromModule . mbHFCand)
+            mbHFCand :: HoleFit -> Maybe HoleFitCandidate
+            mbHFCand HoleFit {hfCand = c} = Just c
+            mbHFCand _ = Nothing
+            msg = hang (text "Error: The time ran out, and the search was aborted for this hole.")
+                   7 $ text "Try again with a longer timeout."
+
+    plugin :: Plugin
+    plugin = defaultPlugin { holeFitPlugin = holeFitP, pluginRecompile = purePlugin}
+
+    holeFitP :: [CommandLineOption] -> Maybe HoleFitPluginR
+    holeFitP opts = Just (HoleFitPluginR initP pluginDef stopP)
+      where initP = initPlugin opts
+            stopP = const $ return ()
+            pluginDef ref = HoleFitPlugin { candPlugin = modFilterTimeoutP opts ref
+                                          , fitPlugin  = modSortP opts ref }
+
+When you then compile a module containing the following
+
+::
+
+    {-# OPTIONS -fplugin=HolePlugin
+                -fplugin-opt=HolePlugin:600
+                -funclutter-valid-hole-fits #-}
+    module Main where
+
+    import Prelude hiding (head, last)
+
+    import Data.List (head, last)
+
+
+    f, g, h, i, j :: [Int] -> Int
+    f = _too_long
+    j = _
+    i = _sort_by_mod_desc
+    g = _only_Data_List
+    h = _only_Prelude
+
+    main :: IO ()
+    main = return ()
+
+
+The output is as follows:
+
+.. code-block:: none
+
+    Main.hs:12:5: error:
+        • Found hole: _too_long :: [Int] -> Int
+          Or perhaps ‘_too_long’ is mis-spelled, or not in scope
+        • In the expression: _too_long
+          In an equation for ‘f’: f = _too_long
+        • Relevant bindings include
+            f :: [Int] -> Int (bound at Main.hs:12:1)
+          Valid hole fits include
+            Error: The time ran out, and the search was aborted for this hole.
+                   Try again with a longer timeout.
+      |
+    12 | f = _too_long
+      |     ^^^^^^^^^
+
+    Main.hs:13:5: error:
+        • Found hole: _ :: [Int] -> Int
+        • In the expression: _
+          In an equation for ‘j’: j = _
+        • Relevant bindings include
+            j :: [Int] -> Int (bound at Main.hs:13:1)
+          Valid hole fits include
+            j :: [Int] -> Int
+            f :: [Int] -> Int
+            g :: [Int] -> Int
+            h :: [Int] -> Int
+            i :: [Int] -> Int
+            head :: forall a. [a] -> a
+            (Some hole fits suppressed; use -fmax-valid-hole-fits=N or -fno-max-valid-hole-fits)
+      |
+    13 | j = _
+      |     ^
+
+    Main.hs:14:5: error:
+        • Found hole: _sort_by_mod_desc :: [Int] -> Int
+          Or perhaps ‘_sort_by_mod_desc’ is mis-spelled, or not in scope
+        • In the expression: _sort_by_mod_desc
+          In an equation for ‘i’: i = _sort_by_mod_desc
+        • Relevant bindings include
+            i :: [Int] -> Int (bound at Main.hs:14:1)
+          Valid hole fits include
+            sum :: forall (t :: * -> *) a. (Foldable t, Num a) => t a -> a
+            product :: forall (t :: * -> *) a. (Foldable t, Num a) => t a -> a
+            minimum :: forall (t :: * -> *) a. (Foldable t, Ord a) => t a -> a
+            maximum :: forall (t :: * -> *) a. (Foldable t, Ord a) => t a -> a
+            length :: forall (t :: * -> *) a. Foldable t => t a -> Int
+            last :: forall a. [a] -> a
+            (Some hole fits suppressed; use -fmax-valid-hole-fits=N or -fno-max-valid-hole-fits)
+      |
+    14 | i = _sort_by_mod_desc
+      |     ^^^^^^^^^^^^^^^^^
+
+    Main.hs:15:5: error:
+        • Found hole: _only_Data_List :: [Int] -> Int
+          Or perhaps ‘_only_Data_List’ is mis-spelled, or not in scope
+        • In the expression: _only_Data_List
+          In an equation for ‘g’: g = _only_Data_List
+        • Relevant bindings include
+            g :: [Int] -> Int (bound at Main.hs:15:1)
+          Valid hole fits include
+            head :: forall a. [a] -> a
+            last :: forall a. [a] -> a
+      |
+    15 | g = _only_Data_List
+      |     ^^^^^^^^^^^^^^^
+
+    Main.hs:16:5: error:
+        • Found hole: _only_Prelude :: [Int] -> Int
+          Or perhaps ‘_only_Prelude’ is mis-spelled, or not in scope
+        • In the expression: _only_Prelude
+          In an equation for ‘h’: h = _only_Prelude
+        • Relevant bindings include
+            h :: [Int] -> Int (bound at Main.hs:16:1)
+          Valid hole fits include
+            length :: forall (t :: * -> *) a. Foldable t => t a -> Int
+            maximum :: forall (t :: * -> *) a. (Foldable t, Ord a) => t a -> a
+            minimum :: forall (t :: * -> *) a. (Foldable t, Ord a) => t a -> a
+            product :: forall (t :: * -> *) a. (Foldable t, Num a) => t a -> a
+            sum :: forall (t :: * -> *) a. (Foldable t, Num a) => t a -> a
+      |
+    16 | h = _only_Prelude
+      |     ^^^^^^^^^^^^^
+
+
+.. _defaulting-plugins:
+
+Defaulting plugins
+~~~~~~~~~~~~~~~~~~
+
+Defaulting plugins are called when ambiguous variables might otherwise cause
+errors, in the same way as the built-in defaulting mechanism.
+
+A defaulting plugin can propose potential ways to fill an ambiguous variable
+according to whatever criteria you would like. GHC will verify that those
+proposals will not lead to type errors in a context that you declare.
+
+Defaulting plugins have a single access point in the `GHC.Tc.Types` module
+
+::
+
+    -- | A collection of candidate default types for a type variable.
+    data DefaultingProposal
+      = DefaultingProposal
+        { deProposalTyVar :: TcTyVar
+          -- ^ The type variable to default.
+        , deProposalCandidates :: [Type]
+          -- ^ Candidate types to default the type variable to.
+        , deProposalCts :: [Ct]
+          -- ^ The constraints against which defaults are checked.
+        }
+
+    type DefaultingPluginResult = [DefaultingProposal]
+    type FillDefaulting = WantedConstraints -> TcPluginM DefaultingPluginResult
+
+    -- | A plugin for controlling defaulting.
+    data DefaultingPlugin = forall s. DefaultingPlugin
+      { dePluginInit :: TcPluginM s
+        -- ^ Initialize plugin, when entering type-checker.
+      , dePluginRun :: s -> FillDefaulting
+        -- ^ Default some types
+      , dePluginStop :: s -> TcPluginM ()
+       -- ^ Clean up after the plugin, when exiting the type-checker.
+      }
+
+
+The plugin gets a combination of wanted constraints which can be most easily
+broken down into simple wanted constraints with ``approximateWC``. The result of
+running the plugin should be a ``DefaultingPluginResult``, a list of types that
+should be attempted for a given type variable that is ambiguous in a given
+context. GHC will check if one of the proposals is acceptable in the given
+context and then default to it. The most robust context to provide is the list
+of all wanted constraints that mention the variable you are defaulting. If you
+leave out a constraint, the default will be accepted, and then potentially
+result in a type checker error if it is incompatible with one of the constraints
+you left out. This can be a useful way of forcing a default and reporting errors
+to the user.
+
+There is an example of defaulting lifted types in the GHC test suite. In the
+`testsuite/tests/plugins/` directory see `defaulting-plugin/` for the
+implementation, `test-defaulting-plugin.hs` for an example of when defaulting
+happens, and `test-defaulting-plugin-fail.hs` for an example of when defaults
+don't fit and aren't applied.
 
 .. _plugin_recompilation:
 
@@ -900,7 +1464,7 @@ we just invoke GHC with the :ghc-flag:`--frontend ⟨module⟩` flag as follows:
 Frontend plugins, like compiler plugins, are exported by registered plugins.
 However, unlike compiler modules, frontend plugins are modules that export
 at least a single identifier ``frontendPlugin`` of type
-``GhcPlugins.FrontendPlugin``.
+``GHC.Plugins.FrontendPlugin``.
 
 ``FrontendPlugin`` exports a field ``frontend``, which is a function
 ``[String] -> [(String, Maybe Phase)] -> Ghc ()``.  The first argument
@@ -916,7 +1480,7 @@ were passed to it, and then exits.
 ::
 
     module DoNothing.FrontendPlugin (frontendPlugin) where
-    import GhcPlugins
+    import GHC.Plugins
 
     frontendPlugin :: FrontendPlugin
     frontendPlugin = defaultFrontendPlugin {
@@ -931,3 +1495,93 @@ were passed to it, and then exits.
 Provided you have compiled this plugin and registered it in a package,
 you can just use it by specifying ``--frontend DoNothing.FrontendPlugin``
 on the command line to GHC.
+
+.. _dynflags_plugins:
+
+DynFlags plugins
+~~~~~~~~~~~~~~~~
+
+A DynFlags plugin allows you to modify the ``DynFlags`` that GHC
+is going to use when processing a given (set of) file(s).
+``DynFlags`` is a record containing all sorts of configuration
+and command line data, from verbosity level to the integer library
+to use, including compiler hooks, plugins and pretty-printing options.
+DynFlags plugins allow plugin authors to update any of those values
+before GHC starts doing any actual work, effectively meaning that
+the updates specified by the plugin will be taken into account and
+influence GHC's behaviour.
+
+One of the motivating examples was the ability to register
+compiler hooks from a plugin. For example, one might want to modify
+the way Template Haskell code is executed. This is achievable by
+updating the ``hooks`` field of the ``DynFlags`` type, recording
+our custom "meta hook" in the right place. A simple application of
+this idea can be seen below:
+
+::
+
+    module DynFlagsPlugin (plugin) where
+
+    import BasicTypes
+    import GHC.Plugins
+    import GHC.Hs.Expr
+    import Language.Haskell.Syntax.Extension
+    import GHC.Hs.Lit
+    import Hooks
+    import GHC.Tc.Utils.Monad
+
+    plugin :: Plugin
+    plugin = driverPlugin { driverPlugin = hooksP }
+
+    hooksP :: [CommandLineOption] -> HscEnv -> IO HscEnv
+    hooksP opts hsc_env = do
+        let hooks'   = (hsc_hooks hsc_env)
+                        { runMetaHook = Just (fakeRunMeta opts) }
+            hsc_env' = hsc_env { hsc_hooks = hooks' }
+        return hsc_env'
+
+    -- This meta hook doesn't actually care running code in splices,
+    -- it just replaces any expression splice with the "0"
+    -- integer literal, and errors out on all other types of
+    -- meta requests.
+    fakeRunMeta :: [CommandLineOption] -> MetaHook TcM
+    fakeRunMeta opts (MetaE r) _ = do
+      liftIO . putStrLn $ "Options = " ++ show opts
+      pure $ r zero
+
+      where zero :: LHsExpr GhcPs
+            zero = L noSrcSpan $ HsLit NoExtField $
+              HsInt NoExtField (mkIntegralLit (0 :: Int))
+
+    fakeRunMeta _ _ _ = error "fakeRunMeta: unimplemented"
+
+This simple plugin takes over the execution of Template Haskell code,
+replacing any expression splice it encounters by ``0`` (at type
+``Int``), and errors out on any other type of splice.
+
+Therefore, if we run GHC against the following code using the plugin
+from above:
+
+::
+
+    {-# OPTIONS -fplugin=DynFlagsPlugin #-}
+    {-# LANGUAGE TemplateHaskell #-}
+    module Main where
+
+    main :: IO ()
+    main = print $( [|1|] )
+
+This will not actually evaluate ``[|1|]``, but instead replace it
+with the ``0 :: Int`` literal.
+
+Just like the other types of plugins, you can write ``DynFlags`` plugins
+that can take and make use of some options that you can then specify
+using the ``-fplugin-opt`` flag. In the ``DynFlagsPlugin`` code from
+above, the said options would be available in the ``opts`` argument of
+``hooksP``.
+
+Finally, since those ``DynFlags`` updates happen after the plugins are loaded,
+you cannot from a ``DynFlags`` plugin register other plugins by just adding them
+to the ``plugins`` field of ``DynFlags``. In order to achieve this, you would
+have to load them yourself and store the result into the ``cachedPlugins``
+field of ``DynFlags``.

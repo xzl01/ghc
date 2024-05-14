@@ -1,4 +1,5 @@
-{-# LANGUAGE PatternSynonyms, TypeOperators, TypeFamilies, MultiParamTypeClasses, GADTs #-}
+{-# LANGUAGE Haskell2010 #-}
+{-# LANGUAGE PatternSynonyms, TypeOperators, TypeFamilies, GADTs #-}
 {-# LANGUAGE FunctionalDependencies #-}
 
 -- | Test operators with or without fixity declarations

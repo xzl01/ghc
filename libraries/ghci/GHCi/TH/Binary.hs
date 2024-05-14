@@ -10,6 +10,7 @@ module GHCi.TH.Binary () where
 import Prelude -- See note [Why do we import Prelude here?]
 import Data.Binary
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Internal as B
 import GHC.Serialized
 import qualified Language.Haskell.TH        as TH
 import qualified Language.Haskell.TH.Syntax as TH
@@ -25,7 +26,8 @@ instance Binary TH.Module
 instance Binary TH.Info
 instance Binary TH.Type
 instance Binary TH.TyLit
-instance Binary TH.TyVarBndr
+instance Binary TH.Specificity
+instance Binary flag => Binary (TH.TyVarBndr flag)
 instance Binary TH.Role
 instance Binary TH.Lit
 instance Binary TH.Range
@@ -66,9 +68,17 @@ instance Binary TH.FamilyResultSig
 instance Binary TH.TypeFamilyHead
 instance Binary TH.PatSynDir
 instance Binary TH.PatSynArgs
+instance Binary TH.DocLoc
 
 -- We need Binary TypeRep for serializing annotations
 
 instance Binary Serialized where
     put (Serialized tyrep wds) = put tyrep >> put (B.pack wds)
     get = Serialized <$> get <*> (B.unpack <$> get)
+
+instance Binary TH.Bytes where
+   put (TH.Bytes ptr off sz) = put bs
+      where bs = B.PS ptr (fromIntegral off) (fromIntegral sz)
+   get = do
+      B.PS ptr off sz <- get
+      return (TH.Bytes ptr (fromIntegral off) (fromIntegral sz))

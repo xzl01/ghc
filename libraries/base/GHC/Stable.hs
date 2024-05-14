@@ -31,6 +31,8 @@ module GHC.Stable (
 import GHC.Ptr
 import GHC.Base
 
+import Unsafe.Coerce ( unsafeCoerceAddr )
+
 -----------------------------------------------------------------------------
 -- Stable Pointers
 
@@ -79,13 +81,13 @@ foreign import ccall unsafe "hs_free_stable_ptr" freeStablePtr :: StablePtr a ->
 -- |
 -- Coerce a stable pointer to an address. No guarantees are made about
 -- the resulting value, except that the original stable pointer can be
--- recovered by 'castPtrToStablePtr'.  In particular, the address may not
+-- recovered by 'castPtrToStablePtr'.  In particular, the address might not
 -- refer to an accessible memory location and any attempt to pass it to
 -- the member functions of the class 'Foreign.Storable.Storable' leads to
 -- undefined behaviour.
 --
 castStablePtrToPtr :: StablePtr a -> Ptr ()
-castStablePtrToPtr (StablePtr s) = Ptr (unsafeCoerce# s)
+castStablePtrToPtr (StablePtr s) = Ptr (unsafeCoerceAddr s)
 
 
 -- |
@@ -99,7 +101,7 @@ castStablePtrToPtr (StablePtr s) = Ptr (unsafeCoerce# s)
 -- 'castStablePtrToPtr'.
 --
 castPtrToStablePtr :: Ptr () -> StablePtr a
-castPtrToStablePtr (Ptr a) = StablePtr (unsafeCoerce# a)
+castPtrToStablePtr (Ptr a) = StablePtr (unsafeCoerceAddr a)
 
 -- | @since 2.01
 instance Eq (StablePtr a) where

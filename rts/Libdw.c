@@ -75,7 +75,7 @@ void libdwFree(LibdwSession *session) {
 }
 
 // Create a libdw session with DWARF information for all loaded modules
-LibdwSession *libdwInit() {
+LibdwSession *libdwInit(void) {
     LibdwSession *session = stgCallocBytes(1, sizeof(LibdwSession),
                                            "libdwInit");
     // Initialize ELF library
@@ -95,7 +95,7 @@ LibdwSession *libdwInit() {
     session->dwfl = dwfl_begin (&proc_callbacks);
     if (session->dwfl == NULL) {
         sysErrorBelch("dwfl_begin failed: %s", dwfl_errmsg(dwfl_errno()));
-        free(session);
+        stgFree(session);
         return NULL;
     }
 
@@ -122,7 +122,7 @@ LibdwSession *libdwInit() {
 
  fail:
     dwfl_end(session->dwfl);
-    free(session);
+    stgFree(session);
     return NULL;
 }
 
@@ -133,8 +133,14 @@ int libdwLookupLocation(LibdwSession *session, Location *frame,
     Dwfl_Module *mod = dwfl_addrmodule(session->dwfl, addr);
     if (mod == NULL)
         return 1;
+    // avoid unaligned pointer value
+    // Using &frame->object_file as argument to dwfl_module_info leads to
+    //
+    //   error: taking address of packed member of ‘struct Location_’ may result in an unaligned pointer value [-Werror=address-of-packed-member]
+    //
+    void *object_file = &frame->object_file;
     dwfl_module_info(mod, NULL, NULL, NULL, NULL, NULL,
-                     &frame->object_file, NULL);
+                     object_file, NULL);
 
     // Find function name
     frame->function = dwfl_module_addrname(mod, addr);
@@ -188,7 +194,7 @@ int libdwForEachFrameOutwards(Backtrace *bt,
             if (res != 0) break;
         }
     }
-    free(chunks);
+    stgFree(chunks);
     return res;
 }
 
@@ -329,6 +335,35 @@ static bool set_initial_registers(Dwfl_Thread *thread,
              :"%eax"                      /* clobbered */
         );
     return dwfl_thread_state_registers(thread, 0, 9, regs);
+}
+#elif defined(s390x_HOST_ARCH)
+static bool set_initial_registers(Dwfl_Thread *thread,
+                                  void *arg STG_UNUSED) {
+    Dwarf_Word regs[32];
+    __asm__ ("stmg %%r0,%%r15,0(%0)\n\t"
+             "std  %%f0,  128(0,%0)\n\t"
+             "std  %%f2,  136(0,%0)\n\t"
+             "std  %%f4,  144(0,%0)\n\t"
+             "std  %%f6,  152(0,%0)\n\t"
+             "std  %%f1,  160(0,%0)\n\t"
+             "std  %%f3,  168(0,%0)\n\t"
+             "std  %%f5,  176(0,%0)\n\t"
+             "std  %%f7,  184(0,%0)\n\t"
+             "std  %%f8,  192(0,%0)\n\t"
+             "std  %%f10, 200(0,%0)\n\t"
+             "std  %%f12, 208(0,%0)\n\t"
+             "std  %%f14, 216(0,%0)\n\t"
+             "std  %%f9,  224(0,%0)\n\t"
+             "std  %%f11, 232(0,%0)\n\t"
+             "std  %%f13, 240(0,%0)\n\t"
+             "std  %%f15, 248(0,%0)\n\t"
+             "larl %%r0,0\n\t"
+             "stg  %%r0,  112(0,%0)\n\t"
+             :                            /* no output */
+             :"r" (&regs[0])              /* input */
+             :"%r0"                       /* clobbered */
+        );
+    return dwfl_thread_state_registers(thread, 0, 32, regs);
 }
 #else
 #    error "Please implement set_initial_registers() for your arch"

@@ -1,6 +1,12 @@
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MagicHash #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE UnboxedTuples #-}
 {-# LANGUAGE Unsafe #-}
-{-# LANGUAGE MagicHash, UnboxedTuples, TypeFamilies, DeriveDataTypeable,
-             MultiParamTypeClasses, FlexibleInstances, NoImplicitPrelude #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# OPTIONS_HADDOCK print-explicit-runtime-reps #-}
 
 -----------------------------------------------------------------------------
 -- |
@@ -19,93 +25,134 @@
 
 module GHC.Exts
        (
-        -- * Representations of some basic types
-        Int(..),Word(..),Float(..),Double(..),
-        Char(..),
+        -- ** Pointer types
         Ptr(..), FunPtr(..),
 
-        -- * The maximum tuple size
-        maxTupleSize,
+        -- ** Other primitive types
+        module GHC.Types,
+
+        -- ** Legacy interface for arrays of arrays
+        module GHC.ArrayArray,
 
         -- * Primitive operations
+
         module GHC.Prim,
-        shiftL#, shiftRL#, iShiftL#, iShiftRA#, iShiftRL#,
-        uncheckedShiftL64#, uncheckedShiftRL64#,
-        uncheckedIShiftL64#, uncheckedIShiftRA64#,
-        isTrue#,
+        module GHC.Prim.Ext,
 
-        -- * Compat wrapper
-        atomicModifyMutVar#,
-
-        -- * Fusion
-        build, augment,
-
-        -- * Overloaded string literals
-        IsString(..),
-
-        -- * Debugging
-        breakpoint, breakpointCond,
-
-        -- * Ids with special behaviour
-        lazy, inline, oneShot,
-
-        -- * Running 'RealWorld' state thread
+        -- ** Running 'RealWorld' state thread
         runRW#,
 
-        -- * Safe coercions
-        --
-        -- | These are available from the /Trustworthy/ module "Data.Coerce" as well
-        --
-        -- @since 4.7.0.0
-        Data.Coerce.coerce, Data.Coerce.Coercible,
+        -- ** Bit shift operations
+        shiftL#, shiftRL#, iShiftL#, iShiftRA#, iShiftRL#,
 
-        -- * Equality
-        type (~~),
+        -- ** Pointer comparison operations
+        -- See `Note [Pointer comparison operations]` in primops.txt.pp
+        reallyUnsafePtrEquality,
+        eqStableName#,
+        sameArray#,
+        sameMutableArray#,
+        sameSmallArray#,
+        sameSmallMutableArray#,
+        sameByteArray#,
+        sameMutableByteArray#,
+        sameMVar#,
+        sameMutVar#,
+        sameTVar#,
+        sameIOPort#,
 
-        -- * Representation polymorphism
-        GHC.Prim.TYPE, RuntimeRep(..), VecCount(..), VecElem(..),
+        -- ** Compat wrapper
+        atomicModifyMutVar#,
+
+        -- ** Resize functions
+        --
+        -- | Resizing arrays of boxed elements is currently handled in
+        -- library space (rather than being a primop) since there is not
+        -- an efficient way to grow arrays. However, resize operations
+        -- may become primops in a future release of GHC.
+        resizeSmallMutableArray#,
+
+        -- ** Fusion
+        build, augment,
+
+        -- * Overloaded lists
+        IsList(..),
 
         -- * Transform comprehensions
         Down(..), groupWith, sortWith, the,
 
-        -- * Event logging
+        -- * Strings
+        -- ** Overloaded string literals
+        IsString(..),
+
+        -- ** CString
+        unpackCString#,
+        unpackAppendCString#,
+        unpackFoldrCString#,
+        unpackCStringUtf8#,
+        unpackNBytes#,
+        cstringLength#,
+
+        -- * Debugging
+        -- ** Breakpoints
+        breakpoint, breakpointCond,
+
+        -- ** Event logging
         traceEvent,
 
-        -- * SpecConstr annotations
-        SpecConstrAnnotation(..),
-
-        -- * The call stack
+        -- ** The call stack
         currentCallStack,
 
-        -- * The Constraint kind
-        Constraint,
+        -- * Ids with special behaviour
+        inline, noinline, lazy, oneShot, considerAccessible,
 
-        -- * The Any type
-        Any,
+        -- * SpecConstr annotations
+        SpecConstrAnnotation(..), SPEC (..),
 
-        -- * Overloaded lists
-        IsList(..)
+        -- * Coercions
+        -- ** Safe coercions
+        --
+        -- | These are available from the /Trustworthy/ module "Data.Coerce" as well.
+        --
+        -- @since 4.7.0.0
+        Data.Coerce.coerce,
+
+        -- ** Very unsafe coercion
+        unsafeCoerce#,
+
+        -- ** Casting class dictionaries with single methods
+        --
+        --   @since 4.17.0.0
+        WithDict(..),
+
+        -- * The maximum tuple size
+        maxTupleSize,
        ) where
 
-import GHC.Prim hiding ( coerce, TYPE )
-import qualified GHC.Prim
+import GHC.Prim hiding ( coerce )
+import GHC.Types
+  hiding ( IO   -- Exported from "GHC.IO"
+         , Type -- Exported from "Data.Kind"
+
+           -- GHC's internal representation of 'TyCon's, for 'Typeable'
+         , Module, TrName, TyCon, TypeLitSort, KindRep, KindBndr )
+import qualified GHC.Prim.Ext
+import GHC.ArrayArray
 import GHC.Base hiding ( coerce )
-import GHC.Word
-import GHC.Int
 import GHC.Ptr
 import GHC.Stack
+import GHC.IsList (IsList(..)) -- for re-export
 
 import qualified Data.Coerce
 import Data.String
 import Data.OldList
 import Data.Data
 import Data.Ord
-import Data.Version ( Version(..), makeVersion )
 import qualified Debug.Trace
+import Unsafe.Coerce ( unsafeCoerce# ) -- just for re-export
 
 -- XXX This should really be in Data.Tuple, where the definitions are
 maxTupleSize :: Int
-maxTupleSize = 62
+maxTupleSize = 64
 
 -- | 'the' ensures that all the elements of the list are identical
 -- and then returns that unique element
@@ -117,6 +164,11 @@ the []            = errorWithoutStackTrace "GHC.Exts.the: empty list"
 
 -- | The 'sortWith' function sorts a list of elements using the
 -- user supplied function to project something out of each element
+--
+-- In general if the user supplied function is expensive to compute then
+-- you should probably be using 'Data.List.sortOn', as it only needs
+-- to compute it once for each element. 'sortWith', on the other hand
+-- must compute the mapping function for every comparison that it performs.
 sortWith :: Ord b => (a -> b) -> [a] -> [a]
 sortWith f = sortBy (\x y -> compare (f x) (f y))
 
@@ -162,66 +214,6 @@ data SpecConstrAnnotation = NoSpecConstr | ForceSpecConstr
                          )
 
 
-{- **********************************************************************
-*                                                                       *
-*              The IsList class                                         *
-*                                                                       *
-********************************************************************** -}
-
--- | The 'IsList' class and its methods are intended to be used in
---   conjunction with the OverloadedLists extension.
---
--- @since 4.7.0.0
-class IsList l where
-  -- | The 'Item' type function returns the type of items of the structure
-  --   @l@.
-  type Item l
-
-  -- | The 'fromList' function constructs the structure @l@ from the given
-  --   list of @Item l@
-  fromList  :: [Item l] -> l
-
-  -- | The 'fromListN' function takes the input list's length as a hint. Its
-  --   behaviour should be equivalent to 'fromList'. The hint can be used to
-  --   construct the structure @l@ more efficiently compared to 'fromList'. If
-  --   the given hint does not equal to the input list's length the behaviour of
-  --   'fromListN' is not specified.
-  fromListN :: Int -> [Item l] -> l
-  fromListN _ = fromList
-
-  -- | The 'toList' function extracts a list of @Item l@ from the structure @l@.
-  --   It should satisfy fromList . toList = id.
-  toList :: l -> [Item l]
-
--- | @since 4.7.0.0
-instance IsList [a] where
-  type (Item [a]) = a
-  fromList = id
-  toList = id
-
--- | @since 4.9.0.0
-instance IsList (NonEmpty a) where
-  type Item (NonEmpty a) = a
-
-  fromList (a:as) = a :| as
-  fromList [] = errorWithoutStackTrace "NonEmpty.fromList: empty list"
-
-  toList ~(a :| as) = a : as
-
--- | @since 4.8.0.0
-instance IsList Version where
-  type (Item Version) = Int
-  fromList = makeVersion
-  toList = versionBranch
-
--- | Be aware that 'fromList . toList = id' only for unfrozen 'CallStack's,
--- since 'toList' removes frozenness information.
---
--- @since 4.9.0.0
-instance IsList CallStack where
-  type (Item CallStack) = (String, SrcLoc)
-  fromList = fromCallSiteList
-  toList   = getCallStack
 
 -- | An implementation of the old @atomicModifyMutVar#@ primop in
 -- terms of the new 'atomicModifyMutVar2#' primop, for backwards
@@ -246,3 +238,58 @@ atomicModifyMutVar#
 atomicModifyMutVar# mv f s =
   case unsafeCoerce# (atomicModifyMutVar2# mv f s) of
     (# s', _, ~(_, res) #) -> (# s', res #)
+
+-- | Resize a mutable array to new specified size. The returned
+-- 'SmallMutableArray#' is either the original 'SmallMutableArray#'
+-- resized in-place or, if not possible, a newly allocated
+-- 'SmallMutableArray#' with the original content copied over.
+--
+-- To avoid undefined behaviour, the original 'SmallMutableArray#' shall
+-- not be accessed anymore after a 'resizeSmallMutableArray#' has been
+-- performed. Moreover, no reference to the old one should be kept in order
+-- to allow garbage collection of the original 'SmallMutableArray#'  in
+-- case a new 'SmallMutableArray#' had to be allocated.
+--
+-- @since 4.14.0.0
+resizeSmallMutableArray#
+  :: SmallMutableArray# s a -- ^ Array to resize
+  -> Int# -- ^ New size of array
+  -> a
+     -- ^ Newly created slots initialized to this element.
+     -- Only used when array is grown.
+  -> State# s
+  -> (# State# s, SmallMutableArray# s a #)
+resizeSmallMutableArray# arr0 szNew a s0 =
+  case getSizeofSmallMutableArray# arr0 s0 of
+    (# s1, szOld #) -> if isTrue# (szNew <# szOld)
+      then case shrinkSmallMutableArray# arr0 szNew s1 of
+        s2 -> (# s2, arr0 #)
+      else if isTrue# (szNew ># szOld)
+        then case newSmallArray# szNew a s1 of
+          (# s2, arr1 #) -> case copySmallMutableArray# arr0 0# arr1 0# szOld s2 of
+            s3 -> (# s3, arr1 #)
+        else (# s1, arr0 #)
+
+-- | Semantically, @considerAccessible = True@. But it has special meaning
+-- to the pattern-match checker, which will never flag the clause in which
+-- 'considerAccessible' occurs as a guard as redundant or inaccessible.
+-- Example:
+--
+-- > case (x, x) of
+-- >   (True,  True)  -> 1
+-- >   (False, False) -> 2
+-- >   (True,  False) -> 3 -- Warning: redundant
+--
+-- The pattern-match checker will warn here that the third clause is redundant.
+-- It will stop doing so if the clause is adorned with 'considerAccessible':
+--
+-- > case (x, x) of
+-- >   (True,  True)  -> 1
+-- >   (False, False) -> 2
+-- >   (True,  False) | considerAccessible -> 3 -- No warning
+--
+-- Put 'considerAccessible' as the last statement of the guard to avoid get
+-- confusing results from the pattern-match checker, which takes \"consider
+-- accessible\" by word.
+considerAccessible :: Bool
+considerAccessible = True

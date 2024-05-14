@@ -18,7 +18,7 @@ module Control.Monad
     (
     -- * Functor and monad classes
 
-      Functor(fmap)
+      Functor(..)
     , Monad((>>=), (>>), return)
     , MonadFail(fail)
     , MonadPlus(mzero, mplus)
@@ -85,6 +85,10 @@ import GHC.Base hiding ( mapM, sequence )
 import GHC.List ( zipWith, unzip )
 import GHC.Num  ( (-) )
 
+-- $setup
+-- >>> import Prelude
+-- >>> let safeDiv x y = guard (y /= 0) >> Just (x `div` y :: Int)
+
 -- -----------------------------------------------------------------------------
 -- Functions mandated by the Prelude
 
@@ -106,12 +110,11 @@ import GHC.Num  ( (-) )
 -- 'Nothing' when the denominator @y@ is zero and @'Just' (x \`div\`
 -- y)@ otherwise. For example:
 --
--- @
 -- >>> safeDiv 4 0
 -- Nothing
+--
 -- >>> safeDiv 4 2
 -- Just 2
--- @
 --
 -- A definition of @safeDiv@ using guards, but not 'guard':
 --
@@ -142,6 +145,13 @@ filterM p        = foldr (\ x -> liftA2 (\ flg -> if flg then (x:) else id) (p x
 infixr 1 <=<, >=>
 
 -- | Left-to-right composition of Kleisli arrows.
+--
+-- \'@(bs '>=>' cs) a@\' can be understood as the @do@ expression
+--
+-- @
+-- do b <- bs a
+--    cs b
+-- @
 (>=>)       :: Monad m => (a -> m b) -> (b -> m c) -> (a -> m c)
 f >=> g     = \x -> f x >>= g
 
@@ -179,6 +189,10 @@ f >=> g     = \x -> f x >>= g
 --     echo client = 'forever' $
 --       hGetLine client >>= hPutStrLn client
 -- @
+--
+-- Note that "forever" isn't necessarily non-terminating.
+-- If the action is in a @'MonadPlus'@ and short-circuits after some number of iterations.
+-- then @'forever'@ actually returns `mzero`, effectively short-circuiting its caller.
 forever     :: (Applicative f) => f a -> f b
 {-# INLINE forever #-}
 forever a   = let a' = a *> a' in a'
@@ -193,16 +207,22 @@ forever a   = let a' = a *> a' in a'
 -- data structures or a state monad.
 mapAndUnzipM      :: (Applicative m) => (a -> m (b,c)) -> [a] -> m ([b], [c])
 {-# INLINE mapAndUnzipM #-}
+-- Inline so that fusion with 'unzip' and 'traverse' has a chance to fire.
+-- See Note [Inline @unzipN@ functions] in GHC/OldList.hs.
 mapAndUnzipM f xs =  unzip <$> traverse f xs
 
 -- | The 'zipWithM' function generalizes 'zipWith' to arbitrary applicative functors.
 zipWithM          :: (Applicative m) => (a -> b -> m c) -> [a] -> [b] -> m [c]
 {-# INLINE zipWithM #-}
+-- Inline so that fusion with zipWith and sequenceA have a chance to fire
+-- See Note [Fusion for zipN/zipWithN] in List.hs]
 zipWithM f xs ys  =  sequenceA (zipWith f xs ys)
 
 -- | 'zipWithM_' is the extension of 'zipWithM' which ignores the final result.
 zipWithM_         :: (Applicative m) => (a -> b -> m c) -> [a] -> [b] -> m ()
 {-# INLINE zipWithM_ #-}
+-- Inline so that fusion with zipWith and sequenceA have a chance to fire
+-- See Note [Fusion for zipN/zipWithN] in List.hs.
 zipWithM_ f xs ys =  sequenceA_ (zipWith f xs ys)
 
 {- | The 'foldM' function is analogous to 'Data.Foldable.foldl', except that its result is
@@ -242,7 +262,6 @@ foldM_ f a xs  = foldlM f a xs >> return ()
 {-
 Note [Worker/wrapper transform on replicateM/replicateM_]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
 The implementations of replicateM and replicateM_ both leverage the
 worker/wrapper transform. The simpler implementation of replicateM_, as an
 example, would be:
@@ -256,12 +275,19 @@ By contrast, the implementation below with a local loop makes it possible to
 inline the entire definition (as happens for foldr, for example) thereby
 specialising for the particular action.
 
-For further information, see this Trac comment, which includes side-by-side
-Core: https://ghc.haskell.org/trac/ghc/ticket/11795#comment:6
+For further information, see this issue comment, which includes side-by-side
+Core: https://gitlab.haskell.org/ghc/ghc/issues/11795#note_118976
 -}
 
--- | @'replicateM' n act@ performs the action @n@ times,
--- gathering the results.
+-- | @'replicateM' n act@ performs the action @act@ @n@ times,
+-- and then returns the list of results:
+--
+-- ==== __Examples__
+--
+-- >>> import Control.Monad.State
+-- >>> runState (replicateM 3 $ state $ \s -> (s, s + 1)) 1
+-- ([1,2,3],4)
+--
 replicateM        :: (Applicative m) => Int -> m a -> m [a]
 {-# INLINABLE replicateM #-}
 {-# SPECIALISE replicateM :: Int -> IO a -> IO [a] #-}
@@ -274,6 +300,14 @@ replicateM cnt0 f =
         | otherwise = liftA2 (:) f (loop (cnt - 1))
 
 -- | Like 'replicateM', but discards the result.
+--
+-- ==== __Examples__
+--
+-- >>> replicateM_ 3 (putStrLn "a")
+-- a
+-- a
+-- a
+--
 replicateM_       :: (Applicative m) => Int -> m a -> m ()
 {-# INLINABLE replicateM_ #-}
 {-# SPECIALISE replicateM_ :: Int -> IO a -> IO () #-}
@@ -322,12 +356,11 @@ f <$!> m = do
 --
 -- An example using 'mfilter' with the 'Maybe' monad:
 --
--- @
 -- >>> mfilter odd (Just 1)
 -- Just 1
 -- >>> mfilter odd (Just 2)
 -- Nothing
--- @
+--
 mfilter :: (MonadPlus m) => (a -> Bool) -> m a -> m a
 {-# INLINABLE mfilter #-}
 mfilter p ma = do

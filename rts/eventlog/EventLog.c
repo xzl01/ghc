@@ -6,7 +6,7 @@
  *
  * ---------------------------------------------------------------------------*/
 
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
 
 #if defined(TRACING)
@@ -16,6 +16,7 @@
 #include "RtsUtils.h"
 #include "Stats.h"
 #include "EventLog.h"
+#include "Schedule.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -26,13 +27,79 @@
 #include <unistd.h>
 #endif
 
-static const EventLogWriter *event_log_writer;
+Mutex state_change_mutex;
+bool eventlog_enabled; // protected by state_change_mutex to ensure
+                       // serialisation of calls to
+                       // startEventLogging/endEventLogging
+
+/* Note [Eventlog concurrency]
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * The eventlog is designed to handle high rates of concurrent event posting by
+ * multiple capabilities. For this reason, each capability has its own local
+ * event buffer, which is flushed when filled.
+ *
+ * Additionally, there is a single global event buffer (`eventBuf`), which is
+ * used for various administrative things (e.g. posting the header) and in
+ * cases where we want to post events yet don't hold a capability.
+ *
+ * Whether or not events are posted is determined by the global flag
+ * eventlog_enabled.  Naturally, starting and stopping of logging are a bit
+ * subtle. In particular, we need to ensure that the header is the *first*
+ * thing to appear in the event stream. To ensure that multiple threads don't
+ * race to start/stop logging we protect eventlog_enabled with
+ * state_change_mutex. Moreover, we only set eventlog_enabled *after* we have
+ * posted the header.
+ *
+ * Event buffers uphold the invariant that they always begin with a start-block
+ * marker. This is enforced by calls to postBlockMarker in:
+ *
+ *  - initEventsBufs (during buffer initialization)
+ *  - printAndClearEventBuf (after the buffer is filled)
+ *  - moreCapEventBufs (when the number of capabilities changes)
+ *
+ * The one place where we *don't* want a block marker is when posting the
+ * eventlog header. We achieve this by first resetting the eventlog buffer
+ * before posting the header (in postHeader).
+ *
+ * Stopping eventlogging is a bit involved:
+ *
+ *  1. first take state_change_mutex, to ensure we don't race with another
+ *     thread to stop logging.
+ *  2. disable eventlog_enabled, to ensure that no capabilities post further
+ *     events
+ *  3. request that all capabilities flush their eventlog buffers. This
+ *     achieves two things: (a) ensures that all events make it to the output
+ *     stream, and (b) serves as a memory barrier, ensuring that all
+ *     capabilities see that eventlogging is now disabled
+ *  4. wait until all capabilities have flushed.
+ *  5. post the end-of-data marker
+ *  6. stop the writer
+ *  7. release state_change_mutex
+ *
+ * Note that a corrollary of this is that !eventlog_enabled implies that the
+ * eventlog buffers are all empty (modulo the block marker that all buffers
+ * always have).
+ *
+ * Changing the number of capabilities is fairly straightforward since we hold
+ * all capabilities when the capability count is changed. The one slight corner
+ * case is that we must ensure that the buffers of any disabled capabilities are
+ * flushed, lest their events are stuck in limbo. This is achieved with a call to
+ * flushLocalEventsBuf in traceCapDisable.
+ */
+
+static const EventLogWriter *event_log_writer = NULL;
+
+// List of initialisation functions which are called each time the
+// eventlog is restarted
+static eventlog_init_func_t *eventlog_header_funcs = NULL;
 
 #define EVENT_LOG_SIZE 2 * (1024 * 1024) // 2MB
 
-static int flushCount;
+static int flushCount = 0;
 
 // Struct for record keeping of buffer to store event types and events.
+//
+// Invariant: The event buffer will always begin with a block-start marker.
 typedef struct _EventsBuf {
   StgInt8 *begin;
   StgInt8 *pos;
@@ -41,82 +108,21 @@ typedef struct _EventsBuf {
   EventCapNo capno; // which capability this buffer belongs to, or -1
 } EventsBuf;
 
-EventsBuf *capEventBuf; // one EventsBuf for each Capability
+static EventsBuf *capEventBuf; // one EventsBuf for each Capability
 
-EventsBuf eventBuf; // an EventsBuf not associated with any Capability
+static EventsBuf eventBuf; // an EventsBuf not associated with any Capability
 #if defined(THREADED_RTS)
-Mutex eventBufMutex; // protected by this mutex
+static Mutex eventBufMutex; // protected by this mutex
 #endif
 
-char *EventDesc[] = {
-  [EVENT_CREATE_THREAD]       = "Create thread",
-  [EVENT_RUN_THREAD]          = "Run thread",
-  [EVENT_STOP_THREAD]         = "Stop thread",
-  [EVENT_THREAD_RUNNABLE]     = "Thread runnable",
-  [EVENT_MIGRATE_THREAD]      = "Migrate thread",
-  [EVENT_THREAD_WAKEUP]       = "Wakeup thread",
-  [EVENT_THREAD_LABEL]        = "Thread label",
-  [EVENT_CAP_CREATE]          = "Create capability",
-  [EVENT_CAP_DELETE]          = "Delete capability",
-  [EVENT_CAP_DISABLE]         = "Disable capability",
-  [EVENT_CAP_ENABLE]          = "Enable capability",
-  [EVENT_GC_START]            = "Starting GC",
-  [EVENT_GC_END]              = "Finished GC",
-  [EVENT_REQUEST_SEQ_GC]      = "Request sequential GC",
-  [EVENT_REQUEST_PAR_GC]      = "Request parallel GC",
-  [EVENT_GC_GLOBAL_SYNC]      = "Synchronise stop-the-world GC",
-  [EVENT_GC_STATS_GHC]        = "GC statistics",
-  [EVENT_HEAP_INFO_GHC]       = "Heap static parameters",
-  [EVENT_HEAP_ALLOCATED]      = "Total heap mem ever allocated",
-  [EVENT_HEAP_SIZE]           = "Current heap size",
-  [EVENT_HEAP_LIVE]           = "Current heap live data",
-  [EVENT_CREATE_SPARK_THREAD] = "Create spark thread",
-  [EVENT_LOG_MSG]             = "Log message",
-  [EVENT_USER_MSG]            = "User message",
-  [EVENT_USER_MARKER]         = "User marker",
-  [EVENT_GC_IDLE]             = "GC idle",
-  [EVENT_GC_WORK]             = "GC working",
-  [EVENT_GC_DONE]             = "GC done",
-  [EVENT_BLOCK_MARKER]        = "Block marker",
-  [EVENT_CAPSET_CREATE]       = "Create capability set",
-  [EVENT_CAPSET_DELETE]       = "Delete capability set",
-  [EVENT_CAPSET_ASSIGN_CAP]   = "Add capability to capability set",
-  [EVENT_CAPSET_REMOVE_CAP]   = "Remove capability from capability set",
-  [EVENT_RTS_IDENTIFIER]      = "RTS name and version",
-  [EVENT_PROGRAM_ARGS]        = "Program arguments",
-  [EVENT_PROGRAM_ENV]         = "Program environment variables",
-  [EVENT_OSPROCESS_PID]       = "Process ID",
-  [EVENT_OSPROCESS_PPID]      = "Parent process ID",
-  [EVENT_WALL_CLOCK_TIME]     = "Wall clock time",
-  [EVENT_SPARK_COUNTERS]      = "Spark counters",
-  [EVENT_SPARK_CREATE]        = "Spark create",
-  [EVENT_SPARK_DUD]           = "Spark dud",
-  [EVENT_SPARK_OVERFLOW]      = "Spark overflow",
-  [EVENT_SPARK_RUN]           = "Spark run",
-  [EVENT_SPARK_STEAL]         = "Spark steal",
-  [EVENT_SPARK_FIZZLE]        = "Spark fizzle",
-  [EVENT_SPARK_GC]            = "Spark GC",
-  [EVENT_TASK_CREATE]         = "Task create",
-  [EVENT_TASK_MIGRATE]        = "Task migrate",
-  [EVENT_TASK_DELETE]         = "Task delete",
-  [EVENT_HACK_BUG_T9003]      = "Empty event for bug #9003",
-  [EVENT_HEAP_PROF_BEGIN]     = "Start of heap profile",
-  [EVENT_HEAP_PROF_COST_CENTRE]   = "Cost center definition",
-  [EVENT_HEAP_PROF_SAMPLE_BEGIN]  = "Start of heap profile sample",
-  [EVENT_HEAP_PROF_SAMPLE_STRING] = "Heap profile string sample",
-  [EVENT_HEAP_PROF_SAMPLE_COST_CENTRE] = "Heap profile cost-centre sample",
-  [EVENT_USER_BINARY_MSG]     = "User binary message"
-};
-
-// Event type.
-
+// Event type
 typedef struct _EventType {
   EventTypeNum etNum;  // Event Type number.
   uint32_t   size;     // size of the payload in bytes
   char *desc;     // Description
 } EventType;
 
-EventType eventTypes[NUM_GHC_EVENT_TAGS];
+#include "rts/EventTypes.h"
 
 static void initEventsBuf(EventsBuf* eb, StgWord64 size, EventCapNo capno);
 static void resetEventsBuf(EventsBuf* eb);
@@ -131,6 +137,8 @@ static void closeBlockMarker(EventsBuf *ebuf);
 
 static StgBool hasRoomForEvent(EventsBuf *eb, EventTypeNum eNum);
 static StgBool hasRoomForVariableEvent(EventsBuf *eb, uint32_t payload_bytes);
+
+static void freeEventLoggingBuffer(void);
 
 static void ensureRoomForEvent(EventsBuf *eb, EventTypeNum tag);
 static int ensureRoomForVariableEvent(EventsBuf *eb, StgWord16 size);
@@ -256,8 +264,8 @@ stopEventLogWriter(void)
     }
 }
 
-void
-flushEventLog(void)
+static void
+flushEventLogWriter(void)
 {
     if (event_log_writer != NULL &&
             event_log_writer->flushEventLog != NULL) {
@@ -268,186 +276,20 @@ flushEventLog(void)
 static void
 postHeaderEvents(void)
 {
+    // The header must appear first in the output stream, without the
+    // the block start marker we previously added in printAndClearEventBuf.
+    resetEventsBuf(&eventBuf);
+
     // Write in buffer: the header begin marker.
     postInt32(&eventBuf, EVENT_HEADER_BEGIN);
 
     // Mark beginning of event types in the header.
     postInt32(&eventBuf, EVENT_HET_BEGIN);
+
     for (int t = 0; t < NUM_GHC_EVENT_TAGS; ++t) {
-
-        eventTypes[t].etNum = t;
-        eventTypes[t].desc = EventDesc[t];
-
-        switch (t) {
-        case EVENT_CREATE_THREAD:   // (cap, thread)
-        case EVENT_RUN_THREAD:      // (cap, thread)
-        case EVENT_THREAD_RUNNABLE: // (cap, thread)
-        case EVENT_CREATE_SPARK_THREAD: // (cap, spark_thread)
-            eventTypes[t].size = sizeof(EventThreadID);
-            break;
-
-        case EVENT_MIGRATE_THREAD:  // (cap, thread, new_cap)
-        case EVENT_THREAD_WAKEUP:   // (cap, thread, other_cap)
-            eventTypes[t].size =
-                sizeof(EventThreadID) + sizeof(EventCapNo);
-            break;
-
-        case EVENT_STOP_THREAD:     // (cap, thread, status)
-            eventTypes[t].size = sizeof(EventThreadID)
-                               + sizeof(StgWord16)
-                               + sizeof(EventThreadID);
-            break;
-
-        case EVENT_CAP_CREATE:      // (cap)
-        case EVENT_CAP_DELETE:      // (cap)
-        case EVENT_CAP_ENABLE:      // (cap)
-        case EVENT_CAP_DISABLE:     // (cap)
-            eventTypes[t].size = sizeof(EventCapNo);
-            break;
-
-        case EVENT_CAPSET_CREATE:   // (capset, capset_type)
-            eventTypes[t].size =
-                sizeof(EventCapsetID) + sizeof(EventCapsetType);
-            break;
-
-        case EVENT_CAPSET_DELETE:   // (capset)
-            eventTypes[t].size = sizeof(EventCapsetID);
-            break;
-
-        case EVENT_CAPSET_ASSIGN_CAP:  // (capset, cap)
-        case EVENT_CAPSET_REMOVE_CAP:
-            eventTypes[t].size =
-                sizeof(EventCapsetID) + sizeof(EventCapNo);
-            break;
-
-        case EVENT_OSPROCESS_PID:   // (cap, pid)
-        case EVENT_OSPROCESS_PPID:
-            eventTypes[t].size =
-                sizeof(EventCapsetID) + sizeof(StgWord32);
-            break;
-
-        case EVENT_WALL_CLOCK_TIME: // (capset, unix_epoch_seconds, nanoseconds)
-            eventTypes[t].size =
-                sizeof(EventCapsetID) + sizeof(StgWord64) + sizeof(StgWord32);
-            break;
-
-        case EVENT_SPARK_STEAL:     // (cap, victim_cap)
-            eventTypes[t].size =
-                sizeof(EventCapNo);
-            break;
-
-        case EVENT_REQUEST_SEQ_GC:  // (cap)
-        case EVENT_REQUEST_PAR_GC:  // (cap)
-        case EVENT_GC_START:        // (cap)
-        case EVENT_GC_END:          // (cap)
-        case EVENT_GC_IDLE:
-        case EVENT_GC_WORK:
-        case EVENT_GC_DONE:
-        case EVENT_GC_GLOBAL_SYNC:  // (cap)
-        case EVENT_SPARK_CREATE:    // (cap)
-        case EVENT_SPARK_DUD:       // (cap)
-        case EVENT_SPARK_OVERFLOW:  // (cap)
-        case EVENT_SPARK_RUN:       // (cap)
-        case EVENT_SPARK_FIZZLE:    // (cap)
-        case EVENT_SPARK_GC:        // (cap)
-            eventTypes[t].size = 0;
-            break;
-
-        case EVENT_LOG_MSG:          // (msg)
-        case EVENT_USER_MSG:         // (msg)
-        case EVENT_USER_MARKER:      // (markername)
-        case EVENT_RTS_IDENTIFIER:   // (capset, str)
-        case EVENT_PROGRAM_ARGS:     // (capset, strvec)
-        case EVENT_PROGRAM_ENV:      // (capset, strvec)
-        case EVENT_THREAD_LABEL:     // (thread, str)
-            eventTypes[t].size = 0xffff;
-            break;
-
-        case EVENT_SPARK_COUNTERS:   // (cap, 7*counter)
-            eventTypes[t].size = 7 * sizeof(StgWord64);
-            break;
-
-        case EVENT_HEAP_ALLOCATED:    // (heap_capset, alloc_bytes)
-        case EVENT_HEAP_SIZE:         // (heap_capset, size_bytes)
-        case EVENT_HEAP_LIVE:         // (heap_capset, live_bytes)
-            eventTypes[t].size = sizeof(EventCapsetID) + sizeof(StgWord64);
-            break;
-
-        case EVENT_HEAP_INFO_GHC:     // (heap_capset, n_generations,
-                                      //  max_heap_size, alloc_area_size,
-                                      //  mblock_size, block_size)
-            eventTypes[t].size = sizeof(EventCapsetID)
-                               + sizeof(StgWord16)
-                               + sizeof(StgWord64) * 4;
-            break;
-
-        case EVENT_GC_STATS_GHC:      // (heap_capset, generation,
-                                      //  copied_bytes, slop_bytes, frag_bytes,
-                                      //  par_n_threads,
-                                      //  par_max_copied, par_tot_copied,
-                                      //  par_balanced_copied
-                                      //  )
-            eventTypes[t].size = sizeof(EventCapsetID)
-                               + sizeof(StgWord16)
-                               + sizeof(StgWord64) * 3
-                               + sizeof(StgWord32)
-                               + sizeof(StgWord64) * 3;
-            break;
-
-        case EVENT_TASK_CREATE:   // (taskId, cap, tid)
-            eventTypes[t].size = sizeof(EventTaskId)
-                               + sizeof(EventCapNo)
-                               + sizeof(EventKernelThreadId);
-            break;
-
-        case EVENT_TASK_MIGRATE:   // (taskId, cap, new_cap)
-            eventTypes[t].size =
-                sizeof(EventTaskId) + sizeof(EventCapNo) + sizeof(EventCapNo);
-            break;
-
-        case EVENT_TASK_DELETE:   // (taskId)
-            eventTypes[t].size = sizeof(EventTaskId);
-            break;
-
-        case EVENT_BLOCK_MARKER:
-            eventTypes[t].size = sizeof(StgWord32) + sizeof(EventTimestamp) +
-                sizeof(EventCapNo);
-            break;
-
-        case EVENT_HACK_BUG_T9003:
-            eventTypes[t].size = 0;
-            break;
-
-        case EVENT_HEAP_PROF_BEGIN:
-            eventTypes[t].size = EVENT_SIZE_DYNAMIC;
-            break;
-
-        case EVENT_HEAP_PROF_COST_CENTRE:
-            eventTypes[t].size = EVENT_SIZE_DYNAMIC;
-            break;
-
-        case EVENT_HEAP_PROF_SAMPLE_BEGIN:
-            eventTypes[t].size = 8;
-            break;
-
-        case EVENT_HEAP_PROF_SAMPLE_STRING:
-            eventTypes[t].size = EVENT_SIZE_DYNAMIC;
-            break;
-
-        case EVENT_HEAP_PROF_SAMPLE_COST_CENTRE:
-            eventTypes[t].size = EVENT_SIZE_DYNAMIC;
-            break;
-
-        case EVENT_USER_BINARY_MSG:
-            eventTypes[t].size = EVENT_SIZE_DYNAMIC;
-            break;
-
-        default:
-            continue; /* ignore deprecated events */
-        }
-
         // Write in buffer: the start event type.
-        postEventType(&eventBuf, &eventTypes[t]);
+        if (eventTypes[t].desc)
+            postEventType(&eventBuf, &eventTypes[t]);
     }
 
     // Mark end of event types in the header.
@@ -460,18 +302,65 @@ postHeaderEvents(void)
     postInt32(&eventBuf, EVENT_DATA_BEGIN);
 }
 
+// These events will be reposted everytime we restart the eventlog
 void
-initEventLogging(const EventLogWriter *ev_writer)
-{
-    uint32_t n_caps;
+postInitEvent(EventlogInitPost post_init){
+    ACQUIRE_LOCK(&state_change_mutex);
 
-    event_log_writer = ev_writer;
-    initEventLogWriter();
+    // Add the event to the global list of events that will be rerun when
+    // the eventlog is restarted.
+    eventlog_init_func_t * new_func;
+    new_func = stgMallocBytes(sizeof(eventlog_init_func_t),"eventlog_init_func");
+    new_func->init_func = post_init;
+    new_func->next = eventlog_header_funcs;
+    eventlog_header_funcs = new_func;
 
-    if (sizeof(EventDesc) / sizeof(char*) != NUM_GHC_EVENT_TAGS) {
-        barf("EventDesc array has the wrong number of elements");
+    RELEASE_LOCK(&state_change_mutex);
+    // Actually post it
+    (*post_init)();
+    return;
+}
+
+// Post events again which happened at the start of the eventlog, added by
+// postInitEvent.
+static void repostInitEvents(void){
+    eventlog_init_func_t * current_event = eventlog_header_funcs;
+    for (; current_event != NULL; current_event = current_event->next) {
+      (*(current_event->init_func))();
     }
+    return;
+}
 
+// Clear the eventlog_header_funcs list and free the memory
+void resetInitEvents(void){
+    eventlog_init_func_t * tmp;
+    eventlog_init_func_t * current_event = eventlog_header_funcs;
+    for (; current_event != NULL; ) {
+      tmp = current_event;
+      current_event = current_event->next;
+      stgFree(tmp);
+    }
+    eventlog_header_funcs = NULL;
+    return;
+
+}
+
+
+static uint32_t
+get_n_capabilities(void)
+{
+#if defined(THREADED_RTS)
+    // XXX n_capabilities may not have been initialized yet
+    unsigned int n = getNumCapabilities();
+    return (n != 0) ? n : RtsFlags.ParFlags.nCapabilities;
+#else
+    return 1;
+#endif
+}
+
+void
+initEventLogging(void)
+{
     /*
      * Allocate buffer(s) to store events.
      * Create buffer large enough for the header begin marker, all event
@@ -482,42 +371,116 @@ initEventLogging(const EventLogWriter *ev_writer)
      * Use a single buffer to store the header with event types, then flush
      * the buffer so all buffers are empty for writing events.
      */
-#if defined(THREADED_RTS)
-    // XXX n_capabilities hasn't been initialized yet
-    n_caps = RtsFlags.ParFlags.nCapabilities;
-#else
-    n_caps = 1;
-#endif
-    moreCapEventBufs(0, n_caps);
+    moreCapEventBufs(0, get_n_capabilities());
 
     initEventsBuf(&eventBuf, EVENT_LOG_SIZE, (EventCapNo)(-1));
 #if defined(THREADED_RTS)
     initMutex(&eventBufMutex);
+    initMutex(&state_change_mutex);
 #endif
+}
 
+enum EventLogStatus
+eventLogStatus(void)
+{
+    if (eventlog_enabled) {
+        return EVENTLOG_RUNNING;
+    } else {
+        return EVENTLOG_NOT_CONFIGURED;
+    }
+}
+
+static bool
+startEventLogging_(void)
+{
+    initEventLogWriter();
+
+    ACQUIRE_LOCK(&eventBufMutex);
     postHeaderEvents();
 
-    // Flush capEventBuf with header.
     /*
      * Flush header and data begin marker to the file, thus preparing the
      * file to have events written to it.
      */
     printAndClearEventBuf(&eventBuf);
 
-    for (uint32_t c = 0; c < n_caps; ++c) {
-        postBlockMarker(&capEventBuf[c]);
+    RELEASE_LOCK(&eventBufMutex);
+
+    return true;
+}
+
+bool
+startEventLogging(const EventLogWriter *ev_writer)
+{
+    // Fail early if we race with another thread.
+    if (TRY_ACQUIRE_LOCK(&state_change_mutex) != 0) {
+        return false;
+    }
+
+    // Check whether eventlogging has already been enabled.
+    if (eventlog_enabled || event_log_writer) {
+        RELEASE_LOCK(&state_change_mutex);
+        return false;
+    }
+
+    event_log_writer = ev_writer;
+    bool ret = startEventLogging_();
+    eventlog_enabled = true;
+    repostInitEvents();
+    RELEASE_LOCK(&state_change_mutex);
+    return ret;
+}
+
+// Called during forkProcess in the child to restart the eventlog writer.
+void
+restartEventLogging(void)
+{
+    freeEventLoggingBuffer();
+    stopEventLogWriter();
+    initEventLogging();  // allocate new per-capability buffers
+    if (event_log_writer != NULL) {
+        startEventLogging_(); // child starts its own eventlog
+        repostInitEvents();   // Repost the initialisation events
+    }
+}
+
+// Flush and free capability eventlog buffers in preparation for RTS shutdown.
+void
+finishCapEventLogging(void)
+{
+    if (eventlog_enabled) {
+        // Flush all events remaining in the capabilities' buffers and free them.
+        // N.B. at this point we hold all capabilities.
+        for (uint32_t c = 0; c < getNumCapabilities(); ++c) {
+            if (capEventBuf[c].begin != NULL) {
+                printAndClearEventBuf(&capEventBuf[c]);
+                stgFree(capEventBuf[c].begin);
+                capEventBuf[c].begin = NULL;
+            }
+        }
     }
 }
 
 void
 endEventLogging(void)
 {
-    // Flush all events remaining in the buffers.
-    for (uint32_t c = 0; c < n_capabilities; ++c) {
-        printAndClearEventBuf(&capEventBuf[c]);
+    ACQUIRE_LOCK(&state_change_mutex);
+    if (!eventlog_enabled) {
+        RELEASE_LOCK(&state_change_mutex);
+        return;
     }
-    printAndClearEventBuf(&eventBuf);
-    resetEventsBuf(&eventBuf); // we don't want the block marker
+
+    eventlog_enabled = false;
+
+    // Flush all events remaining in the buffers.
+    //
+    // N.B. Don't flush if shutting down: this was done in
+    // finishCapEventLogging and the capabilities have already been freed.
+    if (getSchedState() != SCHED_SHUTTING_DOWN) {
+        flushEventLog(NULL);
+    }
+
+    ACQUIRE_LOCK(&eventBufMutex);
 
     // Mark end of events (data).
     postEventTypeNum(&eventBuf, EVENT_DATA_END);
@@ -525,9 +488,15 @@ endEventLogging(void)
     // Flush the end of data marker.
     printAndClearEventBuf(&eventBuf);
 
+    RELEASE_LOCK(&eventBufMutex);
+
     stopEventLogWriter();
+    event_log_writer = NULL;
+
+    RELEASE_LOCK(&state_change_mutex);
 }
 
+/* N.B. we hold all capabilities when this is called */
 void
 moreCapEventBufs (uint32_t from, uint32_t to)
 {
@@ -539,6 +508,7 @@ moreCapEventBufs (uint32_t from, uint32_t to)
                                      "moreCapEventBufs");
     }
 
+    // Initialize buffers for new capabilities
     for (uint32_t c = from; c < to; ++c) {
         initEventsBuf(&capEventBuf[c], EVENT_LOG_SIZE, c);
     }
@@ -552,25 +522,20 @@ moreCapEventBufs (uint32_t from, uint32_t to)
     }
 }
 
-
-void
-freeEventLogging(void)
+static void
+freeEventLoggingBuffer(void)
 {
-    // Free events buffer.
-    for (uint32_t c = 0; c < n_capabilities; ++c) {
-        if (capEventBuf[c].begin != NULL)
-            stgFree(capEventBuf[c].begin);
-    }
     if (capEventBuf != NULL)  {
         stgFree(capEventBuf);
+        capEventBuf = NULL;
     }
 }
 
 void
-abortEventLogging(void)
+freeEventLogging(void)
 {
-    freeEventLogging();
-    stopEventLogWriter();
+    freeEventLoggingBuffer();
+    resetInitEvents();
 }
 
 /*
@@ -790,7 +755,17 @@ void postCapsetVecEvent (EventTypeNum tag,
 
     for (int i = 0; i < argc; i++) {
         // 1 + strlen to account for the trailing \0, used as separator
-        size += 1 + strlen(argv[i]);
+        int increment = 1 + strlen(argv[i]);
+        if (size + increment > EVENT_PAYLOAD_SIZE_MAX) {
+            errorBelch("Event size exceeds EVENT_PAYLOAD_SIZE_MAX, record only %"
+                       FMT_Int " out of %" FMT_Int " args",
+                       (StgInt) i,
+                       (StgInt) argc);
+            argc = i;
+            break;
+        } else {
+            size += increment;
+        }
     }
 
     ACQUIRE_LOCK(&eventBufMutex);
@@ -875,6 +850,7 @@ void postHeapEvent (Capability    *cap,
     switch (tag) {
     case EVENT_HEAP_ALLOCATED:     // (heap_capset, alloc_bytes)
     case EVENT_HEAP_SIZE:          // (heap_capset, size_bytes)
+    case EVENT_BLOCKS_SIZE:        // (heap_capset, size_bytes)
     case EVENT_HEAP_LIVE:          // (heap_capset, live_bytes)
     {
         postCapsetID(eb, heap_capset);
@@ -941,6 +917,22 @@ void postEventGcStats  (Capability    *cap,
     postWord64(eb, par_balanced_copied);
 }
 
+void postEventMemReturn  (Capability    *cap,
+                          EventCapsetID heap_capset,
+                          uint32_t current_mblocks,
+                          uint32_t needed_mblocks,
+                          uint32_t returned_mblocks)
+{
+    EventsBuf *eb = &capEventBuf[cap->no];
+    ensureRoomForEvent(eb, EVENT_MEM_RETURN);
+
+    postEventHeader(eb, EVENT_MEM_RETURN);
+    postCapsetID(eb, heap_capset);
+    postWord32(eb, current_mblocks);
+    postWord32(eb, needed_mblocks);
+    postWord32(eb, returned_mblocks);
+}
+
 void postTaskCreateEvent (EventTaskId taskId,
                           EventCapNo capno,
                           EventKernelThreadId tid)
@@ -982,6 +974,15 @@ void postTaskDeleteEvent (EventTaskId taskId)
     /* EVENT_TASK_DELETE (taskID) */
     postTaskId(&eventBuf, taskId);
 
+    RELEASE_LOCK(&eventBufMutex);
+}
+
+void
+postEventNoCap (EventTypeNum tag)
+{
+    ACQUIRE_LOCK(&eventBufMutex);
+    ensureRoomForEvent(&eventBuf, tag);
+    postEventHeader(&eventBuf, tag);
     RELEASE_LOCK(&eventBufMutex);
 }
 
@@ -1111,6 +1112,35 @@ void postThreadLabel(Capability    *cap,
     postBuf(eb, (StgWord8*) label, strsize);
 }
 
+void postConcUpdRemSetFlush(Capability *cap)
+{
+    EventsBuf *eb = &capEventBuf[cap->no];
+    ensureRoomForEvent(eb, EVENT_CONC_UPD_REM_SET_FLUSH);
+    postEventHeader(eb, EVENT_CONC_UPD_REM_SET_FLUSH);
+    postCapNo(eb, cap->no);
+}
+
+void postConcMarkEnd(StgWord32 marked_obj_count)
+{
+    ACQUIRE_LOCK(&eventBufMutex);
+    ensureRoomForEvent(&eventBuf, EVENT_CONC_MARK_END);
+    postEventHeader(&eventBuf, EVENT_CONC_MARK_END);
+    postWord32(&eventBuf, marked_obj_count);
+    RELEASE_LOCK(&eventBufMutex);
+}
+
+void postNonmovingHeapCensus(int log_blk_size,
+                             const struct NonmovingAllocCensus *census)
+{
+    ACQUIRE_LOCK(&eventBufMutex);
+    postEventHeader(&eventBuf, EVENT_NONMOVING_HEAP_CENSUS);
+    postWord8(&eventBuf, log_blk_size);
+    postWord32(&eventBuf, census->n_active_segs);
+    postWord32(&eventBuf, census->n_filled_segs);
+    postWord32(&eventBuf, census->n_live_blocks);
+    RELEASE_LOCK(&eventBufMutex);
+}
+
 void closeBlockMarker (EventsBuf *ebuf)
 {
     if (ebuf->marker)
@@ -1158,6 +1188,8 @@ static HeapProfBreakdown getHeapProfBreakdown(void)
         return HEAP_PROF_BREAKDOWN_BIOGRAPHY;
     case HEAP_BY_CLOSURE_TYPE:
         return HEAP_PROF_BREAKDOWN_CLOSURE_TYPE;
+    case HEAP_BY_INFO_TABLE:
+        return HEAP_PROF_BREAKDOWN_INFO_TABLE;
     default:
         barf("getHeapProfBreakdown: unknown heap profiling mode");
     }
@@ -1206,6 +1238,26 @@ void postHeapProfSampleBegin(StgInt era)
     ACQUIRE_LOCK(&eventBufMutex);
     ensureRoomForEvent(&eventBuf, EVENT_HEAP_PROF_SAMPLE_BEGIN);
     postEventHeader(&eventBuf, EVENT_HEAP_PROF_SAMPLE_BEGIN);
+    postWord64(&eventBuf, era);
+    RELEASE_LOCK(&eventBufMutex);
+}
+
+
+void postHeapBioProfSampleBegin(StgInt era, StgWord64 time)
+{
+    ACQUIRE_LOCK(&eventBufMutex);
+    ensureRoomForEvent(&eventBuf, EVENT_HEAP_BIO_PROF_SAMPLE_BEGIN);
+    postEventHeader(&eventBuf, EVENT_HEAP_BIO_PROF_SAMPLE_BEGIN);
+    postWord64(&eventBuf, era);
+    postWord64(&eventBuf, time);
+    RELEASE_LOCK(&eventBufMutex);
+}
+
+void postHeapProfSampleEnd(StgInt era)
+{
+    ACQUIRE_LOCK(&eventBufMutex);
+    ensureRoomForEvent(&eventBuf, EVENT_HEAP_PROF_SAMPLE_END);
+    postEventHeader(&eventBuf, EVENT_HEAP_PROF_SAMPLE_END);
     postWord64(&eventBuf, era);
     RELEASE_LOCK(&eventBufMutex);
 }
@@ -1273,7 +1325,126 @@ void postHeapProfSampleCostCentre(StgWord8 profile_id,
         postWord32(&eventBuf, ccs->cc->ccID);
     RELEASE_LOCK(&eventBufMutex);
 }
+
+
+void postProfSampleCostCentre(Capability *cap,
+                              CostCentreStack *stack,
+                              StgWord64 tick)
+{
+    ACQUIRE_LOCK(&eventBufMutex);
+    StgWord depth = 0;
+    CostCentreStack *ccs;
+    for (ccs = stack; ccs != NULL && ccs != CCS_MAIN; ccs = ccs->prevStack)
+        depth++;
+    if (depth > 0xff) depth = 0xff;
+
+    StgWord len = 4+8+1+depth*4;
+    ensureRoomForVariableEvent(&eventBuf, len);
+    postEventHeader(&eventBuf, EVENT_PROF_SAMPLE_COST_CENTRE);
+    postPayloadSize(&eventBuf, len);
+    postWord32(&eventBuf, cap->no);
+    postWord64(&eventBuf, tick);
+    postWord8(&eventBuf, depth);
+    for (ccs = stack;
+         depth>0 && ccs != NULL && ccs != CCS_MAIN;
+         ccs = ccs->prevStack, depth--)
+        postWord32(&eventBuf, ccs->cc->ccID);
+    RELEASE_LOCK(&eventBufMutex);
+}
+
+// This event is output at the start of profiling so the tick interval can
+// be reported. Once the tick interval is reported the total executation time
+// can be calculuated from how many samples there are.
+void postProfBegin(void)
+{
+    ACQUIRE_LOCK(&eventBufMutex);
+    postEventHeader(&eventBuf, EVENT_PROF_BEGIN);
+    // The interval that each tick was sampled, in nanoseconds
+    postWord64(&eventBuf, TimeToNS(RtsFlags.MiscFlags.tickInterval));
+    RELEASE_LOCK(&eventBufMutex);
+}
 #endif /* PROFILING */
+
+#if defined(TICKY_TICKY)
+static void postTickyCounterDef(EventsBuf *eb, StgEntCounter *p)
+{
+    StgWord len = 8 + 2 + strlen(p->arg_kinds)+1 + strlen(p->str)+1 + 8 + strlen(p->ticky_json)+1;
+    ensureRoomForVariableEvent(eb, len);
+    postEventHeader(eb, EVENT_TICKY_COUNTER_DEF);
+    postPayloadSize(eb, len);
+
+    postWord64(eb, (uint64_t)((uintptr_t) p));
+    postWord16(eb, (uint16_t) p->arity);
+    postString(eb, p->arg_kinds);
+    postString(eb, p->str);
+    postWord64(eb, (W_) (INFO_PTR_TO_STRUCT(p->info)));
+    postString(eb, p->ticky_json);
+
+}
+
+void postTickyCounterDefs(StgEntCounter *counters)
+{
+    ACQUIRE_LOCK(&eventBufMutex);
+    for (StgEntCounter *p = counters; p != NULL; p = p->link) {
+        postTickyCounterDef(&eventBuf, p);
+    }
+    RELEASE_LOCK(&eventBufMutex);
+}
+
+static void postTickyCounterSample(EventsBuf *eb, StgEntCounter *p)
+{
+    if (   p->entry_count == 0
+        && p->allocs == 0
+        && p->allocd == 0)
+        return;
+
+    ensureRoomForEvent(eb, EVENT_TICKY_COUNTER_SAMPLE);
+    postEventHeader(eb, EVENT_TICKY_COUNTER_SAMPLE);
+    postWord64(eb, (uint64_t)((uintptr_t) p));
+    postWord64(eb, p->entry_count);
+    postWord64(eb, p->allocs);
+    postWord64(eb, p->allocd);
+
+    p->entry_count = 0;
+    p->allocs = 0;
+    p->allocd = 0;
+}
+
+void postTickyCounterSamples(StgEntCounter *counters)
+{
+    ACQUIRE_LOCK(&eventBufMutex);
+    ensureRoomForEvent(&eventBuf, EVENT_TICKY_COUNTER_SAMPLE);
+    postEventHeader(&eventBuf, EVENT_TICKY_COUNTER_BEGIN_SAMPLE);
+    for (StgEntCounter *p = counters; p != NULL; p = p->link) {
+        postTickyCounterSample(&eventBuf, p);
+    }
+    RELEASE_LOCK(&eventBufMutex);
+}
+#endif /* TICKY_TICKY */
+void postIPE(const InfoProvEnt *ipe)
+{
+    ACQUIRE_LOCK(&eventBufMutex);
+    StgWord table_name_len = strlen(ipe->prov.table_name);
+    StgWord closure_desc_len = strlen(ipe->prov.closure_desc);
+    StgWord ty_desc_len = strlen(ipe->prov.ty_desc);
+    StgWord label_len = strlen(ipe->prov.label);
+    StgWord module_len = strlen(ipe->prov.module);
+    StgWord srcloc_len = strlen(ipe->prov.srcloc);
+    // 8 for the info word
+    // 6 for the number of strings in the payload as postString adds 1 to the length
+    StgWord len = 8+table_name_len+closure_desc_len+ty_desc_len+label_len+module_len+srcloc_len+6;
+    ensureRoomForVariableEvent(&eventBuf, len);
+    postEventHeader(&eventBuf, EVENT_IPE);
+    postPayloadSize(&eventBuf, len);
+    postWord64(&eventBuf, (StgWord) INFO_PTR_TO_STRUCT(ipe->info));
+    postString(&eventBuf, ipe->prov.table_name);
+    postString(&eventBuf, ipe->prov.closure_desc);
+    postString(&eventBuf, ipe->prov.ty_desc);
+    postString(&eventBuf, ipe->prov.label);
+    postString(&eventBuf, ipe->prov.module);
+    postString(&eventBuf, ipe->prov.srcloc);
+    RELEASE_LOCK(&eventBufMutex);
+}
 
 void printAndClearEventBuf (EventsBuf *ebuf)
 {
@@ -1284,9 +1455,10 @@ void printAndClearEventBuf (EventsBuf *ebuf)
         size_t elog_size = ebuf->pos - ebuf->begin;
         if (!writeEventLog(ebuf->begin, elog_size)) {
             debugBelch(
-                    "printAndClearEventLog: could not flush event log"
+                    "printAndClearEventLog: could not flush event log\n"
                 );
             resetEventsBuf(ebuf);
+            flushEventLogWriter();
             return;
         }
 
@@ -1303,6 +1475,7 @@ void initEventsBuf(EventsBuf* eb, StgWord64 size, EventCapNo capno)
     eb->size = size;
     eb->marker = NULL;
     eb->capno = capno;
+    postBlockMarker(eb);
 }
 
 void resetEventsBuf(EventsBuf* eb)
@@ -1367,5 +1540,65 @@ void postEventType(EventsBuf *eb, EventType *et)
     postWord32(eb, 0); // no extensions yet
     postInt32(eb, EVENT_ET_END);
 }
+
+void flushLocalEventsBuf(Capability *cap)
+{
+    EventsBuf *eb = &capEventBuf[cap->no];
+    printAndClearEventBuf(eb);
+}
+
+// Flush all capabilities' event buffers when we already hold all capabilities.
+// Used during forkProcess.
+void flushAllCapsEventsBufs(void)
+{
+    if (!event_log_writer) {
+        return;
+    }
+
+    ACQUIRE_LOCK(&eventBufMutex);
+    printAndClearEventBuf(&eventBuf);
+    RELEASE_LOCK(&eventBufMutex);
+
+    for (unsigned int i=0; i < getNumCapabilities(); i++) {
+        flushLocalEventsBuf(getCapability(i));
+    }
+    flushEventLogWriter();
+}
+
+void flushEventLog(Capability **cap USED_IF_THREADS)
+{
+    if (!event_log_writer) {
+        return;
+    }
+
+    ACQUIRE_LOCK(&eventBufMutex);
+    printAndClearEventBuf(&eventBuf);
+    RELEASE_LOCK(&eventBufMutex);
+
+#if defined(THREADED_RTS)
+    Task *task = getMyTask();
+    stopAllCapabilitiesWith(cap, task, SYNC_FLUSH_EVENT_LOG);
+    flushAllCapsEventsBufs();
+    releaseAllCapabilities(getNumCapabilities(), cap ? *cap : NULL, task);
+#else
+    flushLocalEventsBuf(getCapability(0));
+#endif
+    flushEventLogWriter();
+}
+
+#else
+
+enum EventLogStatus eventLogStatus(void)
+{
+    return EVENTLOG_NOT_SUPPORTED;
+}
+
+bool startEventLogging(const EventLogWriter *writer STG_UNUSED) {
+    return false;
+}
+
+void endEventLogging(void) {}
+
+void flushEventLog(Capability **cap STG_UNUSED) {}
 
 #endif /* TRACING */

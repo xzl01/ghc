@@ -1,12 +1,13 @@
 {-# LANGUAGE GADTs, DeriveGeneric, StandaloneDeriving, ScopedTypeVariables,
-    GeneralizedNewtypeDeriving, ExistentialQuantification, RecordWildCards #-}
+    GeneralizedNewtypeDeriving, ExistentialQuantification, RecordWildCards,
+    CPP #-}
 {-# OPTIONS_GHC -fno-warn-name-shadowing -fno-warn-orphans #-}
 
 -- |
 -- Remote GHCi message types and serialization.
 --
 -- For details on Remote GHCi, see Note [Remote GHCi] in
--- compiler/ghci/GHCi.hs.
+-- compiler/GHC/Runtime/Interpreter.hs.
 --
 module GHCi.Message
   ( Message(..), Msg(..)
@@ -25,11 +26,11 @@ module GHCi.Message
 import Prelude -- See note [Why do we import Prelude here?]
 import GHCi.RemoteTypes
 import GHCi.FFI
-import GHCi.TH.Binary ()
+import GHCi.TH.Binary () -- For Binary instances
 import GHCi.BreakArray
 
 import GHC.LanguageExtensions
-import GHC.Exts.Heap
+import qualified GHC.Exts.Heap as Heap
 import GHC.ForeignSrcLang
 import GHC.Fingerprint
 import Control.Concurrent
@@ -61,6 +62,7 @@ import System.IO.Error
 data Message a where
   -- | Exit the iserv process
   Shutdown :: Message ()
+  RtsRevertCAFs :: Message ()
 
   -- RTS Linker -------------------------------------------
 
@@ -82,7 +84,7 @@ data Message a where
   -- | Create a set of BCO objects, and return HValueRefs to them
   -- Note: Each ByteString contains a Binary-encoded [ResolvedBCO], not
   -- a ResolvedBCO. The list is to allow us to serialise the ResolvedBCOs
-  -- in parallel. See @createBCOs@ in compiler/ghci/GHCi.hsc.
+  -- in parallel. See @createBCOs@ in compiler/GHC/Runtime/Interpreter.hs.
   CreateBCOs :: [LB.ByteString] -> Message [HValueRef]
 
   -- | Release 'HValueRef's
@@ -103,12 +105,13 @@ data Message a where
 
   -- | Create an info table for a constructor
   MkConInfoTable
-   :: Int     -- ptr words
+   :: Bool    -- TABLES_NEXT_TO_CODE
+   -> Int     -- ptr words
    -> Int     -- non-ptr words
    -> Int     -- constr tag
    -> Int     -- pointer tag
-   -> [Word8] -- constructor desccription
-   -> Message (RemotePtr StgInfoTable)
+   -> ByteString -- constructor desccription
+   -> Message (RemotePtr Heap.StgInfoTable)
 
   -- | Evaluate a statement
   EvalStmt
@@ -159,11 +162,13 @@ data Message a where
    :: Int                               -- size
    -> Message (RemoteRef BreakArray)
 
-  -- | Enable a breakpoint
-  EnableBreakpoint
+  -- | Set how many times a breakpoint should be ignored
+  --   also used for enable/disable
+  SetupBreakpoint
    :: RemoteRef BreakArray
-   -> Int                               -- index
-   -> Bool                              -- on or off
+   -> Int                           -- breakpoint index
+   -> Int                           -- ignore count to be stored in the BreakArray
+                                    -- -1 disable; 0 enable; >= 1 enable, ignore count.
    -> Message ()
 
   -- | Query the status of a breakpoint (True <=> enabled)
@@ -209,12 +214,17 @@ data Message a where
   -- type reconstruction.
   GetClosure
     :: HValueRef
-    -> Message (GenClosure HValueRef)
+    -> Message (Heap.GenClosure HValueRef)
 
   -- | Evaluate something. This is used to support :force in GHCi.
   Seq
     :: HValueRef
-    -> Message (EvalResult ())
+    -> Message (EvalStatus ())
+
+  -- | Resume forcing a free variable in a breakpoint (#2950)
+  ResumeSeq
+    :: RemoteRef (ResumeContext ())
+    -> Message (EvalStatus ())
 
 deriving instance Show (Message a)
 
@@ -241,6 +251,7 @@ data THMessage a where
   LookupName :: Bool -> String -> THMessage (THResult (Maybe TH.Name))
   Reify :: TH.Name -> THMessage (THResult TH.Info)
   ReifyFixity :: TH.Name -> THMessage (THResult (Maybe TH.Fixity))
+  ReifyType :: TH.Name -> THMessage (THResult TH.Type)
   ReifyInstances :: TH.Name -> [TH.Type] -> THMessage (THResult [TH.Dec])
   ReifyRoles :: TH.Name -> THMessage (THResult [TH.Role])
   ReifyAnnotations :: TH.AnnLookup -> TypeRep
@@ -248,6 +259,7 @@ data THMessage a where
   ReifyModule :: TH.Module -> THMessage (THResult TH.ModuleInfo)
   ReifyConStrictness :: TH.Name -> THMessage (THResult [TH.DecidedStrictness])
 
+  GetPackageRoot :: THMessage (THResult FilePath)
   AddDependentFile :: FilePath -> THMessage (THResult ())
   AddTempFile :: String -> THMessage (THResult FilePath)
   AddModFinalizer :: RemoteRef (TH.Q ()) -> THMessage (THResult ())
@@ -256,6 +268,8 @@ data THMessage a where
   AddForeignFilePath :: ForeignSrcLang -> FilePath -> THMessage (THResult ())
   IsExtEnabled :: Extension -> THMessage (THResult Bool)
   ExtsEnabled :: THMessage (THResult [Extension])
+  PutDoc :: TH.DocLoc -> String -> THMessage (THResult ())
+  GetDoc :: TH.DocLoc -> THMessage (THResult (Maybe String))
 
   StartRecover :: THMessage ()
   EndRecover :: Bool -> THMessage ()
@@ -294,7 +308,12 @@ getTHMessage = do
     18 -> return (THMsg RunTHDone)
     19 -> THMsg <$> AddModFinalizer <$> get
     20 -> THMsg <$> (AddForeignFilePath <$> get <*> get)
-    _  -> THMsg <$> AddCorePlugin <$> get
+    21 -> THMsg <$> AddCorePlugin <$> get
+    22 -> THMsg <$> ReifyType <$> get
+    23 -> THMsg <$> (PutDoc <$> get <*> get)
+    24 -> THMsg <$> GetDoc <$> get
+    25 -> THMsg <$> return GetPackageRoot
+    n -> error ("getTHMessage: unknown message " ++ show n)
 
 putTHMessage :: THMessage a -> Put
 putTHMessage m = case m of
@@ -320,6 +339,10 @@ putTHMessage m = case m of
   AddModFinalizer a           -> putWord8 19 >> put a
   AddForeignFilePath lang a   -> putWord8 20 >> put lang >> put a
   AddCorePlugin a             -> putWord8 21 >> put a
+  ReifyType a                 -> putWord8 22 >> put a
+  PutDoc l s                  -> putWord8 23 >> put l >> put s
+  GetDoc l                    -> putWord8 24 >> put l
+  GetPackageRoot              -> putWord8 25
 
 
 data EvalOpts = EvalOpts
@@ -438,10 +461,20 @@ instance Binary (FunPtr a) where
   get = castPtrToFunPtr <$> get
 
 -- Binary instances to support the GetClosure message
-instance Binary StgInfoTable
-instance Binary ClosureType
-instance Binary PrimType
-instance Binary a => Binary (GenClosure a)
+#if MIN_VERSION_ghc_heap(8,11,0)
+instance Binary Heap.StgTSOProfInfo
+instance Binary Heap.CostCentreStack
+instance Binary Heap.CostCentre
+instance Binary Heap.IndexTable
+instance Binary Heap.WhatNext
+instance Binary Heap.WhyBlocked
+instance Binary Heap.TsoFlags
+#endif
+
+instance Binary Heap.StgInfoTable
+instance Binary Heap.ClosureType
+instance Binary Heap.PrimType
+instance Binary a => Binary (Heap.GenClosure a)
 
 data Msg = forall a . (Binary a, Show a) => Msg (Message a)
 
@@ -467,7 +500,7 @@ getMessage = do
       15 -> Msg <$> MallocStrings <$> get
       16 -> Msg <$> (PrepFFI <$> get <*> get <*> get)
       17 -> Msg <$> FreeFFI <$> get
-      18 -> Msg <$> (MkConInfoTable <$> get <*> get <*> get <*> get <*> get)
+      18 -> Msg <$> (MkConInfoTable <$> get <*> get <*> get <*> get <*> get <*> get)
       19 -> Msg <$> (EvalStmt <$> get <*> get)
       20 -> Msg <$> (ResumeStmt <$> get <*> get)
       21 -> Msg <$> (AbandonStmt <$> get)
@@ -477,7 +510,7 @@ getMessage = do
       25 -> Msg <$> (MkCostCentres <$> get <*> get)
       26 -> Msg <$> (CostCentreStackInfo <$> get)
       27 -> Msg <$> (NewBreakArray <$> get)
-      28 -> Msg <$> (EnableBreakpoint <$> get <*> get <*> get)
+      28 -> Msg <$> (SetupBreakpoint <$> get <*> get <*> get)
       29 -> Msg <$> (BreakpointStatus <$> get <*> get)
       30 -> Msg <$> (GetBreakpointVar <$> get <*> get)
       31 -> Msg <$> return StartTH
@@ -485,7 +518,10 @@ getMessage = do
       33 -> Msg <$> (AddSptEntry <$> get <*> get)
       34 -> Msg <$> (RunTH <$> get <*> get <*> get <*> get)
       35 -> Msg <$> (GetClosure <$> get)
-      _  -> Msg <$> (Seq <$> get)
+      36 -> Msg <$> (Seq <$> get)
+      37 -> Msg <$> return RtsRevertCAFs
+      38 -> Msg <$> (ResumeSeq <$> get)
+      _  -> error $ "Unknown Message code " ++ (show b)
 
 putMessage :: Message a -> Put
 putMessage m = case m of
@@ -507,7 +543,7 @@ putMessage m = case m of
   MallocStrings bss           -> putWord8 15 >> put bss
   PrepFFI conv args res       -> putWord8 16 >> put conv >> put args >> put res
   FreeFFI p                   -> putWord8 17 >> put p
-  MkConInfoTable p n t pt d   -> putWord8 18 >> put p >> put n >> put t >> put pt >> put d
+  MkConInfoTable tc p n t pt d -> putWord8 18 >> put tc >> put p >> put n >> put t >> put pt >> put d
   EvalStmt opts val           -> putWord8 19 >> put opts >> put val
   ResumeStmt opts val         -> putWord8 20 >> put opts >> put val
   AbandonStmt val             -> putWord8 21 >> put val
@@ -517,7 +553,7 @@ putMessage m = case m of
   MkCostCentres mod ccs       -> putWord8 25 >> put mod >> put ccs
   CostCentreStackInfo ptr     -> putWord8 26 >> put ptr
   NewBreakArray sz            -> putWord8 27 >> put sz
-  EnableBreakpoint arr ix b   -> putWord8 28 >> put arr >> put ix >> put b
+  SetupBreakpoint arr ix cnt    -> putWord8 28 >> put arr >> put ix >> put cnt
   BreakpointStatus arr ix     -> putWord8 29 >> put arr >> put ix
   GetBreakpointVar a b        -> putWord8 30 >> put a >> put b
   StartTH                     -> putWord8 31
@@ -526,6 +562,8 @@ putMessage m = case m of
   RunTH st q loc ty           -> putWord8 34 >> put st >> put q >> put loc >> put ty
   GetClosure a                -> putWord8 35 >> put a
   Seq a                       -> putWord8 36 >> put a
+  RtsRevertCAFs               -> putWord8 37
+  ResumeSeq a                 -> putWord8 38 >> put a
 
 -- -----------------------------------------------------------------------------
 -- Reading/writing messages

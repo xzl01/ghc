@@ -9,7 +9,7 @@
 -- License     :  BSD-style (see the file libraries/base/LICENSE)
 -- 
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  non-portable (requires universal quantification for runST)
 --
 -- This library provides support for /strict/ state threads, as
@@ -62,7 +62,6 @@ fixST k = unsafeIOToST $ do
 
 {- Note [fixST]
    ~~~~~~~~~~~~
-
 For many years, we implemented fixST much like a pure fixpoint,
 using liftST:
 
@@ -75,7 +74,7 @@ using liftST:
 
 We knew that lazy blackholing could cause the computation to be re-run if the
 result was demanded strictly, but we thought that would be okay in the case of
-ST. However, that is not the case (see Trac #15349). Notably, the first time
+ST. However, that is not the case (see #15349). Notably, the first time
 the computation is executed, it may mutate variables that cause it to behave
 *differently* the second time it's run. That may allow it to terminate when it
 should not. More frighteningly, Arseniy Alekseyev produced a somewhat contrived

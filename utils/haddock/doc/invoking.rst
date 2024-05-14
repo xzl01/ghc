@@ -58,6 +58,7 @@ The following options are available:
             --read-interface=<docpath>,<file>
             -i <docpath>,<srcpath>,<file>
             --read-interface=<docpath>,<srcpath>,<file>
+            -i <docpath>,<srcpath>,<visibility>,<file>
 
     Read the interface file in file, which must have been produced by
     running Haddock with the :option:`--dump-interface` option. The interface
@@ -76,6 +77,9 @@ The following options are available:
     Similarly to docpath, srcpath is used generate cross-package
     hyperlinks but within sources rendered with :option:`--hyperlinked-source`
     option.
+
+    If visibility is set to `hidden`, modules from that interface file will
+    not be listed in haddock generated content file.
 
     Multiple :option:`--read-interface` options may be given.
 
@@ -222,6 +226,13 @@ The following options are available:
 
     Reserved for future use (output documentation in DocBook XML
     format).
+
+.. option:: --base-url=<url>
+
+    Base url for static assets (eg. css, javascript, json files etc.).
+    When present, static assets are not copied.  This option is useful
+    when creating documentation for multiple packages, it allows to have
+    a single copy of static assets served from the given url.
 
 .. option:: --source-base=<url>
             --source-module=<url>
@@ -548,5 +559,5 @@ Using literate or pre-processed source
 
 Since Haddock uses GHC internally, both plain and literate Haskell
 sources are accepted without the need for the user to do anything. To
-use the C pre-processor, however, the user must pass the the :option:`-cpp`
+use the C pre-processor, however, the user must pass the ``-cpp``
 option to GHC using :option:`--optghc`.

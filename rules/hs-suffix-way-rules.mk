@@ -5,8 +5,8 @@
 # This file is part of the GHC build system.
 #
 # To understand how the build system works and how to modify it, see
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Architecture
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Modifying
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/architecture
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/modifying
 #
 # -----------------------------------------------------------------------------
 
@@ -30,10 +30,10 @@ $1/$2/build/%.$$(dyn_osuf)-boot: $1/$2/build/%.$$(v_hisuf)-boot
 else
 
 # Note [Implicit rule search algorithm]
-#
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # The order in which implicit rules are defined can influence a build.
 #
-# Case study: genprimpos/Lexer.hs
+# Case study: genprimops/Lexer.hs
 #
 # We have two implicit rules for creating .o files, which after instantiating
 # with a specific directory ($1=utils/genprimops) and distdir ($2=dist) look

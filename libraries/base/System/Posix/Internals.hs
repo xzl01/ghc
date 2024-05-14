@@ -1,5 +1,9 @@
 {-# LANGUAGE Trustworthy #-}
+{-# LANGUAGE InterruptibleFFI #-}
 {-# LANGUAGE CPP, NoImplicitPrelude, CApiFFI #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE UnboxedTuples #-}
+{-# LANGUAGE MagicHash #-}
 {-# OPTIONS_HADDOCK not-home #-}
 
 -----------------------------------------------------------------------------
@@ -94,7 +98,7 @@ fdFileSize fd =
 
 fileType :: FilePath -> IO IODeviceType
 fileType file =
-  allocaBytes sizeof_stat $ \ p_stat -> do
+  allocaBytes sizeof_stat $ \ p_stat ->
   withFilePath file $ \p_file -> do
     throwErrnoIfMinus1Retry_ "fileType" $
       c_stat p_file p_stat
@@ -186,7 +190,7 @@ peekFilePathLen fp = getFileSystemEncoding >>= \enc -> GHC.peekCStringLen enc fp
 #if defined(HTYPE_TCFLAG_T)
 
 setEcho :: FD -> Bool -> IO ()
-setEcho fd on = do
+setEcho fd on =
   tcSetAttr fd $ \ p_tios -> do
     lflag <- c_lflag p_tios :: IO CTcflag
     let new_lflag
@@ -195,7 +199,7 @@ setEcho fd on = do
     poke_c_lflag p_tios (new_lflag :: CTcflag)
 
 getEcho :: FD -> IO Bool
-getEcho fd = do
+getEcho fd =
   tcSetAttr fd $ \ p_tios -> do
     lflag <- c_lflag p_tios :: IO CTcflag
     return ((lflag .&. fromIntegral const_echo) /= 0)
@@ -219,7 +223,7 @@ setCooked fd cooked =
             poke vtime 0
 
 tcSetAttr :: FD -> (Ptr CTermios -> IO a) -> IO a
-tcSetAttr fd fun = do
+tcSetAttr fd fun =
      allocaBytes sizeof_termios  $ \p_tios -> do
         throwErrnoIfMinus1Retry_ "tcSetAttr"
            (c_tcgetattr fd p_tios)
@@ -238,7 +242,7 @@ tcSetAttr fd fun = do
         -- in its terminal flags (try it...).  This function provides a
         -- wrapper which temporarily blocks SIGTTOU around the call, making it
         -- transparent.
-        allocaBytes sizeof_sigset_t $ \ p_sigset -> do
+        allocaBytes sizeof_sigset_t $ \ p_sigset ->
           allocaBytes sizeof_sigset_t $ \ p_old_sigset -> do
              throwErrnoIfMinus1_ "sigemptyset" $
                  c_sigemptyset p_sigset
@@ -338,7 +342,7 @@ setNonBlockingFD _ _ = return ()
 
 #if !defined(mingw32_HOST_OS)
 setCloseOnExec :: FD -> IO ()
-setCloseOnExec fd = do
+setCloseOnExec fd =
   throwErrnoIfMinus1_ "setCloseOnExec" $
     c_fcntl_write fd const_f_setfd const_fd_cloexec
 #endif
@@ -355,8 +359,70 @@ type CFilePath = CWString
 foreign import ccall unsafe "HsBase.h __hscore_open"
    c_open :: CFilePath -> CInt -> CMode -> IO CInt
 
+-- | The same as 'c_safe_open', but an /interruptible operation/
+-- as described in "Control.Exception"—it respects `uninterruptibleMask`
+-- but not `mask`.
+--
+-- We want to be able to interrupt an openFile call if
+-- it's expensive (NFS, FUSE, etc.), and we especially
+-- need to be able to interrupt a blocking open call.
+-- See #17912.
+c_interruptible_open :: CFilePath -> CInt -> CMode -> IO CInt
+c_interruptible_open filepath oflags mode =
+  getMaskingState >>= \case
+    -- If we're in an uninterruptible mask, there's basically
+    -- no point in using an interruptible FFI call. The open system call
+    -- will be interrupted, but the exception won't be delivered
+    -- unless the caller manually futzes with the masking state. So
+    -- then the caller (assuming they're following the usual conventions)
+    -- will retry the call (in response to EINTR), and we've just
+    -- wasted everyone's time.
+    MaskedUninterruptible -> c_safe_open_ filepath oflags mode
+    _ -> do
+      open_res <- c_interruptible_open_ filepath oflags mode
+      -- c_interruptible_open_ is an interruptible foreign call.
+      -- If the call is interrupted by an exception handler
+      -- before the system call has returned (so the file is
+      -- not yet open), we want to deliver the exception.
+      -- In point of fact, we deliver any pending exception
+      -- here regardless of the *reason* the system call
+      -- fails.
+      when (open_res == -1) $
+        if hostIsThreaded
+          then
+            -- Control.Exception.allowInterrupt, inlined to avoid
+            -- messing with any Haddock links.
+            interruptible (pure ())
+          else
+            -- Try to make this work somewhat better on the non-threaded
+            -- RTS. See #8684. This inlines the definition of `yield`; module
+            -- dependencies look pretty hairy here and I don't want to make
+            -- things worse for one little wrapper.
+            interruptible (IO $ \s -> (# yield# s, () #))
+      pure open_res
+
+foreign import ccall interruptible "HsBase.h __hscore_open"
+   c_interruptible_open_ :: CFilePath -> CInt -> CMode -> IO CInt
+
+-- | Consult the RTS to find whether it is threaded.
+hostIsThreaded :: Bool
+hostIsThreaded = rtsIsThreaded_ /= 0
+
+foreign import ccall unsafe "rts_isThreaded" rtsIsThreaded_ :: Int
+
+c_safe_open :: CFilePath -> CInt -> CMode -> IO CInt
+c_safe_open filepath oflags mode =
+  getMaskingState >>= \case
+    -- When exceptions are unmasked, we use an interruptible
+    -- open call. If the system call is successfully
+    -- interrupted, the situation will be the same as if
+    -- the exception had arrived before this function was
+    -- called.
+    Unmasked -> c_interruptible_open_ filepath oflags mode
+    _ -> c_safe_open_ filepath oflags mode
+
 foreign import ccall safe "HsBase.h __hscore_open"
-   c_safe_open :: CFilePath -> CInt -> CMode -> IO CInt
+   c_safe_open_ :: CFilePath -> CInt -> CMode -> IO CInt
 
 foreign import ccall unsafe "HsBase.h __hscore_fstat"
    c_fstat :: CInt -> Ptr CStat -> IO CInt
@@ -364,24 +430,89 @@ foreign import ccall unsafe "HsBase.h __hscore_fstat"
 foreign import ccall unsafe "HsBase.h __hscore_lstat"
    lstat :: CFilePath -> Ptr CStat -> IO CInt
 
-{- Note: Win32 POSIX functions
-Functions that are not part of the POSIX standards were
-at some point deprecated by Microsoft. This deprecation
-was performed by renaming the functions according to the
-C++ ABI Section 17.6.4.3.2b. This was done to free up the
-namespace of normal Windows programs since Windows isn't
-POSIX compliant anyway.
+#if defined(mingw32_HOST_OS)
+-- See Note [Windows types]
+foreign import capi unsafe "HsBase.h _read"
+   c_read :: CInt -> Ptr Word8 -> CUInt -> IO CInt
 
-These were working before since the RTS was re-exporting
-these symbols under the undeprecated names. This is no longer
-being done. See #11223
+-- See Note [Windows types]
+foreign import capi safe "HsBase.h _read"
+   c_safe_read :: CInt -> Ptr Word8 -> CUInt -> IO CInt
 
-See https://msdn.microsoft.com/en-us/library/ms235384.aspx
-for more.
+foreign import ccall unsafe "HsBase.h _umask"
+   c_umask :: CMode -> IO CMode
 
-However since we can't hope to get people to support Windows
-packages we should support the deprecated names. See #12497
--}
+-- See Note [Windows types]
+foreign import capi unsafe "HsBase.h _write"
+   c_write :: CInt -> Ptr Word8 -> CUInt -> IO CInt
+
+-- See Note [Windows types]
+foreign import capi safe "HsBase.h _write"
+   c_safe_write :: CInt -> Ptr Word8 -> CUInt -> IO CInt
+
+foreign import ccall unsafe "HsBase.h _pipe"
+   c_pipe :: Ptr CInt -> IO CInt
+
+foreign import capi unsafe "HsBase.h _lseeki64"
+   c_lseek :: CInt -> Int64 -> CInt -> IO Int64
+
+foreign import capi unsafe "HsBase.h _access"
+   c_access :: CString -> CInt -> IO CInt
+
+foreign import ccall unsafe "HsBase.h _chmod"
+   c_chmod :: CString -> CMode -> IO CInt
+
+foreign import capi unsafe "HsBase.h _close"
+   c_close :: CInt -> IO CInt
+
+foreign import capi unsafe "HsBase.h _creat"
+   c_creat :: CString -> CMode -> IO CInt
+
+foreign import ccall unsafe "HsBase.h _dup"
+   c_dup :: CInt -> IO CInt
+
+foreign import ccall unsafe "HsBase.h _dup2"
+   c_dup2 :: CInt -> CInt -> IO CInt
+
+foreign import capi unsafe "HsBase.h _isatty"
+   c_isatty :: CInt -> IO CInt
+
+foreign import capi unsafe "HsBase.h _unlink"
+   c_unlink :: CString -> IO CInt
+
+foreign import capi unsafe "HsBase.h _utime"
+   c_utime :: CString -> Ptr CUtimbuf -> IO CInt
+
+foreign import capi unsafe "HsBase.h _getpid"
+   c_getpid :: IO CPid
+
+#else
+-- We use CAPI as on some OSs (eg. Linux) this is wrapped by a macro
+-- which redirects to the 64-bit-off_t versions when large file
+-- support is enabled.
+
+-- See Note [Windows types]
+foreign import capi unsafe "HsBase.h read"
+   c_read :: CInt -> Ptr Word8 -> CSize -> IO CSsize
+
+-- See Note [Windows types]
+foreign import capi safe "HsBase.h read"
+   c_safe_read :: CInt -> Ptr Word8 -> CSize -> IO CSsize
+
+foreign import ccall unsafe "HsBase.h umask"
+   c_umask :: CMode -> IO CMode
+
+-- See Note [Windows types]
+foreign import capi unsafe "HsBase.h write"
+   c_write :: CInt -> Ptr Word8 -> CSize -> IO CSsize
+
+-- See Note [Windows types]
+foreign import capi safe "HsBase.h write"
+   c_safe_write :: CInt -> Ptr Word8 -> CSize -> IO CSsize
+
+foreign import ccall unsafe "HsBase.h pipe"
+   c_pipe :: Ptr CInt -> IO CInt
+
 foreign import capi unsafe "unistd.h lseek"
    c_lseek :: CInt -> COff -> CInt -> IO COff
 
@@ -406,56 +537,6 @@ foreign import ccall unsafe "HsBase.h dup2"
 foreign import ccall unsafe "HsBase.h isatty"
    c_isatty :: CInt -> IO CInt
 
-#if defined(mingw32_HOST_OS)
--- See Note: Windows types
-foreign import capi unsafe "HsBase.h _read"
-   c_read :: CInt -> Ptr Word8 -> CUInt -> IO CInt
-
--- See Note: Windows types
-foreign import capi safe "HsBase.h _read"
-   c_safe_read :: CInt -> Ptr Word8 -> CUInt -> IO CInt
-
-foreign import ccall unsafe "HsBase.h _umask"
-   c_umask :: CMode -> IO CMode
-
--- See Note: Windows types
-foreign import capi unsafe "HsBase.h _write"
-   c_write :: CInt -> Ptr Word8 -> CUInt -> IO CInt
-
--- See Note: Windows types
-foreign import capi safe "HsBase.h _write"
-   c_safe_write :: CInt -> Ptr Word8 -> CUInt -> IO CInt
-
-foreign import ccall unsafe "HsBase.h _pipe"
-   c_pipe :: Ptr CInt -> IO CInt
-#else
--- We use CAPI as on some OSs (eg. Linux) this is wrapped by a macro
--- which redirects to the 64-bit-off_t versions when large file
--- support is enabled.
-
--- See Note: Windows types
-foreign import capi unsafe "HsBase.h read"
-   c_read :: CInt -> Ptr Word8 -> CSize -> IO CSsize
-
--- See Note: Windows types
-foreign import capi safe "HsBase.h read"
-   c_safe_read :: CInt -> Ptr Word8 -> CSize -> IO CSsize
-
-foreign import ccall unsafe "HsBase.h umask"
-   c_umask :: CMode -> IO CMode
-
--- See Note: Windows types
-foreign import capi unsafe "HsBase.h write"
-   c_write :: CInt -> Ptr Word8 -> CSize -> IO CSsize
-
--- See Note: Windows types
-foreign import capi safe "HsBase.h write"
-   c_safe_write :: CInt -> Ptr Word8 -> CSize -> IO CSsize
-
-foreign import ccall unsafe "HsBase.h pipe"
-   c_pipe :: Ptr CInt -> IO CInt
-#endif
-
 foreign import ccall unsafe "HsBase.h unlink"
    c_unlink :: CString -> IO CInt
 
@@ -464,6 +545,7 @@ foreign import capi unsafe "HsBase.h utime"
 
 foreign import ccall unsafe "HsBase.h getpid"
    c_getpid :: IO CPid
+#endif
 
 foreign import ccall unsafe "HsBase.h __hscore_stat"
    c_stat :: CFilePath -> Ptr CStat -> IO CInt
@@ -590,10 +672,11 @@ foreign import capi  unsafe "stdio.h value SEEK_SET" sEEK_SET :: CInt
 foreign import capi  unsafe "stdio.h value SEEK_END" sEEK_END :: CInt
 
 {-
-Note: Windows types
+Note [Windows types]
+~~~~~~~~~~~~~~~~~~~~
 
 Windows' _read and _write have types that differ from POSIX. They take an
-unsigned int for lengh and return a signed int where POSIX uses size_t and
+unsigned int for length and return a signed int where POSIX uses size_t and
 ssize_t. Those are different on x86_64 and equivalent on x86. We import them
 with the types in Microsoft's documentation which means that c_read,
 c_safe_read, c_write and c_safe_write have different Haskell types depending on

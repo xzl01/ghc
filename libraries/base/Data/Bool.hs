@@ -8,7 +8,7 @@
 -- License     :  BSD-style (see the file libraries/base/LICENSE)
 --
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  portable
 --
 -- The 'Bool' type and related functions.
@@ -27,6 +27,9 @@ module Data.Bool (
   ) where
 
 import GHC.Base
+
+-- $setup
+-- >>> import Prelude
 
 -- | Case analysis for the 'Bool' type. @'bool' x y p@ evaluates to @x@
 -- when @p@ is 'False', and evaluates to @y@ when @p@ is 'True'.

@@ -1,4 +1,6 @@
+{-# LANGUAGE CPP #-}
 {-# OPTIONS_GHC -fno-warn-warnings-deprecations #-}
+{-# OPTIONS_GHC -Wno-incomplete-uni-patterns    #-}
 
 module Main (main) where
 
@@ -6,12 +8,12 @@ import qualified Distribution.ModuleName as ModuleName
 import Distribution.PackageDescription
 import Distribution.PackageDescription.Check hiding (doesFileExist)
 import Distribution.PackageDescription.Configuration
-import Distribution.PackageDescription.Parsec
 import Distribution.Package
 import Distribution.Simple
 import Distribution.Simple.Configure
 import Distribution.Simple.LocalBuildInfo
 import Distribution.Simple.GHC
+import Distribution.Simple.PackageDescription
 import Distribution.Simple.Program
 import Distribution.Simple.Program.HcPkg
 import Distribution.Simple.Setup (ConfigFlags(configStripLibs), fromFlagOrDefault, toFlag)
@@ -26,12 +28,15 @@ import Distribution.Types.LocalBuildInfo
 import Distribution.Verbosity
 import qualified Distribution.InstalledPackageInfo as Installed
 import qualified Distribution.Simple.PackageIndex as PackageIndex
+import Distribution.Utils.ShortText (fromShortText)
+import Distribution.Utils.Path (getSymbolicPath)
 
 import Control.Exception (bracket)
 import Control.Monad
 import Control.Applicative ((<|>))
-import Data.List
+import Data.List (nub, intercalate, isPrefixOf, isSuffixOf)
 import Data.Maybe
+import Data.Char (isSpace)
 import System.IO
 import System.Directory (setCurrentDirectory, getCurrentDirectory, doesFileExist)
 import System.Environment
@@ -381,16 +386,34 @@ generate directory distdir config_args
           transitiveDepLibNames
             | packageKeySupported comp = map fixupRtsLibName transitiveDeps
             | otherwise = transitiveDeps
-          fixupRtsLibName "rts-1.0" = "rts"
+          fixupRtsLibName x | "rts-" `isPrefixOf` x = "rts"
           fixupRtsLibName x = x
           transitiveDepNames = map (display . packageName) transitive_dep_ids
 
-          libraryDirs = forDeps Installed.libraryDirs
+          -- Note [Msys2 path translation bug]
+          -- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+          -- Msys2 has an annoying bug in their path conversion code.
+          -- Officially anything starting with a drive letter should not be
+          -- subjected to path translations, however it seems to only consider
+          -- E:\\ and E:// to be Windows paths.  Mixed mode paths such as E:/
+          -- that are produced here get corrupted.
+          --
+          -- Tamar@Rage /t/translate> ./a.exe -optc-I"E://ghc-dev/msys64/"
+          -- path: -optc-IE://ghc-dev/msys64/
+          -- Tamar@Rage /t/translate> ./a.exe -optc-I"E:ghc-dev/msys64/"
+          -- path: -optc-IE:ghc-dev/msys64/
+          -- Tamar@Rage /t/translate> ./a.exe -optc-I"E:\ghc-dev/msys64/"
+          -- path: -optc-IE:\ghc-dev/msys64/
+          --
+          -- As such, let's just normalize the filepaths which is a good thing
+          -- to do anyway.
+          libraryDirs = map normalise $ forDeps Installed.libraryDirs
           -- The mkLibraryRelDir function is a bit of a hack.
           -- Ideally it should be handled in the makefiles instead.
-          mkLibraryRelDir "rts"        = "rts/dist/build"
+          mkLibraryRelDir "rts"        = "rts/dist-install/build"
           mkLibraryRelDir "ghc"        = "compiler/stage2/build"
           mkLibraryRelDir "Cabal"      = "libraries/Cabal/Cabal/dist-install/build"
+          mkLibraryRelDir "Cabal-syntax" = "libraries/Cabal/Cabal-syntax/dist-install/build"
           mkLibraryRelDir "containers" = "libraries/containers/containers/dist-install/build"
           mkLibraryRelDir l            = "libraries/" ++ l ++ "/dist-install/build"
           libraryRelDirs = map mkLibraryRelDir transitiveDepNames
@@ -402,7 +425,8 @@ generate directory distdir config_args
           injectDistInstall x | takeBaseName x == "include" = [x, takeDirectory x ++ "/dist-install/build/" ++ takeBaseName x]
           injectDistInstall x = [x]
 
-      wrappedIncludeDirs <- wrap $ concatMap injectDistInstall $ forDeps Installed.includeDirs
+      -- See Note [Msys2 path translation bug].
+      wrappedIncludeDirs <- wrap $ map normalise $ concatMap injectDistInstall $ forDeps Installed.includeDirs
 
       let variablePrefix = directory ++ '_':distdir
           mods      = map display modules
@@ -413,8 +437,8 @@ generate directory distdir config_args
                 variablePrefix ++ "_COMPONENT_ID = " ++ localCompatPackageKey lbi,
                 variablePrefix ++ "_MODULES = " ++ unwords mods,
                 variablePrefix ++ "_HIDDEN_MODULES = " ++ unwords otherMods,
-                variablePrefix ++ "_SYNOPSIS =" ++ (unwords $ lines $ synopsis pd),
-                variablePrefix ++ "_HS_SRC_DIRS = " ++ unwords (hsSourceDirs bi),
+                variablePrefix ++ "_SYNOPSIS =" ++ (unwords $ lines $ fromShortText $ synopsis pd),
+                variablePrefix ++ "_HS_SRC_DIRS = " ++ unwords (map getSymbolicPath $ hsSourceDirs bi),
                 variablePrefix ++ "_DEPS = " ++ unwords deps,
                 variablePrefix ++ "_DEP_IPIDS = " ++ unwords dep_ipids,
                 variablePrefix ++ "_DEP_NAMES = " ++ unwords depNames,
@@ -430,16 +454,17 @@ generate directory distdir config_args
                 variablePrefix ++ "_EXTRA_LIBDIRS = " ++ unwords (extraLibDirs bi),
                 variablePrefix ++ "_S_SRCS = " ++ unwords (asmSources bi),
                 variablePrefix ++ "_C_SRCS  = " ++ unwords (cSources bi),
+                variablePrefix ++ "_CXX_SRCS  = " ++ unwords (cxxSources bi),
                 variablePrefix ++ "_CMM_SRCS = " ++ unwords (cmmSources bi),
                 variablePrefix ++ "_DATA_FILES = "    ++ unwords (dataFiles pd),
                 -- XXX This includes things it shouldn't, like:
                 -- -odir dist-bootstrapping/build
-                variablePrefix ++ "_HC_OPTS = " ++ escape (unwords
+                variablePrefix ++ "_HC_OPTS = " ++ escapeArgs
                        (   programDefaultArgs ghcProg
                         ++ hcOptions GHC bi
                         ++ languageToFlags (compiler lbi) (defaultLanguage bi)
                         ++ extensionsToFlags (compiler lbi) (usedExtensions bi)
-                        ++ programOverrideArgs ghcProg)),
+                        ++ programOverrideArgs ghcProg),
                 variablePrefix ++ "_CC_OPTS = "                        ++ unwords (ccOptions bi),
                 variablePrefix ++ "_CPP_OPTS = "                       ++ unwords (cppOptions bi),
                 variablePrefix ++ "_LD_OPTS = "                        ++ unwords (ldOptions bi),
@@ -457,11 +482,10 @@ generate directory distdir config_args
                 ]
       writeFile (distdir ++ "/package-data.mk") $ unlines xs
 
-      writeFileUtf8 (distdir ++ "/haddock-prologue.txt") $
-          if null (description pd) then synopsis pd
-                                   else description pd
+      writeFileUtf8 (distdir ++ "/haddock-prologue.txt") $ fromShortText $
+          if null (fromShortText $ description pd) then synopsis pd
+                                                   else description pd
   where
-     escape = foldr (\c xs -> if c == '#' then '\\':'#':xs else c:xs) []
      wrap = mapM wrap1
      wrap1 s
       | null s        = die ["Wrapping empty value"]
@@ -480,3 +504,17 @@ generate directory distdir config_args
      writeFileUtf8 f txt = withFile f WriteMode $ \hdl -> do
          hSetEncoding hdl utf8
          hPutStr hdl txt
+
+-- | Like GHC.ResponseFile.escapeArgs but uses spaces instead of newlines to seperate arguments
+escapeArgs :: [String] -> String
+escapeArgs = unwords . map escapeArg
+
+escapeArg :: String -> String
+escapeArg = foldr escape ""
+
+escape :: Char -> String -> String
+escape c cs
+  | isSpace c || c `elem` ['\\','\'','#','"']
+    = '\\':c:cs
+  | otherwise
+    = c:cs

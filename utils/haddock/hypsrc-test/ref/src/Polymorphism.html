@@ -7,19 +7,21 @@
   ><body
   ><pre
     ><span class="hs-pragma"
-      >{-# LANGUAGE RankNTypes #-}</span
+      >{-# LANGUAGE Haskell2010 #-}</span
       ><span
       >
 </span
       ><span id="line-2"
       ></span
       ><span class="hs-pragma"
-      >{-# LANGUAGE ScopedTypeVariables #-}</span
+      >{-# LANGUAGE RankNTypes #-}</span
       ><span
       >
 </span
       ><span id="line-3"
       ></span
+      ><span class="hs-pragma"
+      >{-# LANGUAGE ScopedTypeVariables #-}</span
       ><span
       >
 </span
@@ -29,6 +31,11 @@
       >
 </span
       ><span id="line-5"
+      ></span
+      ><span
+      >
+</span
+      ><span id="line-6"
       ></span
       ><span class="hs-keyword"
       >module</span
@@ -43,17 +50,17 @@
       ><span
       >
 </span
-      ><span id="line-6"
-      ></span
-      ><span
-      >
-</span
       ><span id="line-7"
       ></span
       ><span
       >
 </span
       ><span id="line-8"
+      ></span
+      ><span
+      >
+</span
+      ><span id="line-9"
       ></span
       ><span id=""
       ><span class="annot"
@@ -102,12 +109,12 @@
       ><span
       >
 </span
-      ><span id="line-9"
+      ><span id="line-10"
       ></span
       ><span id="foo"
       ><span class="annot"
 	><span class="annottext"
-	  >foo :: a -&gt; a -&gt; a
+	  >foo :: forall a. a -&gt; a -&gt; a
 </span
 	  ><a href="Polymorphism.html#foo"
 	  ><span class="hs-identifier hs-var hs-var"
@@ -132,12 +139,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-10"
+      ><span id="line-11"
       ></span
       ><span
       >
 </span
-      ><span id="line-11"
+      ><span id="line-12"
       ></span
       ><span class="annot"
       ><a href="Polymorphism.html#foo%27"
@@ -200,12 +207,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-12"
+      ><span id="line-13"
       ></span
       ><span id="foo%27"
       ><span class="annot"
 	><span class="annottext"
-	  >foo' :: a -&gt; a -&gt; a
+	  >foo' :: forall a. a -&gt; a -&gt; a
 </span
 	  ><a href="Polymorphism.html#foo%27"
 	  ><span class="hs-identifier hs-var hs-var"
@@ -230,12 +237,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-13"
+      ><span id="line-14"
       ></span
       ><span
       >
 </span
-      ><span id="line-14"
+      ><span id="line-15"
       ></span
       ><span id=""
       ><span id=""
@@ -300,12 +307,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-15"
+      ><span id="line-16"
       ></span
       ><span id="bar"
       ><span class="annot"
 	><span class="annottext"
-	  >bar :: a -&gt; b -&gt; (a, b)
+	  >bar :: forall a b. a -&gt; b -&gt; (a, b)
 </span
 	  ><a href="Polymorphism.html#bar"
 	  ><span class="hs-identifier hs-var hs-var"
@@ -330,12 +337,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-16"
+      ><span id="line-17"
       ></span
       ><span
       >
 </span
-      ><span id="line-17"
+      ><span id="line-18"
       ></span
       ><span class="annot"
       ><a href="Polymorphism.html#bar%27"
@@ -422,12 +429,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-18"
+      ><span id="line-19"
       ></span
       ><span id="bar%27"
       ><span class="annot"
 	><span class="annottext"
-	  >bar' :: a -&gt; b -&gt; (a, b)
+	  >bar' :: forall a b. a -&gt; b -&gt; (a, b)
 </span
 	  ><a href="Polymorphism.html#bar%27"
 	  ><span class="hs-identifier hs-var hs-var"
@@ -452,12 +459,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-19"
+      ><span id="line-20"
       ></span
       ><span
       >
 </span
-      ><span id="line-20"
+      ><span id="line-21"
       ></span
       ><span id=""
       ><span id=""
@@ -552,12 +559,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-21"
+      ><span id="line-22"
       ></span
       ><span id="baz"
       ><span class="annot"
 	><span class="annottext"
-	  >baz :: a -&gt; (a -&gt; [a -&gt; a] -&gt; b) -&gt; b
+	  >baz :: forall a b. a -&gt; (a -&gt; [a -&gt; a] -&gt; b) -&gt; b
 </span
 	  ><a href="Polymorphism.html#baz"
 	  ><span class="hs-identifier hs-var hs-var"
@@ -582,12 +589,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-22"
+      ><span id="line-23"
       ></span
       ><span
       >
 </span
-      ><span id="line-23"
+      ><span id="line-24"
       ></span
       ><span class="annot"
       ><a href="Polymorphism.html#baz%27"
@@ -704,12 +711,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-24"
+      ><span id="line-25"
       ></span
       ><span id="baz%27"
       ><span class="annot"
 	><span class="annottext"
-	  >baz' :: a -&gt; (a -&gt; [a -&gt; a] -&gt; b) -&gt; b
+	  >baz' :: forall a b. a -&gt; (a -&gt; [a -&gt; a] -&gt; b) -&gt; b
 </span
 	  ><a href="Polymorphism.html#baz%27"
 	  ><span class="hs-identifier hs-var hs-var"
@@ -734,12 +741,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-25"
+      ><span id="line-26"
       ></span
       ><span
       >
 </span
-      ><span id="line-26"
+      ><span id="line-27"
       ></span
       ><span id=""
       ><span class="annot"
@@ -820,12 +827,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-27"
+      ><span id="line-28"
       ></span
       ><span id="quux"
       ><span class="annot"
 	><span class="annottext"
-	  >quux :: a -&gt; (forall a. a -&gt; a) -&gt; a
+	  >quux :: forall a. a -&gt; (forall a. a -&gt; a) -&gt; a
 </span
 	  ><a href="Polymorphism.html#quux"
 	  ><span class="hs-identifier hs-var hs-var"
@@ -838,7 +845,7 @@ forall a. HasCallStack =&gt; a
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >x :: a
+	  >a
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -851,7 +858,7 @@ forall a. HasCallStack =&gt; a
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >f :: forall a. a -&gt; a
+	  >forall a. a -&gt; a
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -889,12 +896,12 @@ forall a. a -&gt; a
       ><span
       >
 </span
-      ><span id="line-28"
+      ><span id="line-29"
       ></span
       ><span
       >
 </span
-      ><span id="line-29"
+      ><span id="line-30"
       ></span
       ><span class="annot"
       ><a href="Polymorphism.html#quux%27"
@@ -989,12 +996,12 @@ forall a. a -&gt; a
       ><span
       >
 </span
-      ><span id="line-30"
+      ><span id="line-31"
       ></span
       ><span id="quux%27"
       ><span class="annot"
 	><span class="annottext"
-	  >quux' :: a -&gt; (forall a. a -&gt; a) -&gt; a
+	  >quux' :: forall a. a -&gt; (forall a. a -&gt; a) -&gt; a
 </span
 	  ><a href="Polymorphism.html#quux%27"
 	  ><span class="hs-identifier hs-var hs-var"
@@ -1007,7 +1014,7 @@ forall a. a -&gt; a
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >x :: a
+	  >a
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -1020,7 +1027,7 @@ forall a. a -&gt; a
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >f :: forall a. a -&gt; a
+	  >forall a. a -&gt; a
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -1058,17 +1065,17 @@ forall a. a -&gt; a
       ><span
       >
 </span
-      ><span id="line-31"
-      ></span
-      ><span
-      >
-</span
       ><span id="line-32"
       ></span
       ><span
       >
 </span
       ><span id="line-33"
+      ></span
+      ><span
+      >
+</span
+      ><span id="line-34"
       ></span
       ><span id=""
       ><span class="annot"
@@ -1135,12 +1142,12 @@ forall a. a -&gt; a
       ><span
       >
 </span
-      ><span id="line-34"
+      ><span id="line-35"
       ></span
       ><span id="num"
       ><span class="annot"
 	><span class="annottext"
-	  >num :: a -&gt; a -&gt; a
+	  >num :: forall a. Num a =&gt; a -&gt; a -&gt; a
 </span
 	  ><a href="Polymorphism.html#num"
 	  ><span class="hs-identifier hs-var hs-var"
@@ -1165,12 +1172,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-35"
+      ><span id="line-36"
       ></span
       ><span
       >
 </span
-      ><span id="line-36"
+      ><span id="line-37"
       ></span
       ><span class="annot"
       ><a href="Polymorphism.html#num%27"
@@ -1251,12 +1258,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-37"
+      ><span id="line-38"
       ></span
       ><span id="num%27"
       ><span class="annot"
 	><span class="annottext"
-	  >num' :: a -&gt; a -&gt; a
+	  >num' :: forall a. Num a =&gt; a -&gt; a -&gt; a
 </span
 	  ><a href="Polymorphism.html#num%27"
 	  ><span class="hs-identifier hs-var hs-var"
@@ -1281,12 +1288,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-38"
+      ><span id="line-39"
       ></span
       ><span
       >
 </span
-      ><span id="line-39"
+      ><span id="line-40"
       ></span
       ><span id=""
       ><span id=""
@@ -1397,12 +1404,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-40"
+      ><span id="line-41"
       ></span
       ><span id="eq"
       ><span class="annot"
 	><span class="annottext"
-	  >eq :: [a] -&gt; [b] -&gt; (a, b)
+	  >eq :: forall a b. (Eq a, Eq b) =&gt; [a] -&gt; [b] -&gt; (a, b)
 </span
 	  ><a href="Polymorphism.html#eq"
 	  ><span class="hs-identifier hs-var hs-var"
@@ -1427,12 +1434,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-41"
+      ><span id="line-42"
       ></span
       ><span
       >
 </span
-      ><span id="line-42"
+      ><span id="line-43"
       ></span
       ><span class="annot"
       ><a href="Polymorphism.html#eq%27"
@@ -1565,12 +1572,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-43"
+      ><span id="line-44"
       ></span
       ><span id="eq%27"
       ><span class="annot"
 	><span class="annottext"
-	  >eq' :: [a] -&gt; [b] -&gt; (a, b)
+	  >eq' :: forall a b. (Eq a, Eq b) =&gt; [a] -&gt; [b] -&gt; (a, b)
 </span
 	  ><a href="Polymorphism.html#eq%27"
 	  ><span class="hs-identifier hs-var hs-var"
@@ -1595,12 +1602,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-44"
+      ><span id="line-45"
       ></span
       ><span
       >
 </span
-      ><span id="line-45"
+      ><span id="line-46"
       ></span
       ><span id=""
       ><span id=""
@@ -1689,12 +1696,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-46"
+      ><span id="line-47"
       ></span
       ><span id="mon"
       ><span class="annot"
 	><span class="annottext"
-	  >mon :: (a -&gt; m a) -&gt; m a
+	  >mon :: forall (m :: * -&gt; *) a. Monad m =&gt; (a -&gt; m a) -&gt; m a
 </span
 	  ><a href="Polymorphism.html#mon"
 	  ><span class="hs-identifier hs-var hs-var"
@@ -1719,12 +1726,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-47"
+      ><span id="line-48"
       ></span
       ><span
       >
 </span
-      ><span id="line-48"
+      ><span id="line-49"
       ></span
       ><span class="annot"
       ><a href="Polymorphism.html#mon%27"
@@ -1835,12 +1842,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-49"
+      ><span id="line-50"
       ></span
       ><span id="mon%27"
       ><span class="annot"
 	><span class="annottext"
-	  >mon' :: (a -&gt; m a) -&gt; m a
+	  >mon' :: forall (m :: * -&gt; *) a. Monad m =&gt; (a -&gt; m a) -&gt; m a
 </span
 	  ><a href="Polymorphism.html#mon%27"
 	  ><span class="hs-identifier hs-var hs-var"
@@ -1865,17 +1872,17 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-50"
-      ></span
-      ><span
-      >
-</span
       ><span id="line-51"
       ></span
       ><span
       >
 </span
       ><span id="line-52"
+      ></span
+      ><span
+      >
+</span
+      ><span id="line-53"
       ></span
       ><span id=""
       ><span class="annot"
@@ -1974,12 +1981,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-53"
+      ><span id="line-54"
       ></span
       ><span id="norf"
       ><span class="annot"
 	><span class="annottext"
-	  >norf :: a -&gt; (forall a. Ord a =&gt; a -&gt; a) -&gt; a
+	  >norf :: forall a. a -&gt; (forall a. Ord a =&gt; a -&gt; a) -&gt; a
 </span
 	  ><a href="Polymorphism.html#norf"
 	  ><span class="hs-identifier hs-var hs-var"
@@ -1992,7 +1999,7 @@ forall a. HasCallStack =&gt; a
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >x :: a
+	  >a
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -2005,7 +2012,7 @@ forall a. HasCallStack =&gt; a
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >f :: forall a. Ord a =&gt; a -&gt; a
+	  >forall a. Ord a =&gt; a -&gt; a
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -2031,12 +2038,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-54"
+      ><span id="line-55"
       ></span
       ><span
       >
 </span
-      ><span id="line-55"
+      ><span id="line-56"
       ></span
       ><span class="annot"
       ><a href="Polymorphism.html#norf%27"
@@ -2149,12 +2156,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-56"
+      ><span id="line-57"
       ></span
       ><span id="norf%27"
       ><span class="annot"
 	><span class="annottext"
-	  >norf' :: a -&gt; (forall a. Ord a =&gt; a -&gt; a) -&gt; a
+	  >norf' :: forall a. a -&gt; (forall a. Ord a =&gt; a -&gt; a) -&gt; a
 </span
 	  ><a href="Polymorphism.html#norf%27"
 	  ><span class="hs-identifier hs-var hs-var"
@@ -2167,7 +2174,7 @@ forall a. HasCallStack =&gt; a
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >x :: a
+	  >a
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -2180,7 +2187,7 @@ forall a. HasCallStack =&gt; a
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >f :: forall a. Ord a =&gt; a -&gt; a
+	  >forall a. Ord a =&gt; a -&gt; a
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -2206,17 +2213,17 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-57"
-      ></span
-      ><span
-      >
-</span
       ><span id="line-58"
       ></span
       ><span
       >
 </span
       ><span id="line-59"
+      ></span
+      ><span
+      >
+</span
+      ><span id="line-60"
       ></span
       ><span class="annot"
       ><a href="Polymorphism.html#plugh"
@@ -2267,12 +2274,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-60"
+      ><span id="line-61"
       ></span
       ><span id="plugh"
       ><span class="annot"
 	><span class="annottext"
-	  >plugh :: a -&gt; a
+	  >plugh :: forall a. a -&gt; a
 </span
 	  ><a href="Polymorphism.html#plugh"
 	  ><span class="hs-identifier hs-var hs-var"
@@ -2285,7 +2292,7 @@ forall a. HasCallStack =&gt; a
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >x :: a
+	  >a
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -2323,12 +2330,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-61"
+      ><span id="line-62"
       ></span
       ><span
       >
 </span
-      ><span id="line-62"
+      ><span id="line-63"
       ></span
       ><span class="annot"
       ><a href="Polymorphism.html#thud"
@@ -2431,12 +2438,12 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-63"
+      ><span id="line-64"
       ></span
       ><span id="thud"
       ><span class="annot"
 	><span class="annottext"
-	  >thud :: (a -&gt; b) -&gt; a -&gt; (a, b)
+	  >thud :: forall a b. (a -&gt; b) -&gt; a -&gt; (a, b)
 </span
 	  ><a href="Polymorphism.html#thud"
 	  ><span class="hs-identifier hs-var hs-var"
@@ -2449,7 +2456,7 @@ forall a. HasCallStack =&gt; a
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >f :: a -&gt; b
+	  >a -&gt; b
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -2462,7 +2469,7 @@ forall a. HasCallStack =&gt; a
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >x :: a
+	  >a
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -2477,7 +2484,7 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-64"
+      ><span id="line-65"
       ></span
       ><span
       >    </span
@@ -2548,7 +2555,7 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-65"
+      ><span id="line-66"
       ></span
       ><span
       >  </span
@@ -2557,7 +2564,7 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-66"
+      ><span id="line-67"
       ></span
       ><span
       >    </span
@@ -2641,7 +2648,7 @@ forall a. HasCallStack =&gt; a
       ><span
       >
 </span
-      ><span id="line-67"
+      ><span id="line-68"
       ></span
       ></pre
     ></body

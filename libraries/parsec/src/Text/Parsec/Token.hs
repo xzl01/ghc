@@ -34,7 +34,8 @@ import Data.Char ( isAlpha, toLower, toUpper, isSpace, digitToInt )
 import Data.Typeable ( Typeable )
 #endif
 import Data.List ( nub, sort )
-import Control.Monad.Identity
+import Control.Monad.Identity (Identity)
+
 import Text.Parsec.Prim
 import Text.Parsec.Char
 import Text.Parsec.Combinator
@@ -171,7 +172,7 @@ data GenTokenParser s u m
 
         stringLiteral    :: ParsecT s u m String,
 
-        -- | This lexeme parser parses a natural number (a positive whole
+        -- | This lexeme parser parses a natural number (a non-negative whole
         -- number). Returns the value of the number. The number can be
         -- specified in 'decimal', 'hexadecimal' or
         -- 'octal'. The number is parsed according to the grammar
@@ -329,7 +330,7 @@ data GenTokenParser s u m
 -- defined using the definitions in the @language@ record.
 --
 -- The use of this function is quite stylized - one imports the
--- appropiate language definition and selects the lexical parsers that
+-- appropriate language definition and selects the lexical parsers that
 -- are needed from the resulting 'GenTokenParser'.
 --
 -- >  module Main where
@@ -357,6 +358,7 @@ data GenTokenParser s u m
 
 makeTokenParser :: (Stream s m Char)
                 => GenLanguageDef s u m -> GenTokenParser s u m
+{-# INLINABLE makeTokenParser #-}
 makeTokenParser languageDef
     = TokenParser{ identifier = identifier
                  , reserved = reserved

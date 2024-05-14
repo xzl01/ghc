@@ -38,13 +38,15 @@ import GHC.Base
 import GHC.Show
 import GHC.Stack.Types
 import GHC.OldList
-import GHC.Prim
 import GHC.IO.Unsafe
 import {-# SOURCE #-} GHC.Stack.CCS
 import GHC.Exception.Type
 
 -- | Throw an exception.  Exceptions may be thrown from purely
 -- functional code, but may only be caught within the 'IO' monad.
+--
+-- WARNING: You may want to use 'throwIO' instead so that your pure code
+-- stays exception-free.
 throw :: forall (r :: RuntimeRep). forall (a :: TYPE r). forall e.
          Exception e => e -> a
 throw e = raise# (toException e)

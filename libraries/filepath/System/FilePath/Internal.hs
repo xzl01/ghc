@@ -747,6 +747,7 @@ splitDirectories = map dropTrailingPathSeparator . splitPath
 
 -- | Join path elements back together.
 --
+-- > joinPath a == foldr (</>) "" a
 -- > joinPath ["/","directory/","file.ext"] == "/directory/file.ext"
 -- > Valid x => joinPath (splitPath x) == x
 -- > joinPath [] == ""
@@ -768,9 +769,12 @@ joinPath = foldr combine ""
 --   first this has a much better chance of working.
 --   Note that this doesn't follow symlinks or DOSNAM~1s.
 --
+-- Similar to 'normalise', this does not expand @".."@, because of symlinks.
+--
 -- >          x == y ==> equalFilePath x y
 -- >          normalise x == normalise y ==> equalFilePath x y
 -- >          equalFilePath "foo" "foo/"
+-- >          not (equalFilePath "/a/../c" "/c")
 -- >          not (equalFilePath "foo" "/foo")
 -- > Posix:   not (equalFilePath "foo" "FOO")
 -- > Windows: equalFilePath "foo" "FOO"
@@ -835,10 +839,13 @@ makeRelative root path
 --
 -- * .\/ -> \"\"
 --
+-- Does not remove @".."@, because of symlinks.
+--
 -- > Posix:   normalise "/file/\\test////" == "/file/\\test/"
 -- > Posix:   normalise "/file/./test" == "/file/test"
 -- > Posix:   normalise "/test/file/../bob/fred/" == "/test/file/../bob/fred/"
 -- > Posix:   normalise "../bob/fred/" == "../bob/fred/"
+-- > Posix:   normalise "/a/../c" == "/a/../c"
 -- > Posix:   normalise "./bob/fred/" == "bob/fred/"
 -- > Windows: normalise "c:\\file/bob\\" == "C:\\file\\bob\\"
 -- > Windows: normalise "c:\\" == "C:\\"

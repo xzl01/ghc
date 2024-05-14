@@ -1,9 +1,7 @@
-{-# LANGUAGE Trustworthy #-}
-{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE ExplicitForAll #-}
-{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE Trustworthy #-}
 {-# LANGUAGE TypeApplications #-}
 
 -----------------------------------------------------------------------------
@@ -13,7 +11,7 @@
 -- License     :  BSD-style (see the file libraries/base/LICENSE)
 --
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  portable
 --
 -- The Dynamic interface provides basic support for dynamic types.
@@ -85,14 +83,6 @@ instance Show Dynamic where
 -- here so that it isn't an orphan:
 -- | @since 4.0.0.0
 instance Exception Dynamic
-
- -- Use GHC's primitive 'Any' type to hold the dynamically typed value.
- --
- -- In GHC's new eval/apply execution model this type must not look
- -- like a data type.  If it did, GHC would use the constructor convention
- -- when evaluating it, and this will go wrong if the object is really a
- -- function.  Using Any forces GHC to use
- -- a fallback convention for evaluating it that works for all types.
 
 -- | Converts an arbitrary value into an object of type 'Dynamic'.
 --

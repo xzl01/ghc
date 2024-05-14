@@ -10,16 +10,16 @@ test('IOError001', [omit_ways(['ghci']), set_stdin('IOError001.hs')],
 test('IOError002',      normal, compile_and_run, [''])
 test('finalization001', normal, compile_and_run, [''])
 test('hClose001', [], compile_and_run, [''])
-test('hClose002', [], compile_and_run, [''])
-test('hClose003',       reqlib('unix'), compile_and_run, ['-package unix'])
+test('hClose002', [normalise_win32_io_errors], compile_and_run, [''])
 test('hFileSize001',    normal, compile_and_run, [''])
 test('hFileSize002', [omit_ways(['ghci'])], compile_and_run, [''])
 test('hFlush001', [], compile_and_run, [''])
 
-test('hGetBuffering001', 
-	[omit_ways(['ghci']), set_stdin('hGetBuffering001.hs')], 
+test('hGetBuffering001',
+	[omit_ways(['ghci']), set_stdin('hGetBuffering001.hs')],
 	compile_and_run, [''])
 
+test('hGetContentsS001', normal, compile_and_run, [''])
 test('hGetChar001', normal, compile_and_run, [''])
 test('hGetLine001', set_stdin('hGetLine001.hs'), compile_and_run, ['-cpp'])
 test('hGetLine002', normal, compile_and_run, [''])
@@ -46,7 +46,7 @@ test('hSeek004', [], compile_and_run, ['-cpp'])
 test('hSetBuffering002', set_stdin('hSetBuffering002.hs'), compile_and_run, [''])
 
 test('hSetBuffering003',
-    [omit_ways(['ghci']), set_stdin('hSetBuffering003.hs')], 
+    [omit_ways(['ghci']), set_stdin('hSetBuffering003.hs')],
 	compile_and_run, [''])
 
 test('hSetBuffering004', set_stdin('hSetBuffering004.hs'), compile_and_run, [''])
@@ -60,13 +60,14 @@ test('misc001', [extra_run_opts('misc001.hs misc001.out')], compile_and_run,
      [''])
 
 test('openFile001',  normal, compile_and_run, [''])
-test('openFile002',  exit_code(1), compile_and_run, [''])
-test('openFile003', [], compile_and_run, [''])
+test('openFile002',  [exit_code(1), normalise_win32_io_errors], compile_and_run, [''])
+test('openFile003', [normalise_win32_io_errors], compile_and_run, [''])
 test('openFile004', [], compile_and_run, [''])
 test('openFile005', [], compile_and_run, [''])
 test('openFile006', [], compile_and_run, [''])
 test('openFile007', [], compile_and_run, [''])
-test('openFile008', cmd_prefix('ulimit -n 2048; '), compile_and_run, [''])
+test('openFile008', cmd_prefix('ulimit -n 1024; '), compile_and_run, [''])
+test('openFile009', [], compile_and_run, [''])
 
 test('putStr001',    normal, compile_and_run, [''])
 test('readFile001', [], compile_and_run, [''])
@@ -84,19 +85,18 @@ test('hGetBuf001',
       expect_fail_if_windows],
      compile_and_run, ['-package unix'])
 
-test('hDuplicateTo001', [], compile_and_run, [''])
+test('hDuplicateTo001', [fragile_for(16819, concurrent_ways),
+                         when(opsys('mingw32'), skip)], compile_and_run, [''])
 
 test('countReaders001', [], compile_and_run, [''])
 
 test('concio001', [normal, multi_cpu_race],
-     run_command, ['$MAKE -s --no-print-directory test.concio001'])
+     makefile_test, ['test.concio001'])
 test('concio001.thr', [extra_files(['concio001.hs']), multi_cpu_race],
-     run_command, ['$MAKE -s --no-print-directory test.concio001.thr'])
-
-test('concio002', reqlib('process'), compile_and_run, [''])
+     makefile_test, ['test.concio001.thr'])
 
 test('T2122', [], compile_and_run, [''])
-test('T3307', [], run_command, ['$MAKE -s --no-print-directory T3307-test'])
+test('T3307', [], makefile_test, ['T3307-test'])
 test('T4855', normal, compile_and_run, [''])
 
 test('hSetEncoding001',extra_run_opts('hSetEncoding001.in'), compile_and_run, [''])
@@ -118,8 +118,7 @@ test('encoding003', normal, compile_and_run, [''])
 test('encoding004', extra_files(['encoded-data/']), compile_and_run, [''])
 test('encoding005', normal, compile_and_run, [''])
 
-test('environment001', [], run_command,
-     ['$MAKE -s --no-print-directory environment001-test'])
+test('environment001', [], makefile_test, ['environment001-test'])
 
 test('newline001', [], compile_and_run, [''])
 
@@ -129,8 +128,23 @@ test('T4144', normal, compile_and_run, [''])
 
 test('encodingerror001', normal, compile_and_run, [''])
 
-test('T4808', [exit_code(1)], compile_and_run, [''])
+# Requires use of the FD interface which is not supported under WINIO
+test('T4808', [when(opsys('mingw32'), skip)
+              ,fragile_for(16909, concurrent_ways), exit_code(1)]
+              , compile_and_run, [''])
 test('T4895', normal, compile_and_run, [''])
 test('T7853', normal, compile_and_run, [''])
 # Tests ability to perform >32-bit IO operations
-test('T17414', [when(wordsize(32), skip), high_memory_usage], compile_and_run, [''])
+test('T17414',
+     [when(wordsize(32), skip),
+      when(opsys('mingw32'), fragile(17453)),
+      # It is common for tmpfs to be mounted to a small tmpfs on modern Linux
+      # distributions. This test needs to create a large file which will exceed the
+      # size of this filesystem consequently we must skip it (see #17459).
+      when(opsys('linux'), skip),
+      high_memory_usage],
+     compile_and_run, [''])
+test('T17510', expect_broken(17510), compile_and_run, [''])
+test('bytestringread001', extra_run_opts('test.data'), compile_and_run, [''])
+test('T17912', [only_ways(['threaded1']), when(opsys('mingw32'),expect_broken(1))], compile_and_run, [''])
+test('T18832', only_ways(['threaded1']), compile_and_run, [''])

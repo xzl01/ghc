@@ -12,7 +12,7 @@ defines the ``Seq`` data type.
 Short Example
 -------------
 
-The following GHCi session shows some of the basic sequence funcitonality::
+The following GHCi session shows some of the basic sequence functionality::
 
     -- Import the Seq type and operators for combining sequences unqualified.
     -- Import the rest of the Sequence module qualified.
@@ -236,13 +236,15 @@ Let's do the same thing with sequences!
 
     -- Imports the patterns to match on.
     import Data.Sequence (Seq (Empty, (:<|), (:|>)))
+    import qualified Data.Sequence as Seq
 
     case Seq.fromList [1, 2, 3] of
       Empty -> "empty sequence"
-      x :<| xs -> "first:" ++ x ++ " rest:" ++ show xs
+      x :<| xs -> "first:" ++ show x ++ " rest:" ++ show xs
     > "first:1 rest:fromList [2,3]"
 
-.. NOTE:: You can't copy/paste this into GHCi because it's multiple lines.
+.. NOTE:: You can copy/paste this into GHCi using the syntax for multi-line input ``:{ ... :}`` or by enabling `multiline mode
+          <https://downloads.haskell.org/~ghc/latest/docs/html/users_guide/ghci.html#multiline-input>`_ ``:set +m``.
 
 You can also take an element off the end::
 

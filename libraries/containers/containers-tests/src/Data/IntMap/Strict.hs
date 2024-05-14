@@ -48,8 +48,8 @@
 --
 -- == Detailed performance information
 --
--- The amortized running time is given for each operation, with /n/ referring to
--- the number of entries in the map and /W/ referring to the number of bits in
+-- The amortized running time is given for each operation, with \(n\) referring to
+-- the number of entries in the map and \(W\) referring to the number of bits in
 -- an 'Int' (32 or 64).
 --
 -- Benchmarks comparing "Data.IntMap.Strict" with other dictionary
@@ -75,11 +75,10 @@
 --
 --    * Chris Okasaki and Andy Gill,  \"/Fast Mergeable Integer Maps/\",
 --      Workshop on ML, September 1998, pages 77-86,
---      <http://citeseer.ist.psu.edu/okasaki98fast.html>
+--      <http://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.37.5452>
 --
---    * D.R. Morrison, \"/PATRICIA -- Practical Algorithm To Retrieve
---      Information Coded In Alphanumeric/\", Journal of the ACM, 15(4),
---      October 1968, pages 514-534.
+--    * D.R. Morrison, \"/PATRICIA -- Practical Algorithm To Retrieve Information Coded In Alphanumeric/\",
+--      Journal of the ACM, 15(4), October 1968, pages 514-534.
 --
 -----------------------------------------------------------------------------
 
@@ -165,6 +164,9 @@ module Data.IntMap.Strict (
     -- ** Disjoint
     , disjoint
 
+    -- ** Compose
+    , compose
+
     -- ** Universal combining function
     , mergeWithKey
 
@@ -173,6 +175,7 @@ module Data.IntMap.Strict (
     , map
     , mapWithKey
     , traverseWithKey
+    , traverseMaybeWithKey
     , mapAccum
     , mapAccumWithKey
     , mapAccumRWithKey
@@ -213,6 +216,10 @@ module Data.IntMap.Strict (
     , withoutKeys
     , partition
     , partitionWithKey
+
+    , takeWhileAntitone
+    , dropWhileAntitone
+    , spanAntitone
 
     , mapMaybe
     , mapMaybeWithKey

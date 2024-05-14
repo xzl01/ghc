@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 module Haddock.Backends.Hyperlinker
     ( ppHyperlinkedSource
     , module Haddock.Backends.Hyperlinker.Types
@@ -8,6 +9,7 @@ module Haddock.Backends.Hyperlinker
 
 import Haddock.Types
 import Haddock.Utils (writeUtf8File, out, verbose, Verbosity)
+import Haddock.InterfaceFile
 import Haddock.Backends.Hyperlinker.Renderer
 import Haddock.Backends.Hyperlinker.Parser
 import Haddock.Backends.Hyperlinker.Types
@@ -18,14 +20,12 @@ import Data.Maybe
 import System.Directory
 import System.FilePath
 
-import HieTypes       ( HieFile(..), HieASTs(..), HieAST(..), NodeInfo(..) )
-import HieBin         ( readHieFile, hie_file_result)
+import GHC.Iface.Ext.Types  ( pattern HiePath, HieFile(..), HieASTs(..), HieAST(..), SourcedNodeInfo(..) )
+import GHC.Iface.Ext.Binary ( readHieFile, hie_file_result )
+import GHC.Types.SrcLoc     ( realSrcLocSpan, mkRealSrcLoc, srcSpanFile )
 import Data.Map as M
-import FastString     ( mkFastString )
-import Module         ( Module, moduleName )
-import NameCache      ( initNameCache )
-import SrcLoc         ( mkRealSrcLoc, realSrcLocSpan )
-import UniqSupply     ( mkSplitUniqSupply )
+import GHC.Data.FastString     ( mkFastString )
+import GHC.Unit.Module         ( Module, moduleName )
 
 
 -- | Generate hyperlinked source for given interfaces.
@@ -57,27 +57,35 @@ ppHyperlinkedModuleSource :: Verbosity -> FilePath -> Bool -> SrcMaps -> Interfa
 ppHyperlinkedModuleSource verbosity srcdir pretty srcs iface = case ifaceHieFile iface of
     Just hfp -> do
         -- Parse the GHC-produced HIE file
-        u <- mkSplitUniqSupply 'a'
+        nc <- freshNameCache
         HieFile { hie_hs_file = file
                 , hie_asts = HieASTs asts
                 , hie_types = types
                 , hie_hs_src = rawSrc
-                } <- (hie_file_result . fst)
-                 <$> (readHieFile (initNameCache u []) hfp)
+                } <- hie_file_result
+                 <$> (readHieFile nc hfp)
 
         -- Get the AST and tokens corresponding to the source file we want
         let fileFs = mkFastString file
             mast | M.size asts == 1 = snd <$> M.lookupMin asts
-                 | otherwise        = M.lookup fileFs asts
+                 | otherwise        = M.lookup (HiePath (mkFastString file)) asts
+            tokens' = parse df file rawSrc
             ast = fromMaybe (emptyHieAst fileFs) mast
             fullAst = recoverFullIfaceTypes df types ast
-            tokens = parse df file rawSrc
 
         -- Warn if we didn't find an AST, but there were still ASTs
         if M.null asts
           then pure ()
           else out verbosity verbose $ unwords [ "couldn't find ast for"
                                                , file, show (M.keys asts) ]
+
+        -- The C preprocessor can double the backslashes on tokens (see #19236),
+        -- which means the source spans will not be comparable and we will not
+        -- be able to associate the HieAST with the correct tokens.
+        --
+        -- We work around this by setting the source span of the tokens to the file
+        -- name from the HieAST
+        let tokens = fmap (\tk -> tk {tkSpan = (tkSpan tk){srcSpanFile = srcSpanFile $ nodeSpan fullAst}}) tokens'
 
         -- Produce and write out the hyperlinked sources
         writeUtf8File path . renderToString pretty . render' fullAst $ tokens
@@ -87,15 +95,10 @@ ppHyperlinkedModuleSource verbosity srcdir pretty srcs iface = case ifaceHieFile
     render' = render (Just srcCssFile) (Just highlightScript) srcs
     path = srcdir </> hypSrcModuleFile (ifaceMod iface)
 
-    emptyNodeInfo = NodeInfo
-      { nodeAnnotations = mempty
-      , nodeType = []
-      , nodeIdentifiers = mempty
-      }
     emptyHieAst fileFs = Node
-      { nodeInfo = emptyNodeInfo
-      , nodeSpan = realSrcLocSpan (mkRealSrcLoc fileFs 1 0)
+      { nodeSpan = realSrcLocSpan (mkRealSrcLoc fileFs 1 0)
       , nodeChildren = []
+      , sourcedNodeInfo = SourcedNodeInfo mempty
       }
 
 -- | Name of CSS file in output directory.
@@ -109,4 +112,3 @@ highlightScript = "highlight.js"
 -- | Path to default CSS file.
 defaultCssFile :: FilePath -> FilePath
 defaultCssFile libdir = libdir </> "html" </> "solarized.css"
-

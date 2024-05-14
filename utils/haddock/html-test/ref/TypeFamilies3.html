@@ -10,14 +10,14 @@
      /><script src="haddock-bundle.min.js" async="async" type="text/javascript"
     ></script
     ><script type="text/x-mathjax-config"
-    >MathJax.Hub.Config({ tex2jax: { processClass: &quot;mathjax&quot;, ignoreClass: &quot;.*&quot; } });</script
+    >MathJax.Hub.Config({ tex2jax: { processClass: "mathjax", ignoreClass: ".*" } });</script
     ><script src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.5/MathJax.js?config=TeX-AMS-MML_HTMLorMML" type="text/javascript"
     ></script
     ></head
   ><body
   ><div id="package-header"
     ><span class="caption empty"
-      ></span
+      >&nbsp;</span
       ><ul class="links" id="page-menu"
       ><li
 	><a href="#"
@@ -36,7 +36,13 @@
 	  ><th
 	    >Safe Haskell</th
 	    ><td
-	    >Safe</td
+	    >Safe-Inferred</td
+	    ></tr
+	  ><tr
+	  ><th
+	    >Language</th
+	    ><td
+	    >Haskell2010</td
 	    ></tr
 	  ></table
 	><p class="caption"
@@ -100,7 +106,7 @@
 		  >Int</a
 		  ></td
 		><td class="doc empty"
-		></td
+		>&nbsp;</td
 		></tr
 	      ><tr
 	      ><td class="src"
@@ -108,7 +114,7 @@
 		  >Foo</a
 		  > _ = ()</td
 		><td class="doc empty"
-		></td
+		>&nbsp;</td
 		></tr
 	      ></table
 	    ></div
@@ -142,14 +148,12 @@
 		      >type</span
 		      > <a href="#" title="TypeFamilies3"
 		      >Bar</a
-		      > <a href="#" title="Data.Int"
-		      >Int</a
-		      ></span
+		      > ()</span
 		    > <a href="#" class="selflink"
 		    >#</a
 		    ></td
 		  ><td class="doc empty"
-		  ></td
+		  >&nbsp;</td
 		  ></tr
 		><tr
 		><td colspan="2"
@@ -165,9 +169,9 @@
 			>type</span
 			> <a href="#" title="TypeFamilies3"
 			>Bar</a
-			> <a href="#" title="Data.Int"
+			> () = <a href="#" title="Data.Int"
 			>Int</a
-			> = ()</div
+			></div
 		      ></details
 		    ></td
 		  ></tr
@@ -180,12 +184,14 @@
 		      >type</span
 		      > <a href="#" title="TypeFamilies3"
 		      >Bar</a
-		      > ()</span
+		      > <a href="#" title="Data.Int"
+		      >Int</a
+		      ></span
 		    > <a href="#" class="selflink"
 		    >#</a
 		    ></td
 		  ><td class="doc empty"
-		  ></td
+		  >&nbsp;</td
 		  ></tr
 		><tr
 		><td colspan="2"
@@ -201,9 +207,9 @@
 			>type</span
 			> <a href="#" title="TypeFamilies3"
 			>Bar</a
-			> () = <a href="#" title="Data.Int"
+			> <a href="#" title="Data.Int"
 			>Int</a
-			></div
+			> = ()</div
 		      ></details
 		    ></td
 		  ></tr
@@ -237,6 +243,42 @@
 		    ><span class="instance details-toggle-control details-toggle" data-details-id="i:if:Baz:Baz:1"
 		      ></span
 		      > <span class="keyword"
+		      >data</span
+		      > <a href="#" title="TypeFamilies3"
+		      >Baz</a
+		      > ()</span
+		    > <a href="#" class="selflink"
+		    >#</a
+		    ></td
+		  ><td class="doc empty"
+		  >&nbsp;</td
+		  ></tr
+		><tr
+		><td colspan="2"
+		  ><details id="i:if:Baz:Baz:1"
+		    ><summary class="hide-when-js-enabled"
+		      >Instance details</summary
+		      ><p
+		      >Defined in <a href="#"
+			>TypeFamilies3</a
+			></p
+		      > <div class="src"
+		      ><span class="keyword"
+			>data</span
+			> <a href="#" title="TypeFamilies3"
+			>Baz</a
+			> () = <a id="v:Baz1" class="def"
+			>Baz1</a
+			></div
+		      ></details
+		    ></td
+		  ></tr
+		><tr
+		><td class="src clearfix"
+		  ><span class="inst-left"
+		    ><span class="instance details-toggle-control details-toggle" data-details-id="i:if:Baz:Baz:2"
+		      ></span
+		      > <span class="keyword"
 		      >newtype</span
 		      > <a href="#" title="TypeFamilies3"
 		      >Baz</a
@@ -247,11 +289,11 @@
 		    >#</a
 		    ></td
 		  ><td class="doc empty"
-		  ></td
+		  >&nbsp;</td
 		  ></tr
 		><tr
 		><td colspan="2"
-		  ><details id="i:if:Baz:Baz:1"
+		  ><details id="i:if:Baz:Baz:2"
 		    ><summary class="hide-when-js-enabled"
 		      >Instance details</summary
 		      ><p
@@ -276,7 +318,7 @@
 		><tr
 		><td class="src clearfix"
 		  ><span class="inst-left"
-		    ><span class="instance details-toggle-control details-toggle" data-details-id="i:if:Baz:Baz:2"
+		    ><span class="instance details-toggle-control details-toggle" data-details-id="i:if:Baz:Baz:3"
 		      ></span
 		      > <span class="keyword"
 		      >data</span
@@ -289,11 +331,11 @@
 		    >#</a
 		    ></td
 		  ><td class="doc empty"
-		  ></td
+		  >&nbsp;</td
 		  ></tr
 		><tr
 		><td colspan="2"
-		  ><details id="i:if:Baz:Baz:2"
+		  ><details id="i:if:Baz:Baz:3"
 		    ><summary class="hide-when-js-enabled"
 		      >Instance details</summary
 		      ><p
@@ -315,50 +357,12 @@
 		      ></details
 		    ></td
 		  ></tr
-		><tr
-		><td class="src clearfix"
-		  ><span class="inst-left"
-		    ><span class="instance details-toggle-control details-toggle" data-details-id="i:if:Baz:Baz:3"
-		      ></span
-		      > <span class="keyword"
-		      >data</span
-		      > <a href="#" title="TypeFamilies3"
-		      >Baz</a
-		      > ()</span
-		    > <a href="#" class="selflink"
-		    >#</a
-		    ></td
-		  ><td class="doc empty"
-		  ></td
-		  ></tr
-		><tr
-		><td colspan="2"
-		  ><details id="i:if:Baz:Baz:3"
-		    ><summary class="hide-when-js-enabled"
-		      >Instance details</summary
-		      ><p
-		      >Defined in <a href="#"
-			>TypeFamilies3</a
-			></p
-		      > <div class="src"
-		      ><span class="keyword"
-			>data</span
-			> <a href="#" title="TypeFamilies3"
-			>Baz</a
-			> () = <a id="v:Baz1" class="def"
-			>Baz1</a
-			></div
-		      ></details
-		    ></td
-		  ></tr
 		></table
 	      ></details
 	    ></div
 	  ></div
 	></div
       ></div
-    ><div id="footer"
-    ></div
     ></body
   ></html
 >

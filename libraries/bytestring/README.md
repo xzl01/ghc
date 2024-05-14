@@ -1,9 +1,9 @@
-## ByteString: Fast, Packed Strings of Bytes
+# ByteString: Fast, Packed Strings of Bytes
 
-[![Build Status](https://secure.travis-ci.org/haskell/bytestring.png?branch=master)](http://travis-ci.org/haskell/bytestring)
+[![Build Status](https://github.com/haskell/bytestring/workflows/ci/badge.svg)](https://github.com/haskell/bytestring/actions?query=workflow%3Aci) [![Hackage](http://img.shields.io/hackage/v/bytestring.svg)](https://hackage.haskell.org/package/bytestring) [![Stackage LTS](http://stackage.org/package/bytestring/badge/lts)](http://stackage.org/lts/package/bytestring) [![Stackage Nightly](http://stackage.org/package/bytestring/badge/nightly)](http://stackage.org/nightly/package/bytestring)
 
 This library provides the `Data.ByteString` module -- strict and lazy
-byte arrays manipulable as strings -- providing very time/space-efficient 
+byte arrays manipulable as strings -- providing very time/space-efficient
 string and IO operations.
 
 For very large data requirements, or constraints on heap size,
@@ -16,20 +16,10 @@ of `ByteString` values from smaller pieces during binary serialization.
 Requirements:
 
   * Cabal 1.10 or greater
-  * cabal-install
-  * GHC 6.12 or greater
-
-Building:
-```
-cabal install
-```
-
-You can run the testsuite as follows:
-```    
-cabal test
-```
+  * GHC 8.0 or greater
 
 ### Authors
+
 `ByteString` was derived from the GHC `PackedString` library,
 originally written by Bryan O'Sullivan, and then by Simon Marlow.
 It was adapted and greatly extended for darcs by David Roundy and

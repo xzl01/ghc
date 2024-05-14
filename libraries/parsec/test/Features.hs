@@ -2,11 +2,13 @@ module Features
        ( features
        ) where
 
-import Test.Framework
+import Test.Tasty
 
 import qualified Features.Feature80
+import qualified Features.Feature150
 
-features :: [Test]
-features = [
-             Features.Feature80.main
-           ]
+features :: [TestTree]
+features =
+    [ Features.Feature80.main
+    , Features.Feature150.main
+    ]

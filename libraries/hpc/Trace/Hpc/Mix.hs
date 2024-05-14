@@ -22,7 +22,7 @@ module Trace.Hpc.Mix
         )
   where
 
-import Data.List
+import Data.List (intercalate)
 import Data.Maybe (catMaybes, fromMaybe)
 import Data.Time (UTCTime)
 import Data.Tree

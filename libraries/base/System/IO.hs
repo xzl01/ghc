@@ -60,6 +60,7 @@ module System.IO (
     -- | These functions are also exported by the "Prelude".
 
     readFile,
+    readFile',
     writeFile,
     appendFile,
 
@@ -123,6 +124,7 @@ module System.IO (
     hGetLine,
     hLookAhead,
     hGetContents,
+    hGetContents',
 
     -- ** Text output
 
@@ -143,6 +145,7 @@ module System.IO (
     getChar,
     getLine,
     getContents,
+    getContents',
     readIO,
     readLn,
 
@@ -202,7 +205,7 @@ module System.IO (
     -- as @\'\\r\\n\'@.
     --
     -- A text-mode 'Handle' has an associated 'NewlineMode' that
-    -- specifies how to transate newline characters.  The
+    -- specifies how to translate newline characters.  The
     -- 'NewlineMode' specifies the input and output translation
     -- separately, so that for instance you can translate @\'\\r\\n\'@
     -- to @\'\\n\'@ on input, but leave newlines as @\'\\n\'@ on output.
@@ -228,7 +231,13 @@ import Foreign.C.Error
 import Foreign.C.String
 import Foreign.Ptr
 import Foreign.Marshal.Alloc
+import Foreign.Marshal.Utils (with)
 import Foreign.Storable
+import GHC.IO.SubSystem
+import GHC.IO.Windows.Handle (openFileAsTemp)
+import GHC.IO.Handle.Windows (mkHandleFromHANDLE)
+import GHC.IO.Device as IODevice
+import GHC.Real (fromIntegral)
 #endif
 import Foreign.C.Types
 import System.Posix.Internals
@@ -242,13 +251,14 @@ import GHC.IORef
 import GHC.Num
 import GHC.IO hiding ( bracket, onException )
 import GHC.IO.IOMode
-import GHC.IO.Handle.FD
 import qualified GHC.IO.FD as FD
 import GHC.IO.Handle
+import qualified GHC.IO.Handle.FD as POSIX
 import GHC.IO.Handle.Text ( hGetBufSome, hPutStrLn )
 import GHC.IO.Exception ( userError )
 import GHC.IO.Encoding
 import Text.Read
+import GHC.IO.StdHandles
 import GHC.Show
 import GHC.MVar
 
@@ -305,6 +315,15 @@ getLine         =  hGetLine stdin
 getContents     :: IO String
 getContents     =  hGetContents stdin
 
+-- | The 'getContents'' operation returns all user input as a single string,
+-- which is fully read before being returned
+-- (same as 'hGetContents'' 'stdin').
+--
+-- @since 4.15.0.0
+
+getContents'    :: IO String
+getContents'    =  hGetContents' stdin
+
 -- | The 'interact' function takes a function of type @String->String@
 -- as its argument.  The entire input from the standard input device is
 -- passed to this function as its argument, and the resulting string is
@@ -320,6 +339,17 @@ interact f      =   do s <- getContents
 
 readFile        :: FilePath -> IO String
 readFile name   =  openFile name ReadMode >>= hGetContents
+
+-- | The 'readFile'' function reads a file and
+-- returns the contents of the file as a string.
+-- The file is fully read before being returned, as with 'getContents''.
+--
+-- @since 4.15.0.0
+
+readFile'       :: FilePath -> IO String
+-- There's a bit of overkill here—both withFile and
+-- hGetContents' will close the file in the end.
+readFile' name  =  withFile name ReadMode hGetContents'
 
 -- | The computation 'writeFile' @file str@ function writes the string @str@,
 -- to the file @file@.
@@ -340,10 +370,8 @@ appendFile f txt = withFile f AppendMode (\ hdl -> hPutStr hdl txt)
 
 -- | The 'readLn' function combines 'getLine' and 'readIO'.
 
-readLn          :: Read a => IO a
-readLn          =  do l <- getLine
-                      r <- readIO l
-                      return r
+readLn :: Read a => IO a
+readLn = getLine >>= readIO
 
 -- | The 'readIO' function is similar to 'read' except that it signals
 -- parse failure to the 'IO' monad instead of terminating the program.
@@ -387,21 +415,6 @@ hReady h        =  hWaitForInput h 0
 hPrint          :: Show a => Handle -> a -> IO ()
 hPrint hdl      =  hPutStrLn hdl . show
 
--- | @'withFile' name mode act@ opens a file using 'openFile' and passes
--- the resulting handle to the computation @act@.  The handle will be
--- closed on exit from 'withFile', whether by normal termination or by
--- raising an exception.  If closing the handle raises an exception, then
--- this exception will be raised by 'withFile' rather than any exception
--- raised by @act@.
-withFile :: FilePath -> IOMode -> (Handle -> IO r) -> IO r
-withFile name mode = bracket (openFile name mode) hClose
-
--- | @'withBinaryFile' name mode act@ opens a file using 'openBinaryFile'
--- and passes the resulting handle to the computation @act@.  The handle
--- will be closed on exit from 'withBinaryFile', whether by normal
--- termination or by raising an exception.
-withBinaryFile :: FilePath -> IOMode -> (Handle -> IO r) -> IO r
-withBinaryFile name mode = bracket (openBinaryFile name mode) hClose
 
 -- ---------------------------------------------------------------------------
 -- fixIO
@@ -419,7 +432,9 @@ fixIO k = do
     putMVar m result
     return result
 
--- NOTE: we do our own explicit black holing here, because GHC's lazy
+-- Note [Blackholing in fixIO]
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+-- We do our own explicit black holing here, because GHC's lazy
 -- blackholing isn't enough.  In an infinite loop, GHC may run the IO
 -- computation a few times before it notices the loop, which is wrong.
 --
@@ -459,7 +474,9 @@ openTempFile :: FilePath   -- ^ Directory in which to create the file
              -> String     -- ^ File name template. If the template is \"foo.ext\" then
                            -- the created file will be \"fooXXX.ext\" where XXX is some
                            -- random number. Note that this should not contain any path
-                           -- separator characters.
+                           -- separator characters. On Windows, the template prefix may
+                           -- be truncated to 3 chars, e.g. \"foobar.ext\" will be
+                           -- \"fooXXX.ext\".
              -> IO (FilePath, Handle)
 openTempFile tmp_dir template
     = openTempFile' "openTempFile" tmp_dir template False 0o600
@@ -505,13 +522,29 @@ openTempFile' loc tmp_dir template binary mode
          -- beginning with '.' as the second component.
          _                      -> errorWithoutStackTrace "bug in System.IO.openTempFile"
 #if defined(mingw32_HOST_OS)
-    findTempName = do
+    findTempName = findTempNamePosix <!> findTempNameWinIO
+
+    findTempNameWinIO = do
       let label = if null prefix then "ghc" else prefix
       withCWString tmp_dir $ \c_tmp_dir ->
         withCWString label $ \c_template ->
           withCWString suffix $ \c_suffix ->
-            -- NOTE: revisit this when new I/O manager in place and use a UUID
-            --       based one when we are no longer MAX_PATH bound.
+            with nullPtr $ \c_ptr -> do
+              res <- c_createUUIDTempFileErrNo c_tmp_dir c_template c_suffix c_ptr
+              if not res
+                 then do errno <- getErrno
+                         ioError (errnoToIOError loc errno Nothing (Just tmp_dir))
+                 else do c_p <- peek c_ptr
+                         filename <- peekCWString c_p
+                         free c_p
+                         let flags = fromIntegral mode .&. o_EXCL
+                         handleResultsWinIO filename (flags == o_EXCL)
+
+    findTempNamePosix = do
+      let label = if null prefix then "ghc" else prefix
+      withCWString tmp_dir $ \c_tmp_dir ->
+        withCWString label $ \c_template ->
+          withCWString suffix $ \c_suffix ->
             allocaBytes (sizeOf (undefined :: CWchar) * 260) $ \c_str -> do
             res <- c_getTempFileNameErrorNo c_tmp_dir c_template c_suffix 0
                                             c_str
@@ -519,9 +552,9 @@ openTempFile' loc tmp_dir template binary mode
                then do errno <- getErrno
                        ioError (errnoToIOError loc errno Nothing (Just tmp_dir))
                else do filename <- peekCWString c_str
-                       handleResults filename
+                       handleResultsPosix filename
 
-    handleResults filename = do
+    handleResultsPosix filename = do
       let oflags1 = rw_flags .|. o_EXCL
           binary_flags
               | binary    = o_BINARY
@@ -537,13 +570,25 @@ openTempFile' loc tmp_dir template binary mode
                                      True{-is_nonblock-}
 
              enc <- getLocaleEncoding
-             h <- mkHandleFromFD fD fd_type filename ReadWriteMode
+             h <- POSIX.mkHandleFromFD fD fd_type filename ReadWriteMode
                                  False{-set non-block-} (Just enc)
 
              return (filename, h)
 
+    handleResultsWinIO filename excl = do
+      (hwnd, hwnd_type) <- openFileAsTemp filename True excl
+      mb_codec <- if binary then return Nothing else fmap Just getLocaleEncoding
+
+      -- then use it to make a Handle
+      h <- mkHandleFromHANDLE hwnd hwnd_type filename ReadWriteMode mb_codec
+                `onException` IODevice.close hwnd
+      return (filename, h)
+
 foreign import ccall "getTempFileNameErrorNo" c_getTempFileNameErrorNo
   :: CWString -> CWString -> CWString -> CUInt -> Ptr CWchar -> IO Bool
+
+foreign import ccall "__createUUIDTempFileErrNo" c_createUUIDTempFileErrNo
+  :: CWString -> CWString -> CWString -> Ptr CWString -> IO Bool
 
 pathSeparator :: String -> Bool
 pathSeparator template = any (\x-> x == '/' || x == '\\') template
@@ -564,7 +609,7 @@ output_flags = std_flags
                                True{-is_nonblock-}
 
           enc <- getLocaleEncoding
-          h <- mkHandleFromFD fD fd_type filepath ReadWriteMode False{-set non-block-} (Just enc)
+          h <- POSIX.mkHandleFromFD fD fd_type filepath ReadWriteMode False{-set non-block-} (Just enc)
 
           return (filepath, h)
 

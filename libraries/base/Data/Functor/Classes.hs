@@ -1,4 +1,7 @@
-{-# LANGUAGE Safe #-}
+{-# LANGUAGE FlexibleContexts     #-}
+{-# LANGUAGE InstanceSigs         #-}
+{-# LANGUAGE Safe                 #-}
+{-# LANGUAGE UndecidableInstances #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Data.Functor.Classes
@@ -6,7 +9,7 @@
 -- License     :  BSD-style (see the file LICENSE)
 --
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  portable
 --
 -- Liftings of the Prelude classes 'Eq', 'Ord', 'Read' and 'Show' to
@@ -70,13 +73,21 @@ import Data.Functor.Identity (Identity(Identity))
 import Data.Proxy (Proxy(Proxy))
 import Data.List.NonEmpty (NonEmpty(..))
 import Data.Ord (Down(Down))
+import Data.Complex (Complex((:+)))
 
+import GHC.Generics (Generic1(..), Generically1(..))
+import GHC.Tuple (Solo (..))
 import GHC.Read (expectP, list, paren)
 
 import Text.ParserCombinators.ReadPrec (ReadPrec, readPrec_to_S, readS_to_Prec)
 import Text.Read (Read(..), parens, prec, step)
 import Text.Read.Lex (Lexeme(..))
 import Text.Show (showListWith)
+
+-- $setup
+-- >>> import Prelude
+-- >>> import Data.Complex (Complex (..))
+-- >>> import Text.ParserCombinators.ReadPrec
 
 -- | Lifting of the 'Eq' class to unary type constructors.
 --
@@ -289,6 +300,7 @@ compare2 = liftCompare2 compare compare
 -- @
 --
 -- For more information, refer to the documentation for the 'Read' class.
+--
 -- @since 4.9.0.0
 class Read2 f where
     {-# MINIMAL liftReadsPrec2 | liftReadPrec2 #-}
@@ -474,6 +486,7 @@ instance Show1 NonEmpty where
   liftShowsPrec shwP shwL p (a :| as) = showParen (p > 5) $
     shwP 6 a . showString " :| " . shwL as
 
+
 -- | @since 4.9.0.0
 instance Eq2 (,) where
     liftEq2 e1 e2 (x1, y1) (x2, y2) = e1 x1 x2 && e2 y1 y2
@@ -499,13 +512,28 @@ instance Show2 (,) where
     liftShowsPrec2 sp1 _ sp2 _ _ (x, y) =
         showChar '(' . sp1 0 x . showChar ',' . sp2 0 y . showChar ')'
 
+-- | @since 4.15
+instance Eq1 Solo where
+  liftEq eq (Solo a) (Solo b) = a `eq` b
+
 -- | @since 4.9.0.0
 instance (Eq a) => Eq1 ((,) a) where
     liftEq = liftEq2 (==)
 
+-- | @since 4.15
+instance Ord1 Solo where
+  liftCompare cmp (Solo a) (Solo b) = cmp a b
+
 -- | @since 4.9.0.0
 instance (Ord a) => Ord1 ((,) a) where
     liftCompare = liftCompare2 compare
+
+-- | @since 4.15
+instance Read1 Solo where
+    liftReadPrec rp _ = readData (readUnaryWith rp "Solo" Solo)
+
+    liftReadListPrec = liftReadListPrecDefault
+    liftReadList     = liftReadListDefault
 
 -- | @since 4.9.0.0
 instance (Read a) => Read1 ((,) a) where
@@ -514,9 +542,165 @@ instance (Read a) => Read1 ((,) a) where
     liftReadListPrec = liftReadListPrecDefault
     liftReadList     = liftReadListDefault
 
+-- | @since 4.15
+instance Show1 Solo where
+    liftShowsPrec sp _ d (Solo x) = showsUnaryWith sp "Solo" d x
+
 -- | @since 4.9.0.0
 instance (Show a) => Show1 ((,) a) where
     liftShowsPrec = liftShowsPrec2 showsPrec showList
+
+
+-- | @since 4.16.0.0
+--
+-- >>> eq2 ('x', True, "str") ('x', True, "str")
+-- True
+--
+instance Eq a => Eq2 ((,,) a) where
+    liftEq2 e1 e2 (u1, x1, y1) (v1, x2, y2) =
+        u1 == v1 &&
+        e1 x1 x2 && e2 y1 y2
+
+-- | @since 4.16.0.0
+--
+-- >>> compare2 ('x', True, "aaa") ('x', True, "zzz")
+-- LT
+instance Ord a => Ord2 ((,,) a) where
+    liftCompare2 comp1 comp2 (u1, x1, y1) (v1, x2, y2) =
+        compare u1 v1 `mappend`
+        comp1 x1 x2 `mappend` comp2 y1 y2
+
+-- | @since 4.16.0.0
+--
+-- >>> readPrec_to_S readPrec2 0 "('x', True, 2)" :: [((Char, Bool, Int), String)]
+-- [(('x',True,2),"")]
+--
+instance Read a => Read2 ((,,) a) where
+    liftReadPrec2 rp1 _ rp2 _ = parens $ paren $ do
+        x1 <- readPrec
+        expectP (Punc ",")
+        y1 <- rp1
+        expectP (Punc ",")
+        y2 <- rp2
+        return (x1,y1,y2)
+
+    liftReadListPrec2 = liftReadListPrec2Default
+    liftReadList2     = liftReadList2Default
+
+-- | @since 4.16.0.0
+--
+-- >>> showsPrec2 0 ('x', True, 2 :: Int) ""
+-- "('x',True,2)"
+--
+instance Show a => Show2 ((,,) a) where
+    liftShowsPrec2 sp1 _ sp2 _ _ (x1,y1,y2)
+        = showChar '(' . showsPrec 0 x1
+        . showChar ',' . sp1 0 y1
+        . showChar ',' . sp2 0 y2
+        . showChar ')'
+
+-- | @since 4.16.0.0
+instance (Eq a, Eq b) => Eq1 ((,,) a b) where
+    liftEq = liftEq2 (==)
+
+-- | @since 4.16.0.0
+instance (Ord a, Ord b) => Ord1 ((,,) a b) where
+    liftCompare = liftCompare2 compare
+
+-- | @since 4.16.0.0
+instance (Read a, Read b) => Read1 ((,,) a b) where
+    liftReadPrec = liftReadPrec2 readPrec readListPrec
+
+    liftReadListPrec = liftReadListPrecDefault
+    liftReadList     = liftReadListDefault
+
+-- | @since 4.16.0.0
+instance (Show a, Show b) => Show1 ((,,) a b) where
+    liftShowsPrec = liftShowsPrec2 showsPrec showList
+
+
+-- | @since 4.16.0.0
+--
+-- >>> eq2 ('x', True, "str", 2) ('x', True, "str", 2 :: Int)
+-- True
+--
+instance (Eq a, Eq b) => Eq2 ((,,,) a b) where
+    liftEq2 e1 e2 (u1, u2, x1, y1) (v1, v2, x2, y2) =
+        u1 == v1 &&
+        u2 == v2 &&
+        e1 x1 x2 && e2 y1 y2
+
+-- | @since 4.16.0.0
+--
+-- >>> compare2 ('x', True, "str", 2) ('x', True, "str", 3 :: Int)
+-- LT
+--
+instance (Ord a, Ord b) => Ord2 ((,,,) a b) where
+    liftCompare2 comp1 comp2 (u1, u2, x1, y1) (v1, v2, x2, y2) =
+        compare u1 v1 `mappend`
+        compare u2 v2 `mappend`
+        comp1 x1 x2 `mappend` comp2 y1 y2
+
+-- | @since 4.16.0.0
+--
+-- >>> readPrec_to_S readPrec2 0 "('x', True, 2, 4.5)" :: [((Char, Bool, Int, Double), String)]
+-- [(('x',True,2,4.5),"")]
+--
+instance (Read a, Read b) => Read2 ((,,,) a b) where
+    liftReadPrec2 rp1 _ rp2 _ = parens $ paren $ do
+        x1 <- readPrec
+        expectP (Punc ",")
+        x2 <- readPrec
+        expectP (Punc ",")
+        y1 <- rp1
+        expectP (Punc ",")
+        y2 <- rp2
+        return (x1,x2,y1,y2)
+
+    liftReadListPrec2 = liftReadListPrec2Default
+    liftReadList2     = liftReadList2Default
+
+-- | @since 4.16.0.0
+--
+-- >>> showsPrec2 0 ('x', True, 2 :: Int, 4.5 :: Double) ""
+-- "('x',True,2,4.5)"
+--
+instance (Show a, Show b) => Show2 ((,,,) a b) where
+    liftShowsPrec2 sp1 _ sp2 _ _ (x1,x2,y1,y2)
+        = showChar '(' . showsPrec 0 x1
+        . showChar ',' . showsPrec 0 x2
+        . showChar ',' . sp1 0 y1
+        . showChar ',' . sp2 0 y2
+        . showChar ')'
+
+-- | @since 4.16.0.0
+instance (Eq a, Eq b, Eq c) => Eq1 ((,,,) a b c) where
+    liftEq = liftEq2 (==)
+
+-- | @since 4.16.0.0
+instance (Ord a, Ord b, Ord c) => Ord1 ((,,,) a b c) where
+    liftCompare = liftCompare2 compare
+
+-- | @since 4.16.0.0
+instance (Read a, Read b, Read c) => Read1 ((,,,) a b c) where
+    liftReadPrec = liftReadPrec2 readPrec readListPrec
+
+    liftReadListPrec = liftReadListPrecDefault
+    liftReadList     = liftReadListDefault
+
+-- | @since 4.16.0.0
+instance (Show a, Show b, Show c) => Show1 ((,,,) a b c) where
+    liftShowsPrec = liftShowsPrec2 showsPrec showList
+
+-- | @since 4.17.0.0
+instance (Generic1 f, Eq1 (Rep1 f)) => Eq1 (Generically1 f) where
+  liftEq :: (a1 -> a2 -> Bool) -> (Generically1 f a1 -> Generically1 f a2 -> Bool)
+  liftEq (===) (Generically1 as1) (Generically1 as2) = liftEq (===) (from1 as1) (from1 as2)
+
+-- | @since 4.17.0.0
+instance (Generic1 f, Ord1 (Rep1 f)) => Ord1 (Generically1 f) where
+  liftCompare :: (a1 -> a2 -> Ordering) -> (Generically1 f a1 -> Generically1 f a2 -> Ordering)
+  liftCompare cmp (Generically1 as1) (Generically1 as2) = liftCompare cmp (from1 as1) (from1 as2)
 
 -- | @since 4.9.0.0
 instance Eq2 Either where
@@ -650,7 +834,10 @@ instance Eq1 Down where
 
 -- | @since 4.12.0.0
 instance Ord1 Down where
-    liftCompare comp (Down x) (Down y) = comp x y
+    liftCompare comp (Down x) (Down y) = case comp x y of
+        LT -> GT
+        EQ -> EQ
+        GT -> LT
 
 -- | @since 4.12.0.0
 instance Read1 Down where
@@ -661,6 +848,44 @@ instance Read1 Down where
 instance Show1 Down where
     liftShowsPrec sp _ d (Down x) = showsUnaryWith sp "Down" d x
 
+-- | @since 4.16.0.0
+--
+-- >>> eq1 (1 :+ 2) (1 :+ 2)
+-- True
+--
+-- >>> eq1 (1 :+ 2) (1 :+ 3)
+-- False
+--
+instance Eq1 Complex where
+    liftEq eq (x :+ y) (u :+ v) = eq x u && eq y v
+
+-- | @since 4.16.0.0
+--
+-- >>> readPrec_to_S readPrec1 0 "(2 % 3) :+ (3 % 4)" :: [(Complex Rational, String)]
+-- [(2 % 3 :+ 3 % 4,"")]
+--
+instance Read1 Complex where
+    liftReadPrec rp _  = parens $ prec complexPrec $ do
+        x <- step rp
+        expectP (Symbol ":+")
+        y <- step rp
+        return (x :+ y)
+      where
+        complexPrec = 6
+
+    liftReadListPrec = liftReadListPrecDefault
+    liftReadList     = liftReadListDefault
+
+-- | @since 4.16.0.0
+--
+-- >>> showsPrec1 0 (2 :+ 3) ""
+-- "2 :+ 3"
+--
+instance Show1 Complex where
+    liftShowsPrec sp _ d (x :+ y) = showParen (d > complexPrec) $
+        sp (complexPrec+1) x . showString " :+ " . sp (complexPrec+1) y
+      where
+        complexPrec = 6
 
 -- Building blocks
 

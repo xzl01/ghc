@@ -15,17 +15,27 @@
 
 #include "RtsUtils.h"
 #include "RtsSymbolInfo.h"
+#include "CheckUnload.h"
+#include "LinkerInternals.h"
+#include "linker/MMap.h"
 #include "linker/Elf.h"
 #include "linker/CacheFlush.h"
 #include "linker/M32Alloc.h"
 #include "linker/SymbolExtras.h"
+#include "ForeignExports.h"
+#include "Profiling.h"
 #include "sm/OSMem.h"
 #include "GetEnv.h"
 #include "linker/util.h"
 #include "linker/elf_util.h"
 
+#include <link.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <string.h>
+#if defined(HAVE_DLFCN_H)
+#include <dlfcn.h>
+#endif
 #if defined(HAVE_SYS_STAT_H)
 #include <sys/stat.h>
 #endif
@@ -53,11 +63,13 @@
  * SILENTLY generate crashing code for data references.  This hack is
  * enabled by X86_64_ELF_NONPIC_HACK.
  *
- * One workaround is to use shared Haskell libraries.  This is
- * coming.  Another workaround is to keep the static libraries but
- * compile them with -fPIC, because that will generate PIC references
- * to data which can be relocated.  The PIC code is still too green to
- * do this systematically, though.
+ * One workaround is to use shared Haskell libraries. This is the case
+ * when dynamically-linked GHCi is used.
+ *
+ * Another workaround is to keep the static libraries but compile them
+ * with -fPIC -fexternal-dynamic-refs, because that will generate PIC
+ * references to data which can be relocated. This is the case when
+ * +RTS -xp is passed.
  *
  * See bug #781
  * See thread http://www.haskell.org/pipermail/cvs-ghc/2007-September/038458.html
@@ -74,11 +86,9 @@
  * Sym*_NeedsProto: the symbol is undefined and we add a dummy
  *                  default proto extern void sym(void);
  */
-#define X86_64_ELF_NONPIC_HACK 1
+#define X86_64_ELF_NONPIC_HACK (!RtsFlags.MiscFlags.linkerAlwaysPic)
 
-#if defined(sparc_HOST_ARCH)
-#  define ELF_TARGET_SPARC  /* Used inside <elf.h> */
-#elif defined(i386_HOST_ARCH)
+#if defined(i386_HOST_ARCH)
 #  define ELF_TARGET_386    /* Used inside <elf.h> */
 #elif defined(x86_64_HOST_ARCH)
 #  define ELF_TARGET_X64_64
@@ -101,9 +111,8 @@
 #endif
 
 /*
-
    Note [Many ELF Sections]
-
+   ~~~~~~~~~~~~~~~~~~~~~~~~
    The normal section number fields in ELF are limited to 16 bits, which runs
    out of bits when you try to cram in more sections than that.
 
@@ -169,6 +178,8 @@ get_shndx_table(Elf_Ehdr* ehdr)
 void
 ocInit_ELF(ObjectCode * oc)
 {
+    ocDeinit_ELF(oc);
+
     oc->info = (struct ObjectCodeFormatInfo*)stgCallocBytes(
             1, sizeof *oc->info,
             "ocInit_Elf(ObjectCodeFormatInfo)");
@@ -318,6 +329,7 @@ ocDeinit_ELF(ObjectCode * oc)
         }
 
         stgFree(oc->info);
+        oc->info = NULL;
     }
 }
 
@@ -364,7 +376,7 @@ ocVerifyImage_ELF ( ObjectCode* oc )
       errorBelch("%s: not a relocatable object (.o) file", oc->fileName);
       return 0;
    }
-   IF_DEBUG(linker, debugBelch( "Is a relocatable object (.o) file\n" ));
+   IF_DEBUG(linker,debugBelch( "Is a relocatable object (.o) file\n" ));
 
    IF_DEBUG(linker,debugBelch( "Architecture is " ));
    switch (ehdr->e_machine) {
@@ -386,6 +398,12 @@ ocVerifyImage_ELF ( ObjectCode* oc )
                      oc->fileName);
           return 0;
 #endif
+#if defined(EM_S390)
+      case EM_S390:  IF_DEBUG(linker,debugBelch( "s390" ));
+          errorBelch("%s: RTS linker not implemented on s390",
+                     oc->fileName);
+          return 0;
+#endif
 #if defined(EM_X86_64)
       case EM_X86_64: IF_DEBUG(linker,debugBelch( "x86_64" )); break;
 #elif defined(EM_AMD64)
@@ -393,6 +411,12 @@ ocVerifyImage_ELF ( ObjectCode* oc )
 #endif
 #if defined(EM_AARCH64)
       case EM_AARCH64: IF_DEBUG(linker,debugBelch( "aarch64" )); break;
+#endif
+#if defined(EM_RISCV)
+      case EM_RISCV:  IF_DEBUG(linker,debugBelch( "riscv" ));
+          errorBelch("%s: RTS linker not implemented on riscv",
+                     oc->fileName);
+          return 0;
 #endif
        default:       IF_DEBUG(linker,debugBelch( "unknown" ));
                      errorBelch("%s: unknown architecture (e_machine == %d)"
@@ -405,7 +429,7 @@ ocVerifyImage_ELF ( ObjectCode* oc )
              "\nSection header table: start %ld, n_entries %d, ent_size %d\n",
              (long)ehdr->e_shoff, shnum, ehdr->e_shentsize  ));
 
-   ASSERT(ehdr->e_shentsize == sizeof(Elf_Shdr));
+   CHECK(ehdr->e_shentsize == sizeof(Elf_Shdr));
 
    shdr = (Elf_Shdr*) (ehdrC + ehdr->e_shoff);
 
@@ -420,11 +444,11 @@ ocVerifyImage_ELF ( ObjectCode* oc )
    }
 
    for (i = 0; i < shnum; i++) {
-      IF_DEBUG(linker,debugBelch("%2d:  ", i ));
-      IF_DEBUG(linker,debugBelch("type=%2d  ", (int)shdr[i].sh_type ));
-      IF_DEBUG(linker,debugBelch("size=%4d  ", (int)shdr[i].sh_size ));
-      IF_DEBUG(linker,debugBelch("offs=%4d  ", (int)shdr[i].sh_offset ));
-      IF_DEBUG(linker,debugBelch("  (%p .. %p)  ",
+      IF_DEBUG(linker_verbose,debugBelch("%2d:  ", i ));
+      IF_DEBUG(linker_verbose,debugBelch("type=%2d  ", (int)shdr[i].sh_type ));
+      IF_DEBUG(linker_verbose,debugBelch("size=%4d  ", (int)shdr[i].sh_size ));
+      IF_DEBUG(linker_verbose,debugBelch("offs=%4d  ", (int)shdr[i].sh_offset ));
+      IF_DEBUG(linker_verbose,debugBelch("  (%p .. %p)  ",
                ehdrC + shdr[i].sh_offset,
                       ehdrC + shdr[i].sh_offset + shdr[i].sh_size - 1));
 
@@ -434,7 +458,7 @@ ocVerifyImage_ELF ( ObjectCode* oc )
 
         case SHT_REL:
         case SHT_RELA:
-          IF_DEBUG(linker,debugBelch( shdr[i].sh_type == SHT_REL ? "Rel  " : "RelA "));
+          IF_DEBUG(linker_verbose,debugBelch( shdr[i].sh_type == SHT_REL ? "Rel  " : "RelA "));
 
           if (!SECTION_INDEX_VALID(shdr[i].sh_link)) {
             if (shdr[i].sh_link == SHN_UNDEF)
@@ -462,7 +486,7 @@ ocVerifyImage_ELF ( ObjectCode* oc )
 
           break;
         case SHT_SYMTAB:
-          IF_DEBUG(linker,debugBelch("Sym  "));
+          IF_DEBUG(linker_verbose,debugBelch("Sym  "));
 
           if (!SECTION_INDEX_VALID(shdr[i].sh_link)) {
             errorBelch("\n%s: symbol table section #%d has an invalid link field (%d)\n",
@@ -477,15 +501,15 @@ ocVerifyImage_ELF ( ObjectCode* oc )
             return 0;
           }
           break;
-        case SHT_STRTAB: IF_DEBUG(linker,debugBelch("Str  ")); break;
-        default:         IF_DEBUG(linker,debugBelch("     ")); break;
+        case SHT_STRTAB: IF_DEBUG(linker_verbose,debugBelch("Str  ")); break;
+        default:         IF_DEBUG(linker_verbose,debugBelch("     ")); break;
       }
       if (sh_strtab) {
-          IF_DEBUG(linker,debugBelch("sname=%s\n", sh_strtab + shdr[i].sh_name ));
+          IF_DEBUG(linker_verbose,debugBelch("sname=%s\n", sh_strtab + shdr[i].sh_name ));
       }
    }
 
-   IF_DEBUG(linker,debugBelch( "\nString tables\n" ));
+   IF_DEBUG(linker_verbose,debugBelch( "\nString tables\n" ));
    nstrtab = 0;
    for (i = 0; i < shnum; i++) {
       if (shdr[i].sh_type == SHT_STRTAB
@@ -495,25 +519,25 @@ ocVerifyImage_ELF ( ObjectCode* oc )
              debugging info. */
           && 0 != memcmp(".stabstr", sh_strtab + shdr[i].sh_name, 8)
          ) {
-         IF_DEBUG(linker,debugBelch("   section %d is a normal string table\n", i ));
+         IF_DEBUG(linker_verbose,debugBelch("   section %d is a normal string table\n", i ));
          nstrtab++;
       }
    }
    if (nstrtab == 0) {
-      IF_DEBUG(linker,debugBelch("   no normal string tables (potentially, but not necessarily a problem)\n"));
+      IF_DEBUG(linker_verbose,debugBelch("   no normal string tables (potentially, but not necessarily a problem)\n"));
    }
 #if defined(SHN_XINDEX)
    Elf_Word* shndxTable = get_shndx_table(ehdr);
 #endif
    nsymtabs = 0;
-   IF_DEBUG(linker,debugBelch( "Symbol tables\n" ));
+   IF_DEBUG(linker_verbose,debugBelch( "Symbol tables\n" ));
    for (i = 0; i < shnum; i++) {
       if (shdr[i].sh_type != SHT_SYMTAB) continue;
-      IF_DEBUG(linker,debugBelch( "section %d is a symbol table\n", i ));
+      IF_DEBUG(linker_verbose,debugBelch( "section %d is a symbol table\n", i ));
       nsymtabs++;
       stab = (Elf_Sym*) (ehdrC + shdr[i].sh_offset);
       nent = shdr[i].sh_size / sizeof(Elf_Sym);
-      IF_DEBUG(linker,debugBelch( "   number of entries is apparently %d (%ld rem)\n",
+      IF_DEBUG(linker_verbose,debugBelch( "   number of entries is apparently %d (%ld rem)\n",
                nent,
                (long)shdr[i].sh_size % sizeof(Elf_Sym)
              ));
@@ -526,38 +550,38 @@ ocVerifyImage_ELF ( ObjectCode* oc )
 #if defined(SHN_XINDEX)
          /* See Note [Many ELF Sections] */
          if (secno == SHN_XINDEX) {
-            ASSERT(shndxTable);
+            CHECK(shndxTable);
             secno = shndxTable[j];
          }
 #endif
-         IF_DEBUG(linker,debugBelch("   %2d  ", j ));
-         IF_DEBUG(linker,debugBelch("  sec=%-5d  size=%-3d  val=%5p  ",
+         IF_DEBUG(linker_verbose,debugBelch("   %2d  ", j ));
+         IF_DEBUG(linker_verbose,debugBelch("  sec=%-5d  size=%-3d  val=%5p  ",
                              (int)secno,
                              (int)stab[j].st_size,
                              (char*)stab[j].st_value ));
 
-         IF_DEBUG(linker,debugBelch("type=" ));
+         IF_DEBUG(linker_verbose,debugBelch("type=" ));
          switch (ELF_ST_TYPE(stab[j].st_info)) {
-            case STT_NOTYPE:  IF_DEBUG(linker,debugBelch("notype " )); break;
-            case STT_OBJECT:  IF_DEBUG(linker,debugBelch("object " )); break;
-            case STT_FUNC  :  IF_DEBUG(linker,debugBelch("func   " )); break;
-            case STT_SECTION: IF_DEBUG(linker,debugBelch("section" )); break;
-            case STT_FILE:    IF_DEBUG(linker,debugBelch("file   " )); break;
-            default:          IF_DEBUG(linker,debugBelch("?      " )); break;
+            case STT_NOTYPE:  IF_DEBUG(linker_verbose,debugBelch("notype " )); break;
+            case STT_OBJECT:  IF_DEBUG(linker_verbose,debugBelch("object " )); break;
+            case STT_FUNC  :  IF_DEBUG(linker_verbose,debugBelch("func   " )); break;
+            case STT_SECTION: IF_DEBUG(linker_verbose,debugBelch("section" )); break;
+            case STT_FILE:    IF_DEBUG(linker_verbose,debugBelch("file   " )); break;
+            default:          IF_DEBUG(linker_verbose,debugBelch("?      " )); break;
          }
-         IF_DEBUG(linker,debugBelch("  " ));
+         IF_DEBUG(linker_verbose,debugBelch("  " ));
 
-         IF_DEBUG(linker,debugBelch("bind=" ));
+         IF_DEBUG(linker_verbose,debugBelch("bind=" ));
          switch (ELF_ST_BIND(stab[j].st_info)) {
-            case STB_LOCAL :  IF_DEBUG(linker,debugBelch("local " )); break;
-            case STB_GLOBAL:  IF_DEBUG(linker,debugBelch("global" )); break;
-            case STB_WEAK  :  IF_DEBUG(linker,debugBelch("weak  " )); break;
-            default:          IF_DEBUG(linker,debugBelch("?     " )); break;
+            case STB_LOCAL :  IF_DEBUG(linker_verbose,debugBelch("local " )); break;
+            case STB_GLOBAL:  IF_DEBUG(linker_verbose,debugBelch("global" )); break;
+            case STB_WEAK  :  IF_DEBUG(linker_verbose,debugBelch("weak  " )); break;
+            default:          IF_DEBUG(linker_verbose,debugBelch("?     " )); break;
          }
-         IF_DEBUG(linker,debugBelch("  " ));
+         IF_DEBUG(linker_verbose,debugBelch("  " ));
 
-         IF_DEBUG(linker,debugBelch("other=%2x ", stab[j].st_other ));
-         IF_DEBUG(linker,debugBelch("name=%s [%x]\n",
+         IF_DEBUG(linker_verbose,debugBelch("other=%2x ", stab[j].st_other ));
+         IF_DEBUG(linker_verbose,debugBelch("name=%s [%x]\n",
                         ehdrC + shdr[shdr[i].sh_link].sh_offset
                               + stab[j].st_name, stab[j].st_name ));
       }
@@ -567,7 +591,7 @@ ocVerifyImage_ELF ( ObjectCode* oc )
      // Not having a symbol table is not in principle a problem.
      // When an object file has no symbols then the 'strip' program
      // typically will remove the symbol table entirely.
-     IF_DEBUG(linker,debugBelch("   no symbol tables (potentially, but not necessarily a problem)\n"));
+     IF_DEBUG(linker_verbose,debugBelch("   no symbol tables (potentially, but not necessarily a problem)\n"));
    }
 
    return 1;
@@ -576,7 +600,7 @@ ocVerifyImage_ELF ( ObjectCode* oc )
 /* Figure out what kind of section it is.  Logic derived from
    Figure 1.14 ("Special Sections") of the ELF document
    ("Portable Formats Specification, Version 1.1"). */
-static int getSectionKind_ELF( Elf_Shdr *hdr, int *is_bss )
+static SectionKind getSectionKind_ELF( Elf_Shdr *hdr, int *is_bss )
 {
     *is_bss = false;
 
@@ -604,6 +628,13 @@ static int getSectionKind_ELF( Elf_Shdr *hdr, int *is_bss )
         return SECTIONKIND_INIT_ARRAY;
     }
 #endif /* not SHT_INIT_ARRAY */
+#if defined(SHT_FINI_ARRAY)
+    if (hdr->sh_type == SHT_FINI_ARRAY
+        && (hdr->sh_flags & SHF_ALLOC) && (hdr->sh_flags & SHF_WRITE)) {
+       /* .fini_array section */
+        return SECTIONKIND_FINI_ARRAY;
+    }
+#endif /* not SHT_INIT_ARRAY */
     if (hdr->sh_type == SHT_NOBITS
         && (hdr->sh_flags & SHF_ALLOC) && (hdr->sh_flags & SHF_WRITE)) {
         /* .bss-style section */
@@ -626,7 +657,7 @@ mapObjectFileSection (int fd, Elf_Word offset, Elf_Word size,
 
     pageOffset = roundDownToPage(offset);
     pageSize = roundUpToPage(offset-pageOffset+size);
-    p = mmapForLinker(pageSize, 0, fd, pageOffset);
+    p = mmapForLinker(pageSize, MEM_READ_WRITE, 0, fd, pageOffset);
     if (p == NULL) return NULL;
     *mapped_size = pageSize;
     *mapped_offset = pageOffset;
@@ -678,23 +709,37 @@ ocGetNames_ELF ( ObjectCode* oc )
       StgWord mapped_size = 0, mapped_offset = 0;
       StgWord size = shdr[i].sh_size;
       StgWord offset = shdr[i].sh_offset;
+      StgWord align = shdr[i].sh_addralign;
 
       if (is_bss && size > 0) {
          /* This is a non-empty .bss section.  Allocate zeroed space for
             it, and set its .sh_offset field such that
             ehdrC + .sh_offset == addr_of_zeroed_space.  */
-#if defined(NEED_GOT)
-          /* always use mmap if we use GOT slots.  Otherwise the malloced
-           * address might be out of range for sections that are mmaped.
-           */
-          alloc = SECTION_MMAP;
-          start = mmap(NULL, size,
-                       PROT_READ | PROT_WRITE | PROT_EXEC,
-                       MAP_ANON | MAP_PRIVATE,
-                       -1, 0);
-          mapped_start = start;
-          mapped_offset = 0;
-          mapped_size = roundUpToPage(size);
+#if defined(NEED_GOT) || RTS_LINKER_USE_MMAP
+          if (USE_CONTIGUOUS_MMAP || RtsFlags.MiscFlags.linkerAlwaysPic) {
+              /* The space for bss sections is already preallocated */
+              CHECK(oc->bssBegin != NULL);
+              alloc = SECTION_NOMEM;
+              CHECK(oc->image != 0x0);
+              start =
+                oc->image + roundUpToAlign(oc->bssBegin - oc->image, align);
+              oc->bssBegin = (char*)start + size;
+              CHECK(oc->bssBegin <= oc->bssEnd);
+          } else {
+              /* Use mmapForLinker to allocate .bss, otherwise the malloced
+               * address might be out of range for sections that are mmaped.
+               */
+              alloc = SECTION_MMAP;
+              start = mmapAnonForLinker(size);
+              if (start == NULL) {
+                barf("failed to mmap memory for bss. "
+                     "errno = %d", errno);
+              }
+              mapped_start = start;
+              mapped_offset = 0;
+              mapped_size = roundUpToPage(size);
+          }
+          CHECK(start != 0x0);
 #else
           alloc = SECTION_MALLOC;
           start = stgCallocBytes(1, size, "ocGetNames_ELF(BSS)");
@@ -732,10 +777,11 @@ ocGetNames_ELF ( ObjectCode* oc )
           unsigned nstubs = numberOfStubsForSection(oc, i);
           unsigned stub_space = STUB_SIZE * nstubs;
 
-          void * mem = mmapForLinker(size+stub_space, MAP_ANON, -1, 0);
-          if( mem == NULL ) {
-              barf("failed to mmap allocated memory to load section %d. "
-                   "errno = %d", i, errno);
+          void * mem = mmapAnonForLinker(size+stub_space);
+
+          if( mem == MAP_FAILED ) {
+            barf("failed to mmap allocated memory to load section %d. "
+                 "errno = %d", i, errno);
           }
 
           /* copy only the image part over; we don't want to copy data
@@ -750,16 +796,25 @@ ocGetNames_ELF ( ObjectCode* oc )
           start = mem;
           mapped_start = mem;
 #else
-          if (USE_CONTIGUOUS_MMAP) {
+          if (USE_CONTIGUOUS_MMAP || RtsFlags.MiscFlags.linkerAlwaysPic) {
               // already mapped.
               start = oc->image + offset;
               alloc = SECTION_NOMEM;
           }
           // use the m32 allocator if either the image is not mapped
-          // (i.e. we cannot map the secions separately), or if the section
+          // (i.e. we cannot map the sections separately), or if the section
           // size is small.
           else if (!oc->imageMapped || size < getPageSize() / 3) {
-              start = m32_alloc(size, 8);
+              bool executable = kind == SECTIONKIND_CODE_OR_RODATA;
+              m32_allocator *allocator = executable ? oc->rx_m32 : oc->rw_m32;
+              // Correctly align the section. This is particularly important for
+              // the alignment of .rodata.cstNN sections.
+              //
+              // llvm will emit see paddq statements for x86_64 under
+              // optimisation and load from RODATA sections, specifically
+              // .rodata.cst16. Also we may encounter .rodata.cst32 sections
+              // in objects using AVX instructions (see #23066).
+              start = m32_alloc(allocator, size, align);
               if (start == NULL) goto fail;
               memcpy(start, oc->image + offset, size);
               alloc = SECTION_M32;
@@ -820,6 +875,25 @@ ocGetNames_ELF ( ObjectCode* oc )
 
       unsigned curSymbol = 0;
 
+      unsigned long common_size = 0;
+      unsigned long common_used = 0;
+      for(ElfSymbolTable *symTab = oc->info->symbolTables;
+           symTab != NULL; symTab = symTab->next) {
+           for (size_t j = 0; j < symTab->n_symbols; j++) {
+               ElfSymbol *symbol = &symTab->symbols[j];
+               if (SHN_COMMON == symTab->symbols[j].elf_sym->st_shndx) {
+                   common_size += symbol->elf_sym->st_size;
+               }
+           }
+      }
+      void * common_mem = NULL;
+      if(common_size > 0) {
+          common_mem = mmapAnonForLinker(common_size);
+          if (common_mem == NULL) {
+            barf("ocGetNames_ELF: Failed to allocate memory for SHN_COMMONs");
+          }
+      }
+
       //TODO: we ignore local symbols anyway right? So we can use the
       //      shdr[i].sh_info to get the index of the first non-local symbol
       // ie we should use j = shdr[i].sh_info
@@ -846,7 +920,7 @@ ocGetNames_ELF ( ObjectCode* oc )
                secno = shndx;
 #if defined(SHN_XINDEX)
                if (shndx == SHN_XINDEX) {
-                  ASSERT(shndxTable);
+                  CHECK(shndxTable);
                   secno = shndxTable[j];
                }
 #endif
@@ -855,12 +929,16 @@ ocGetNames_ELF ( ObjectCode* oc )
 
                if (shndx == SHN_COMMON) {
                    isLocal = false;
-                   symbol->addr = stgCallocBytes(1, symbol->elf_sym->st_size,
-                                       "ocGetNames_ELF(COMMON)");
-                   /*
-                   debugBelch("COMMON symbol, size %d name %s\n",
-                                   stab[j].st_size, nm);
-                   */
+                   CHECK(common_used < common_size);
+                   CHECK(common_mem);
+                   symbol->addr = (void*)((uintptr_t)common_mem + common_used);
+                   common_used += symbol->elf_sym->st_size;
+                   CHECK(common_used <= common_size);
+
+                   IF_DEBUG(linker_verbose,
+                            debugBelch("COMMON symbol, size %llu name %s allocated at %p\n",
+                                       (long long unsigned int) symbol->elf_sym->st_size, nm, symbol->addr));
+
                    /* Pointless to do addProddableBlock() for this area,
                       since the linker should never poke around in it. */
                } else if ((ELF_ST_BIND(symbol->elf_sym->st_info) == STB_GLOBAL
@@ -884,7 +962,7 @@ ocGetNames_ELF ( ObjectCode* oc )
                           )
                        ) {
                    /* Section 0 is the undefined section, hence > and not >=. */
-                   ASSERT(secno > 0 && secno < shnum);
+                   CHECK(secno > 0 && secno < shnum);
                    /*
                    if (shdr[secno].sh_type == SHT_NOBITS) {
                       debugBelch("   BSS symbol, size %d off %d name %s\n",
@@ -894,12 +972,12 @@ ocGetNames_ELF ( ObjectCode* oc )
                    symbol->addr = (SymbolAddr*)(
                            (intptr_t) oc->sections[secno].start +
                            (intptr_t) symbol->elf_sym->st_value);
-
+                   CHECK(symbol->addr != 0x0);
                    if (ELF_ST_BIND(symbol->elf_sym->st_info) == STB_LOCAL) {
                        isLocal = true;
                        isWeak = false;
                    } else { /* STB_GLOBAL or STB_WEAK */
-                       IF_DEBUG(linker,
+                       IF_DEBUG(linker_verbose,
                                 debugBelch("addOTabName(GLOB): %10p  %s %s\n",
                                            symbol->addr, oc->fileName, nm));
                        isLocal = false;
@@ -908,10 +986,17 @@ ocGetNames_ELF ( ObjectCode* oc )
                    }
                }
 
+               SymType sym_type;
+               if (ELF_ST_TYPE(symbol->elf_sym->st_info) == STT_FUNC) {
+                   sym_type = SYM_TYPE_CODE;
+               } else {
+                   sym_type = SYM_TYPE_DATA;
+               }
+
                /* And the decision is ... */
 
                if (symbol->addr != NULL) {
-                   ASSERT(nm != NULL);
+                   CHECK(nm != NULL);
                    /* Acquire! */
                    if (!isLocal) {
 
@@ -919,16 +1004,18 @@ ocGetNames_ELF ( ObjectCode* oc )
                            setWeakSymbol(oc, nm);
                        }
                        if (!ghciInsertSymbolTable(oc->fileName, symhash,
-                                                  nm, symbol->addr, isWeak, oc)
+                                                  nm, symbol->addr, isWeak, sym_type, oc)
                            ) {
                            goto fail;
                        }
-                       oc->symbols[curSymbol++].name = nm;
+                       oc->symbols[curSymbol].name = nm;
                        oc->symbols[curSymbol].addr = symbol->addr;
+                       oc->symbols[curSymbol].type = sym_type;
+                       curSymbol++;
                    }
                } else {
                    /* Skip. */
-                   IF_DEBUG(linker,
+                   IF_DEBUG(linker_verbose,
                             debugBelch("skipping `%s'\n",
                                                nm)
                    );
@@ -993,16 +1080,16 @@ do_Elf_Rel_relocations ( ObjectCode* oc, char* ehdrC,
            break;
        }
    }
-   ASSERT(stab != NULL);
+   CHECK(stab != NULL);
 
    targ  = (Elf_Word*)oc->sections[target_shndx].start;
-   IF_DEBUG(linker,debugBelch(
+   IF_DEBUG(linker_verbose,debugBelch(
                 "relocations for section %d using symtab %d\n",
                 target_shndx, symtab_shndx));
 
    /* Skip sections that we're not interested in. */
    if (oc->sections[target_shndx].kind == SECTIONKIND_OTHER) {
-       IF_DEBUG(linker,debugBelch( "skipping (target section not loaded)"));
+       IF_DEBUG(linker_verbose,debugBelch( "skipping (target section not loaded)"));
        return 1;
    }
 
@@ -1042,10 +1129,10 @@ do_Elf_Rel_relocations ( ObjectCode* oc, char* ehdrC,
 
        ElfSymbol * symbol = NULL;
 
-       IF_DEBUG(linker,debugBelch( "Rel entry %3d is raw(%6p %6p): ",
+       IF_DEBUG(linker_verbose,debugBelch( "Rel entry %3d is raw(%6p %6p): ",
                                    j, (void*)offset, (void*)info ));
        if (!info) {
-           IF_DEBUG(linker,debugBelch( " ZERO" ));
+           IF_DEBUG(linker_verbose,debugBelch( " ZERO" ));
            S = 0;
        } else {
            symbol = &stab->symbols[ELF_R_SYM(info)];
@@ -1053,7 +1140,7 @@ do_Elf_Rel_relocations ( ObjectCode* oc, char* ehdrC,
            if (ELF_ST_BIND(symbol->elf_sym->st_info) == STB_LOCAL || strncmp(symbol->name, "_GLOBAL_OFFSET_TABLE_", 21) == 0) {
                S = (Elf_Addr)symbol->addr;
            } else {
-               S_tmp = lookupSymbol_( symbol->name );
+               S_tmp = lookupDependentSymbol( symbol->name, oc, NULL );
                S = (Elf_Addr)S_tmp;
            }
            if (!S) {
@@ -1061,7 +1148,7 @@ do_Elf_Rel_relocations ( ObjectCode* oc, char* ehdrC,
                           oc->fileName, symbol->name);
                return 0;
            }
-           IF_DEBUG(linker,debugBelch( "`%s' resolves to %p\n", symbol->name,
+           IF_DEBUG(linker_verbose,debugBelch( "`%s' resolves to %p\n", symbol->name,
                                        (void*)S ));
 
 #if defined(arm_HOST_ARCH)
@@ -1100,8 +1187,9 @@ do_Elf_Rel_relocations ( ObjectCode* oc, char* ehdrC,
        }
 
        int reloc_type = ELF_R_TYPE(info);
-       IF_DEBUG(linker,debugBelch("Reloc: P = %p   S = %p   A = %p   type=%d\n",
-                                  (void*)P, (void*)S, (void*)A, reloc_type ));
+       IF_DEBUG(linker_verbose,
+                debugBelch("Reloc: P = %p   S = %p   A = %p   type=%d\n",
+                           (void*)P, (void*)S, (void*)A, reloc_type ));
        checkProddableBlock ( oc, pP, sizeof(Elf_Word) );
 
 #if defined(i386_HOST_ARCH)
@@ -1109,13 +1197,13 @@ do_Elf_Rel_relocations ( ObjectCode* oc, char* ehdrC,
 #endif
 
        switch (reloc_type) {
-#        ifdef i386_HOST_ARCH
+#        if defined(i386_HOST_ARCH)
        case COMPAT_R_386_NONE:                  break;
        case COMPAT_R_386_32:   *pP = value;     break;
        case COMPAT_R_386_PC32: *pP = value - P; break;
 #        endif
 
-#        ifdef arm_HOST_ARCH
+#        if defined(arm_HOST_ARCH)
        case COMPAT_R_ARM_ABS32:     /* (S + A) | T */
            // Specified by Linux ARM ABI to be equivalent to ABS32
        case COMPAT_R_ARM_TARGET1:
@@ -1174,6 +1262,7 @@ do_Elf_Rel_relocations ( ObjectCode* oc, char* ehdrC,
 
            if(needs_veneer) { /* overflow or thum interworking */
                // Note [PC bias]
+               // ~~~~~~~~~~~~~~
                // From the ELF for the ARM Architecture documentation:
                // > 4.6.1.1 Addends and PC-bias compensation
                // > A binary file may use REL or RELA relocations or a mixture
@@ -1199,7 +1288,7 @@ do_Elf_Rel_relocations ( ObjectCode* oc, char* ehdrC,
                result = ((S + A) | T) - P;
                result &= ~1; // Clear thumb indicator bit
 
-               ASSERT(isInt(26, result)); /* X in range */
+               CHECK(isInt(26, result)); /* X in range */
            }
 
            // Update the branch target
@@ -1214,7 +1303,7 @@ do_Elf_Rel_relocations ( ObjectCode* oc, char* ehdrC,
                const StgWord32 hBit = (result & 0x2) >> 1;
                // Change instruction to BLX
                *word = (*word & ~0xFF000000) | ((0xfa | hBit) << 24);
-               IF_DEBUG(linker, debugBelch("Changed BL to BLX at %p\n", word));
+               IF_DEBUG(linker_verbose, debugBelch("Changed BL to BLX at %p\n", word));
            }
            break;
        }
@@ -1374,7 +1463,7 @@ do_Elf_Rel_relocations ( ObjectCode* oc, char* ehdrC,
        case COMPAT_R_ARM_GOT_PREL: {
               int32_t A = *pP;
               void* GOT_S = symbol->got_addr;
-              ASSERT(GOT_S);
+              CHECK(GOT_S);
               *(uint32_t *)P = (uint32_t) GOT_S + A - P;
               break;
        }
@@ -1390,8 +1479,7 @@ do_Elf_Rel_relocations ( ObjectCode* oc, char* ehdrC,
    return 1;
 }
 
-/* Do ELF relocations for which explicit addends are supplied.
-   sparc-solaris relocations appear to be of this form. */
+/* Do ELF relocations for which explicit addends are supplied. */
 static int
 do_Elf_Rela_relocations ( ObjectCode* oc, char* ehdrC,
                           Elf_Shdr* shdr, int shnum )
@@ -1408,8 +1496,7 @@ do_Elf_Rela_relocations ( ObjectCode* oc, char* ehdrC,
 #if defined(SHN_XINDEX)
    Elf_Word* shndx_table = get_shndx_table((Elf_Ehdr*)ehdrC);
 #endif
-#if defined(DEBUG) || defined(sparc_HOST_ARCH) || defined(powerpc_HOST_ARCH) \
-    || defined(x86_64_HOST_ARCH)
+#if defined(DEBUG) || defined(powerpc_HOST_ARCH) || defined(x86_64_HOST_ARCH)
    /* This #if def only serves to avoid unused-var warnings. */
    Elf_Addr targ = (Elf_Addr) oc->sections[target_shndx].start;
 #endif
@@ -1417,49 +1504,75 @@ do_Elf_Rela_relocations ( ObjectCode* oc, char* ehdrC,
    stab  = (Elf_Sym*) (ehdrC + shdr[ symtab_shndx ].sh_offset);
    strtab= (char*)    (ehdrC + shdr[ strtab_shndx ].sh_offset);
 
-   IF_DEBUG(linker,debugBelch( "relocations for section %d using symtab %d\n",
+   IF_DEBUG(linker_verbose,debugBelch( "relocations for section %d using symtab %d\n",
                           target_shndx, symtab_shndx ));
 
    /* Skip sections that we're not interested in. */
    if (oc->sections[target_shndx].kind == SECTIONKIND_OTHER) {
-           IF_DEBUG(linker,debugBelch( "skipping (target section not loaded)"));
+           IF_DEBUG(linker_verbose,debugBelch( "skipping (target section not loaded)"));
            return 1;
    }
 
    for (j = 0; j < nent; j++) {
-#if defined(DEBUG) || defined(sparc_HOST_ARCH) || defined(powerpc_HOST_ARCH) \
-    || defined(x86_64_HOST_ARCH)
+#if defined(DEBUG) || defined(powerpc_HOST_ARCH) || defined(x86_64_HOST_ARCH)
       /* This #if def only serves to avoid unused-var warnings. */
       Elf_Addr  offset = rtab[j].r_offset;
       Elf_Addr  P      = targ + offset;
       Elf_Addr  A      = rtab[j].r_addend;
 #endif
-#if defined(sparc_HOST_ARCH) || defined(powerpc_HOST_ARCH) \
-    || defined(x86_64_HOST_ARCH)
+#if defined(powerpc_HOST_ARCH) || defined(x86_64_HOST_ARCH)
       Elf_Addr  value;
 #endif
       Elf_Addr  info   = rtab[j].r_info;
       Elf_Addr  S;
       void*     S_tmp;
-#     if defined(sparc_HOST_ARCH)
-      Elf_Word* pP = (Elf_Word*)P;
-      Elf_Word  w1, w2;
-#     elif defined(powerpc_HOST_ARCH)
+#     if defined(powerpc_HOST_ARCH)
       Elf_Sword delta;
 #     endif
 
-      IF_DEBUG(linker,debugBelch( "Rel entry %3d is raw(%6p %6p %6p)   ",
+      IF_DEBUG(linker_verbose,debugBelch( "Rel entry %3d is raw(%6p %6p %6p)   ",
                              j, (void*)offset, (void*)info,
                                 (void*)A ));
       if (!info) {
-         IF_DEBUG(linker,debugBelch( " ZERO" ));
+         IF_DEBUG(linker_verbose,debugBelch( " ZERO" ));
          S = 0;
       } else {
          Elf_Sym sym = stab[ELF_R_SYM(info)];
-         /* First see if it is a local symbol. */
-         if (ELF_ST_BIND(sym.st_info) == STB_LOCAL) {
-            /* Yes, so we can get the address directly from the ELF symbol
-               table. */
+         if (ELF_R_TYPE(info) == COMPAT_R_X86_64_TLSGD) {
+            /*
+             * No support for TLSGD variables *defined* by the object,
+             * only references to *external* TLS variables in already
+             * loaded shared objects (the executable, libc, ...) are
+             * supported.  See Note [TLSGD relocation] in elf_tlsgd.c.
+             */
+            symbol = sym.st_name == 0 ? "(noname)" : strtab+sym.st_name;
+            if (ELF_ST_BIND(sym.st_info) == STB_LOCAL
+                || sym.st_value != 0 || sym.st_name == 0) {
+                errorBelch("%s: unsupported internal ELF TLSGD relocation for"
+                           " symbol `%s'", oc->fileName, symbol);
+                return 0;
+            }
+#if defined(x86_64_HOST_ARCH) && defined(freebsd_HOST_OS)
+            S = lookupTlsgdSymbol(symbol, ELF_R_SYM(info), oc);
+#else
+            errorBelch("%s: ELF TLSGD relocation for symbol `%s'"
+                       " not supported on the target platform",
+                       oc->fileName, symbol);
+            return 0;
+#endif
+         } else if (ELF_ST_BIND(sym.st_info) == STB_LOCAL) {
+            /*
+             * For local symbols, we can get the address directly from the ELF
+             * symbol table.
+             *
+             * XXX: Is STB_LOCAL the right test here?  Should we instead be
+             * checking whether the symbol is *defined* by the current object?
+             * Defined globals also need relocation.  Perhaps the point is that
+             * conflicts are resolved in favour of any prior definition, so we
+             * must look at the accumulated symbol table instead (which has
+             * already been updated with our global symbols by the time we get
+             * here).
+             */
             symbol = sym.st_name==0 ? "(noname)" : strtab+sym.st_name;
             /* See Note [Many ELF Sections] */
             Elf_Word secno = sym.st_shndx;
@@ -1471,78 +1584,30 @@ do_Elf_Rela_relocations ( ObjectCode* oc, char* ehdrC,
             S = (Elf_Addr)oc->sections[secno].start
                 + stab[ELF_R_SYM(info)].st_value;
          } else {
-            /* No, so look up the name in our global table. */
+            /* If not local, look up the name in our global table. */
             symbol = strtab + sym.st_name;
-            S_tmp = lookupSymbol_( symbol );
+            S_tmp = lookupDependentSymbol( symbol, oc, NULL );
             S = (Elf_Addr)S_tmp;
          }
          if (!S) {
            errorBelch("%s: unknown symbol `%s'", oc->fileName, symbol);
            return 0;
          }
-         IF_DEBUG(linker,debugBelch("`%s' resolves to %p\n", symbol, (void*)S));
+         IF_DEBUG(linker_verbose,debugBelch("`%s' resolves to %p\n", symbol, (void*)S));
       }
 
-#if defined(DEBUG) || defined(sparc_HOST_ARCH) || defined(powerpc_HOST_ARCH) \
-    || defined(x86_64_HOST_ARCH)
-      IF_DEBUG(linker,debugBelch("Reloc: P = %p   S = %p   A = %p\n",
-                                        (void*)P, (void*)S, (void*)A ));
+#if defined(DEBUG) || defined(powerpc_HOST_ARCH) || defined(x86_64_HOST_ARCH)
+      IF_DEBUG(linker_verbose,debugBelch("Reloc: P = %p   S = %p   A = %p\n",
+                                         (void*)P, (void*)S, (void*)A ));
       checkProddableBlock(oc, (void*)P, sizeof(Elf_Word));
 #endif
 
-#if defined(sparc_HOST_ARCH) || defined(powerpc_HOST_ARCH) \
-    || defined(x86_64_HOST_ARCH)
+#if defined(powerpc_HOST_ARCH) || defined(x86_64_HOST_ARCH)
       value = S + A;
 #endif
 
       switch (ELF_R_TYPE(info)) {
-#        if defined(sparc_HOST_ARCH)
-         case R_SPARC_WDISP30:
-            w1 = *pP & 0xC0000000;
-            w2 = (Elf_Word)((value - P) >> 2);
-            ASSERT((w2 & 0xC0000000) == 0);
-            w1 |= w2;
-            *pP = w1;
-            break;
-         case R_SPARC_HI22:
-            w1 = *pP & 0xFFC00000;
-            w2 = (Elf_Word)(value >> 10);
-            ASSERT((w2 & 0xFFC00000) == 0);
-            w1 |= w2;
-            *pP = w1;
-            break;
-         case R_SPARC_LO10:
-            w1 = *pP & ~0x3FF;
-            w2 = (Elf_Word)(value & 0x3FF);
-            ASSERT((w2 & ~0x3FF) == 0);
-            w1 |= w2;
-            *pP = w1;
-            break;
-
-         /* According to the Sun documentation:
-            R_SPARC_UA32
-            This relocation type resembles R_SPARC_32, except it refers to an
-            unaligned word. That is, the word to be relocated must be treated
-            as four separate bytes with arbitrary alignment, not as a word
-            aligned according to the architecture requirements.
-         */
-         case R_SPARC_UA32:
-            w2  = (Elf_Word)value;
-
-            // SPARC doesn't do misaligned writes of 32 bit words,
-            //       so we have to do this one byte-at-a-time.
-            char *pPc   = (char*)pP;
-            pPc[0]      = (char) ((Elf_Word)(w2 & 0xff000000) >> 24);
-            pPc[1]      = (char) ((Elf_Word)(w2 & 0x00ff0000) >> 16);
-            pPc[2]      = (char) ((Elf_Word)(w2 & 0x0000ff00) >> 8);
-            pPc[3]      = (char) ((Elf_Word)(w2 & 0x000000ff));
-            break;
-
-         case R_SPARC_32:
-            w2 = (Elf_Word)value;
-            *pP = w2;
-            break;
-#        elif defined(powerpc_HOST_ARCH)
+#        if defined(powerpc_HOST_ARCH)
          case R_PPC_ADDR16_LO:
             *(Elf32_Half*) P = value;
             break;
@@ -1613,9 +1678,6 @@ do_Elf_Rela_relocations ( ObjectCode* oc, char* ehdrC,
 
       case COMPAT_R_X86_64_PC32:
       {
-#if defined(ALWAYS_PIC)
-          barf("R_X86_64_PC32 relocation, but ALWAYS_PIC.");
-#else
           StgInt64 off = value - P;
           if (off != (Elf64_Sword)off && X86_64_ELF_NONPIC_HACK) {
               StgInt64 pltAddress =
@@ -1632,7 +1694,6 @@ do_Elf_Rela_relocations ( ObjectCode* oc, char* ehdrC,
           }
           Elf64_Sword payload = off;
           memcpy((void*)P, &payload, sizeof(payload));
-#endif
           break;
       }
 
@@ -1645,9 +1706,6 @@ do_Elf_Rela_relocations ( ObjectCode* oc, char* ehdrC,
 
       case COMPAT_R_X86_64_32:
       {
-#if defined(ALWAYS_PIC)
-          barf("R_X86_64_32 relocation, but ALWAYS_PIC.");
-#else
           if (value != (Elf64_Word)value && X86_64_ELF_NONPIC_HACK) {
               StgInt64 pltAddress =
                   (StgInt64) &makeSymbolExtra(oc, ELF_R_SYM(info), S)
@@ -1663,15 +1721,11 @@ do_Elf_Rela_relocations ( ObjectCode* oc, char* ehdrC,
           }
           Elf64_Word payload = value;
           memcpy((void*)P, &payload, sizeof(payload));
-#endif
           break;
       }
 
       case COMPAT_R_X86_64_32S:
       {
-#if defined(ALWAYS_PIC)
-          barf("R_X86_64_32S relocation, but ALWAYS_PIC.");
-#else
           if ((StgInt64)value != (Elf64_Sword)value && X86_64_ELF_NONPIC_HACK) {
               StgInt64 pltAddress =
                   (StgInt64) &makeSymbolExtra(oc, ELF_R_SYM(info), S)
@@ -1687,7 +1741,6 @@ do_Elf_Rela_relocations ( ObjectCode* oc, char* ehdrC,
           }
           Elf64_Sword payload = value;
           memcpy((void*)P, &payload, sizeof(payload));
-#endif
           break;
       }
       case COMPAT_R_X86_64_REX_GOTPCRELX:
@@ -1706,12 +1759,22 @@ do_Elf_Rela_relocations ( ObjectCode* oc, char* ehdrC,
           memcpy((void*)P, &payload, sizeof(payload));
           break;
       }
+      case COMPAT_R_X86_64_TLSGD:
+      {
+          StgInt64 off = S + A - P;
+          if (off != (Elf64_Sword)off) {
+              barf(
+                  "COMPAT_R_X86_64_TLSGD relocation out of range: "
+                  "%s = %" PRIx64 " in %s.",
+                  symbol, off, oc->fileName);
+          }
+          Elf64_Sword payload = off;
+          memcpy((void*)P, &payload, sizeof(payload));
+          break;
+      }
 #if defined(dragonfly_HOST_OS)
       case COMPAT_R_X86_64_GOTTPOFF:
       {
-#if defined(ALWAYS_PIC)
-          barf("R_X86_64_GOTTPOFF relocation, but ALWAYS_PIC.");
-#else
         /* determine the offset of S to the current thread's tls
            area
            XXX: Move this to the beginning of function */
@@ -1729,16 +1792,12 @@ do_Elf_Rela_relocations ( ObjectCode* oc, char* ehdrC,
           }
           Elf64_SWord payload = off;
           memcpy((void*)P, &payload, sizeof(payload));
-#endif
           break;
       }
 #endif
 
       case COMPAT_R_X86_64_PLT32:
       {
-#if defined(ALWAYS_PIC)
-          barf("R_X86_64_PLT32 relocation, but ALWAYS_PIC.");
-#else
           StgInt64 off = value - P;
           if (off != (Elf64_Sword)off) {
               StgInt64 pltAddress = (StgInt64) &makeSymbolExtra(oc, ELF_R_SYM(info), S)
@@ -1753,7 +1812,6 @@ do_Elf_Rela_relocations ( ObjectCode* oc, char* ehdrC,
           }
           Elf64_Sword payload = off;
           memcpy((void*)P, &payload, sizeof(payload));
-#endif
           break;
       }
 #endif
@@ -1769,6 +1827,28 @@ do_Elf_Rela_relocations ( ObjectCode* oc, char* ehdrC,
 }
 #endif /* !aarch64_HOST_ARCH */
 
+
+static bool
+ocMprotect_Elf( ObjectCode *oc )
+{
+    for(int i=0; i < oc->n_sections; i++) {
+        Section *section = &oc->sections[i];
+        if(section->size == 0) continue;
+        switch (section->kind) {
+        case SECTIONKIND_CODE_OR_RODATA:
+            if (section->alloc != SECTION_M32) {
+                // N.B. m32 handles protection of its allocations during
+                // flushing.
+                mprotectForLinker(section->mapped_start, section->mapped_size, MEM_READ_EXECUTE);
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
+    return true;
+}
 
 int
 ocResolve_ELF ( ObjectCode* oc )
@@ -1812,12 +1892,13 @@ ocResolve_ELF ( ObjectCode* oc )
                 Elf_Word secno = symbol->elf_sym->st_shndx;
 #if defined(SHN_XINDEX)
                 if (secno == SHN_XINDEX) {
-                    ASSERT(shndxTable);
+                    CHECK(shndxTable);
                     secno = shndxTable[i];
                 }
 #endif
-                ASSERT(symbol->elf_sym->st_name == 0);
-                ASSERT(symbol->elf_sym->st_value == 0);
+                CHECK(symbol->elf_sym->st_name == 0);
+                CHECK(symbol->elf_sym->st_value == 0);
+                CHECK(0x0 != oc->sections[ secno ].start);
                 symbol->addr = oc->sections[ secno ].start;
             }
         }
@@ -1856,9 +1937,40 @@ ocResolve_ELF ( ObjectCode* oc )
     ocFlushInstructionCache( oc );
 #endif
 
-    return 1;
+    return ocMprotect_Elf(oc);
 }
 
+/*
+ * Note [Initializers and finalizers (ELF)]
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * The System V ABI describes a facility for allowing object code to mark
+ * functions to be run at load time. These functions are known as
+ * "initializers" (or "constructors"). Initializers are recorded in a section
+ * marked with the DT_INIT tag (often with the name `.init`).
+ *
+ * There is also a similar mechanism for code to be run at unload time (e.g.
+ * during program termination). These are known as finalizers and are collected
+ * in `.fini` section.
+ *
+ * For more about how the code generator emits initializers and finalizers see
+ * Note [Initializers and finalizers in Cmm] in GHC.Cmm.InitFini.
+ *
+ * See also: the "Initialization and Termination Functions" section of the
+ * System V ABI.
+ *
+ * Note [GCC 6 init/fini section workaround]
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * The System V ABI specifies that .init_array and .fini_array sections should
+ * be marked with the SHT_INIT_ARRAY/SHT_FINI_ARRAY section types. However, it
+ * seems that GCC 6 (at least on i386) produces sections *named*
+ * .init_array/.fini_array but marks them as SHT_PROGBITS. Consequently we need
+ * to augment the usual section type check (which in an ideal world would be
+ * sufficient) with a check looking at the section name to catch this case.
+ */
+
+// Run the constructors/initializers of an ObjectCode.
+// Returns 1 on success.
+// See Note [Initializers and finalizers (ELF)].
 int ocRunInit_ELF( ObjectCode *oc )
 {
    Elf_Word i;
@@ -1878,19 +1990,24 @@ int ocRunInit_ELF( ObjectCode *oc )
    // it here, please file a bug report if it affects you.
    for (i = 0; i < elf_shnum(ehdr); i++) {
       init_t *init_start, *init_end, *init;
+      char *sh_name = sh_strtab + shdr[i].sh_name;
       int is_bss = false;
       SectionKind kind = getSectionKind_ELF(&shdr[i], &is_bss);
+
       if (kind == SECTIONKIND_CODE_OR_RODATA
-       && 0 == memcmp(".init", sh_strtab + shdr[i].sh_name, 5)) {
+       && 0 == memcmp(".init", sh_name, 5)) {
           init_t init_f = (init_t)(oc->sections[i].start);
           init_f(argc, argv, envv);
       }
 
-      if (kind == SECTIONKIND_INIT_ARRAY) {
-          char *init_startC = oc->sections[i].start;
+      // Note [GCC 6 init/fini section workaround]
+      if (kind == SECTIONKIND_INIT_ARRAY
+          || 0 == memcmp(".init_array", sh_name, 11)) {
+         char *init_startC = oc->sections[i].start;
          init_start = (init_t*)init_startC;
          init_end = (init_t*)(init_startC + shdr[i].sh_size);
          for (init = init_start; init < init_end; init++) {
+            CHECK(0x0 != *init);
             (*init)(argc, argv, envv);
          }
       }
@@ -1899,7 +2016,7 @@ int ocRunInit_ELF( ObjectCode *oc )
       // SECTIONKIND_RWDATA; but allowing RODATA seems harmless enough.
       if ((kind == SECTIONKIND_RWDATA || kind == SECTIONKIND_CODE_OR_RODATA)
        && 0 == memcmp(".ctors", sh_strtab + shdr[i].sh_name, 6)) {
-          char *init_startC = oc->sections[i].start;
+         char *init_startC = oc->sections[i].start;
          init_start = (init_t*)init_startC;
          init_end = (init_t*)(init_startC + shdr[i].sh_size);
          // ctors run in reverse
@@ -1913,28 +2030,229 @@ int ocRunInit_ELF( ObjectCode *oc )
    return 1;
 }
 
+// Run the finalizers of an ObjectCode.
+// Returns 1 on success.
+// See Note [Initializers and finalizers (ELF)].
+int ocRunFini_ELF( ObjectCode *oc )
+{
+   char*     ehdrC = (char*)(oc->image);
+   Elf_Ehdr* ehdr  = (Elf_Ehdr*) ehdrC;
+   Elf_Shdr* shdr  = (Elf_Shdr*) (ehdrC + ehdr->e_shoff);
+   char* sh_strtab = ehdrC + shdr[elf_shstrndx(ehdr)].sh_offset;
+
+   for (Elf_Word i = 0; i < elf_shnum(ehdr); i++) {
+      char *sh_name = sh_strtab + shdr[i].sh_name;
+      int is_bss = false;
+      SectionKind kind = getSectionKind_ELF(&shdr[i], &is_bss);
+
+      if (kind == SECTIONKIND_CODE_OR_RODATA && 0 == memcmp(".fini", sh_strtab + shdr[i].sh_name, 5)) {
+         fini_t fini_f = (fini_t)(oc->sections[i].start);
+         fini_f();
+      }
+
+      // Note [GCC 6 init/fini section workaround]
+      if (kind == SECTIONKIND_FINI_ARRAY
+          || 0 == memcmp(".fini_array", sh_name, 11)) {
+         fini_t *fini_start, *fini_end, *fini;
+         char *fini_startC = oc->sections[i].start;
+         fini_start = (fini_t*)fini_startC;
+         fini_end = (fini_t*)(fini_startC + shdr[i].sh_size);
+         for (fini = fini_start; fini < fini_end; fini++) {
+            CHECK(0x0 != *fini);
+            (*fini)();
+         }
+      }
+
+      if (kind == SECTIONKIND_CODE_OR_RODATA && 0 == memcmp(".dtors", sh_strtab + shdr[i].sh_name, 6)) {
+         char *fini_startC = oc->sections[i].start;
+         fini_t *fini_start = (fini_t*)fini_startC;
+         fini_t *fini_end = (fini_t*)(fini_startC + shdr[i].sh_size);
+         for (fini_t *fini = fini_start; fini < fini_end; fini++) {
+            CHECK(0x0 != *fini);
+            (*fini)();
+         }
+      }
+   }
+
+   return 1;
+}
+
+/*
+ * Shared object loading
+ */
+
+#if defined(HAVE_DLINFO)
+struct piterate_cb_info {
+  ObjectCode *nc;
+  void *l_addr;   /* base virtual address of the loaded code */
+};
+
+static int loadNativeObjCb_(struct dl_phdr_info *info,
+    size_t _size GNUC3_ATTRIBUTE(__unused__), void *data) {
+  struct piterate_cb_info *s = (struct piterate_cb_info *) data;
+
+  // This logic mimicks _dl_addr_inside_object from glibc
+  // For reference:
+  // int
+  // internal_function
+  // _dl_addr_inside_object (struct link_map *l, const ElfW(Addr) addr)
+  // {
+  //   int n = l->l_phnum;
+  //   const ElfW(Addr) reladdr = addr - l->l_addr;
+  //
+  //   while (--n >= 0)
+  //     if (l->l_phdr[n].p_type == PT_LOAD
+  //         && reladdr - l->l_phdr[n].p_vaddr >= 0
+  //         && reladdr - l->l_phdr[n].p_vaddr < l->l_phdr[n].p_memsz)
+  //       return 1;
+  //   return 0;
+  // }
+
+  if ((void*) info->dlpi_addr == s->l_addr) {
+    int n = info->dlpi_phnum;
+    while (--n >= 0) {
+      if (info->dlpi_phdr[n].p_type == PT_LOAD) {
+        NativeCodeRange* ncr =
+          stgMallocBytes(sizeof(NativeCodeRange), "loadNativeObjCb_");
+        ncr->start = (void*) ((char*) s->l_addr + info->dlpi_phdr[n].p_vaddr);
+        ncr->end = (void*) ((char*) ncr->start + info->dlpi_phdr[n].p_memsz);
+
+        ncr->next = s->nc->nc_ranges;
+        s->nc->nc_ranges = ncr;
+      }
+    }
+  }
+  return 0;
+}
+#endif /* defined(HAVE_DLINFO) */
+
+static void copyErrmsg(char** errmsg_dest, char* errmsg) {
+  if (errmsg == NULL) errmsg = "loadNativeObj_ELF: unknown error";
+  *errmsg_dest = stgMallocBytes(strlen(errmsg)+1, "loadNativeObj_ELF");
+  strcpy(*errmsg_dest, errmsg);
+}
+
+// need dl_mutex
+void freeNativeCode_ELF (ObjectCode *nc) {
+  dlclose(nc->dlopen_handle);
+
+  NativeCodeRange *ncr = nc->nc_ranges;
+  while (ncr) {
+    NativeCodeRange* last_ncr = ncr;
+    ncr = ncr->next;
+    stgFree(last_ncr);
+  }
+}
+
+void * loadNativeObj_ELF (pathchar *path, char **errmsg)
+{
+   ObjectCode* nc;
+   void *hdl, *retval;
+
+   IF_DEBUG(linker, debugBelch("loadNativeObj_ELF %" PATH_FMT "\n", path));
+
+   retval = NULL;
+   ACQUIRE_LOCK(&dl_mutex);
+
+   /* Loading the same object multiple times will lead to chaos
+    * as we will have two ObjectCodes but one underlying dlopen
+    * handle. Fail if this happens.
+    */
+   if (getObjectLoadStatus_(path) != OBJECT_NOT_LOADED) {
+     copyErrmsg(errmsg, "loadNativeObj_ELF: Already loaded");
+     goto dlopen_fail;
+   }
+
+   nc = mkOc(DYNAMIC_OBJECT, path, NULL, 0, false, NULL, 0);
+
+   foreignExportsLoadingObject(nc);
+   hdl = dlopen(path, RTLD_NOW|RTLD_LOCAL);
+   nc->dlopen_handle = hdl;
+   foreignExportsFinishedLoadingObject();
+   if (hdl == NULL) {
+     /* dlopen failed; save the message in errmsg */
+     copyErrmsg(errmsg, dlerror());
+     goto dlopen_fail;
+   }
+
+#if defined(HAVE_DLINFO)
+   struct link_map *map;
+   if (dlinfo(hdl, RTLD_DI_LINKMAP, &map) == -1) {
+     /* dlinfo failed; save the message in errmsg */
+     copyErrmsg(errmsg, dlerror());
+     goto dlinfo_fail;
+   }
+
+   hdl = NULL; // pass handle ownership to nc
+
+   struct piterate_cb_info piterate_info = {
+     .nc = nc,
+     .l_addr = (void *) map->l_addr
+   };
+   dl_iterate_phdr(loadNativeObjCb_, &piterate_info);
+   if (!nc->nc_ranges) {
+     copyErrmsg(errmsg, "dl_iterate_phdr failed to find obj");
+     goto dl_iterate_phdr_fail;
+   }
+#endif /* defined (HAVE_DLINFO) */
+
+   insertOCSectionIndices(nc);
+
+   nc->next_loaded_object = loaded_objects;
+   loaded_objects = nc;
+
+   retval = nc->dlopen_handle;
+
+#if defined(PROFILING)
+  // collect any new cost centres that were defined in the loaded object.
+  refreshProfilingCCSs();
+#endif
+
+   goto success;
+
+dl_iterate_phdr_fail:
+   // already have dl_mutex
+   freeNativeCode_ELF(nc);
+dlinfo_fail:
+   if (hdl) dlclose(hdl);
+dlopen_fail:
+success:
+
+   RELEASE_LOCK(&dl_mutex);
+
+   IF_DEBUG(linker, debugBelch("loadNativeObj_ELF result=%p\n", retval));
+
+   return retval;
+}
+
+
 /*
  * PowerPC & X86_64 ELF specifics
  */
 
 #if defined(NEED_SYMBOL_EXTRAS)
 
-int ocAllocateSymbolExtras_ELF( ObjectCode *oc )
+int ocAllocateExtras_ELF( ObjectCode *oc )
 {
-  Elf_Ehdr *ehdr;
-  Elf_Shdr* shdr;
-  Elf_Word i, shnum;
+  Elf_Ehdr *ehdr = (Elf_Ehdr *) oc->image;
+  Elf_Shdr* shdr = (Elf_Shdr *) ( ((char *)oc->image) + ehdr->e_shoff );
+  Elf_Shdr* symtab = NULL;
+  Elf_Word shnum = elf_shnum(ehdr);
+  int bssSize = 0;
 
-  ehdr = (Elf_Ehdr *) oc->image;
-  shdr = (Elf_Shdr *) ( ((char *)oc->image) + ehdr->e_shoff );
+  for (Elf_Word i = 0; i < shnum; ++i) {
+    if(shdr[i].sh_type == SHT_SYMTAB) {
+      symtab = &shdr[i];
+    } else {
+      int isBss = 0;
+      getSectionKind_ELF(&shdr[i], &isBss);
+      if (isBss && shdr[i].sh_size > 0) {
+        bssSize += roundUpToAlign(shdr[i].sh_size, shdr[i].sh_addralign);
+      }
+    }
+  }
 
-  shnum = elf_shnum(ehdr);
-
-  for( i = 0; i < shnum; i++ )
-    if( shdr[i].sh_type == SHT_SYMTAB )
-      break;
-
-  if( i == shnum )
+  if (symtab == NULL)
   {
     // Not having a symbol table is not in principle a problem.
     // When an object file has no symbols then the 'strip' program
@@ -1944,15 +2262,15 @@ int ocAllocateSymbolExtras_ELF( ObjectCode *oc )
     return 1;
   }
 
-  if( shdr[i].sh_entsize != sizeof( Elf_Sym ) )
+  if( symtab->sh_entsize != sizeof( Elf_Sym ) )
   {
     errorBelch( "The entry size (%d) of the symtab isn't %d\n",
-      (int) shdr[i].sh_entsize, (int) sizeof( Elf_Sym ) );
+      (int) symtab->sh_entsize, (int) sizeof( Elf_Sym ) );
 
     return 0;
   }
 
-  return ocAllocateSymbolExtras( oc, shdr[i].sh_size / sizeof( Elf_Sym ), 0 );
+  return ocAllocateExtras(oc, symtab->sh_size / sizeof( Elf_Sym ), 0, bssSize);
 }
 
 #endif /* NEED_SYMBOL_EXTRAS */

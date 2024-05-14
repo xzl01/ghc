@@ -9,8 +9,7 @@ import Data.Foldable (traverse_)
 import Data.List (foldl')
 import Data.Traversable (for)
 import GHC.Generics (Generic)
-import Prelude ()
-import Prelude.Compat
+import Prelude
 import System.Directory (getDirectoryContents)
 import System.Exit (exitFailure)
 import System.FilePath
@@ -148,6 +147,9 @@ instance ToExpr id => ToExpr (Header id)
 
 deriving instance Generic (Hyperlink id)
 instance ToExpr id => ToExpr (Hyperlink id)
+
+deriving instance Generic (ModLink id)
+instance ToExpr id => ToExpr (ModLink id)
 
 deriving instance Generic Picture
 instance ToExpr Picture

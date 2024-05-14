@@ -5,8 +5,8 @@
 # This file is part of the GHC build system.
 #
 # To understand how the build system works and how to modify it, see
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Architecture
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Modifying
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/architecture
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/modifying
 #
 # -----------------------------------------------------------------------------
 
@@ -34,10 +34,10 @@ $1_$2_HC_MK_DEPEND = $$($1_$2_HC)
 # on cygwin we get a dep on c:/ghc/..., and make gets confused by the :
 $1_$2_HC_MK_DEPEND_DEP =
 $1_$2_HC_DEP =
-$1_$2_HC_PKGCONF = -$(GHC_PACKAGE_DB_FLAG) $$(BOOTSTRAPPING_CONF)
-$1_$2_GHC_PKG_OPTS = --$(GHC_PACKAGE_DB_FLAG)=$$(BOOTSTRAPPING_CONF)
+$1_$2_HC_PKGCONF = -package-db $$(BOOTSTRAPPING_CONF)
+$1_$2_GHC_PKG_OPTS = --package-db=$$(BOOTSTRAPPING_CONF)
 $1_$2_CONFIGURE_OPTS += --package-db=$$(TOP)/$$(BOOTSTRAPPING_CONF)
-$1_$2_MORE_HC_OPTS += -no-user-$(GHC_PACKAGE_DB_FLAG)
+$1_$2_MORE_HC_OPTS += -no-user-package-db
 $1_$2_MORE_HC_OPTS += -rtsopts
 else
 $1_$2_HC_PKGCONF = 

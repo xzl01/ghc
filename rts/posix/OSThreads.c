@@ -7,17 +7,30 @@
  *
  * --------------------------------------------------------------------------*/
 
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 
+/* We've defined _POSIX_SOURCE via "rts/PosixSource.h", and yet still use
+   some non-POSIX features.  With _POSIX_SOURCE defined, visibility of
+   non-POSIX extension prototypes requires _DARWIN_C_SOURCE on Mac OS X,
+   __BSD_VISIBLE on FreeBSD and DragonflyBSD, and _NETBSD_SOURCE on
+   NetBSD.  Otherwise, for example, code using pthread_setname_np(3) and
+   variants will not compile.  We must therefore define the additional
+   macros that expose non-POSIX APIs early, before any of the relevant
+   system headers are included via "Rts.h".
+
+   An alternative approach could be to write portable wrappers or stubs for all
+   the non-posix functions in a C-module that does not include "rts/PosixSource.h",
+   and then use only POSIX features and the portable wrapper functions in all
+   other C-modules. */
+#include "ghcconfig.h"
 #if defined(freebsd_HOST_OS) || defined(dragonfly_HOST_OS)
-/* Inclusion of system headers usually requires __BSD_VISIBLE on FreeBSD and
- * DragonflyBSD, because of some specific types, like u_char, u_int, etc. */
 #define __BSD_VISIBLE   1
 #endif
 #if defined(darwin_HOST_OS)
-/* Inclusion of system headers usually requires _DARWIN_C_SOURCE on Mac OS X
- * because of some specific types like u_char, u_int, etc. */
 #define _DARWIN_C_SOURCE 1
+#endif
+#if defined(netbsd_HOST_OS)
+#define _NETBSD_SOURCE 1
 #endif
 
 #include "Rts.h"
@@ -30,7 +43,7 @@
 
 #if defined(HAVE_PTHREAD_H)
 #include <pthread.h>
-#if defined(freebsd_HOST_OS)
+#if defined(HAVE_PTHREAD_NP_H)
 #include <pthread_np.h>
 #endif
 #endif
@@ -42,7 +55,7 @@
 #include <string.h>
 #endif
 
-#if defined(darwin_HOST_OS) || defined(freebsd_HOST_OS)
+#if defined(darwin_HOST_OS) || defined(freebsd_HOST_OS) || defined(netbsd_HOST_OS)
 #include <sys/types.h>
 #include <sys/sysctl.h>
 #endif
@@ -78,6 +91,12 @@
 #include <numa.h>
 #endif
 
+// For gettimeofday()
+#include <sys/time.h>
+
+// TODO does this need configure magic?
+#include <time.h>
+
 /*
  * This (allegedly) OS threads independent layer was initially
  * abstracted away from code that used Pthreads, so the functions
@@ -88,33 +107,70 @@
 void
 initCondition( Condition* pCond )
 {
-  pthread_cond_init(pCond, NULL);
-  return;
+  pthread_condattr_t attr;
+  CHECK(pthread_condattr_init(&attr) == 0);
+#if defined(HAVE_CLOCK_GETTIME) && defined(HAVE_PTHREAD_CONDATTR_SETCLOCK)
+  pCond->timeout_clk = CLOCK_REALTIME;
+  if (pthread_condattr_setclock(&attr, CLOCK_MONOTONIC) == 0) {
+      pCond->timeout_clk = CLOCK_MONOTONIC;
+  }
+#endif
+  CHECK(pthread_cond_init(&pCond->cond, &attr) == 0);
+  CHECK(pthread_condattr_destroy(&attr) == 0);
 }
 
 void
 closeCondition( Condition* pCond )
 {
-  pthread_cond_destroy(pCond);
-  return;
+  CHECK(pthread_cond_destroy(&pCond->cond) == 0);
 }
 
-bool
+void
 broadcastCondition ( Condition* pCond )
 {
-  return (pthread_cond_broadcast(pCond) == 0);
+  CHECK(pthread_cond_broadcast(&pCond->cond) == 0);
 }
 
-bool
+void
 signalCondition ( Condition* pCond )
 {
-  return (pthread_cond_signal(pCond) == 0);
+  CHECK(pthread_cond_signal(&pCond->cond) == 0);
+}
+
+void
+waitCondition ( Condition* pCond, Mutex* pMut )
+{
+  CHECK(pthread_cond_wait(&pCond->cond, pMut) == 0);
 }
 
 bool
-waitCondition ( Condition* pCond, Mutex* pMut )
-{
-  return (pthread_cond_wait(pCond,pMut) == 0);
+timedWaitCondition ( Condition* pCond, Mutex* pMut, Time timeout) {
+    struct timespec ts;
+
+#if defined(HAVE_CLOCK_GETTIME) && defined(HAVE_PTHREAD_CONDATTR_SETCLOCK)
+    CHECK(clock_gettime(pCond->timeout_clk, &ts) == 0);
+#else
+    struct timeval tv;
+    CHECK(gettimeofday(&tv, NULL) == 0);
+    ts.tv_sec = tv.tv_sec;
+    ts.tv_nsec = 1000 * tv.tv_usec;
+#endif
+
+    uint64_t sec = TimeToSeconds(timeout);
+    ts.tv_sec += sec;
+    ts.tv_nsec += TimeToNS(timeout - SecondsToTime(sec));
+    ts.tv_sec += ts.tv_nsec / 1000000000;
+    ts.tv_nsec %= 1000000000;
+
+    int ret = pthread_cond_timedwait(&pCond->cond, pMut, &ts);
+    switch (ret) {
+    case ETIMEDOUT:
+        return false;
+    case 0:
+        return true;
+    default:
+        barf("pthread_cond_timedwait failed");
+    }
 }
 
 void
@@ -137,8 +193,14 @@ createOSThread (OSThreadId* pId, char *name STG_UNUSED,
   int result = pthread_create(pId, NULL, startProc, param);
   if (!result) {
     pthread_detach(*pId);
-#if defined(HAVE_PTHREAD_SETNAME_NP)
+#if defined(HAVE_PTHREAD_SET_NAME_NP)
+    pthread_set_name_np(*pId, name);
+#elif defined(HAVE_PTHREAD_SETNAME_NP)
     pthread_setname_np(*pId, name);
+#elif defined(HAVE_PTHREAD_SETNAME_NP_DARWIN)
+    pthread_setname_np(name);
+#elif defined(HAVE_PTHREAD_SETNAME_NP_NETBSD)
+    pthread_setname_np(*pId, "%s", name);
 #endif
   }
   return result;
@@ -161,7 +223,7 @@ osThreadIsAlive(OSThreadId id STG_UNUSED)
 void
 initMutex(Mutex* pMut)
 {
-#if defined(DEBUG)
+#if defined(ASSERTS_ENABLED)
     pthread_mutexattr_t attr;
     pthread_mutexattr_init(&attr);
     pthread_mutexattr_settype(&attr,PTHREAD_MUTEX_ERRORCHECK);
@@ -240,29 +302,64 @@ forkOS_createThread ( HsStablePtr entry )
 
 void freeThreadingResources (void) { /* nothing */ }
 
+static uint32_t nproc_cache = 0;
+
+// Get the number of logical CPU cores available to us. Note that this is
+// different from the number of physical cores (see #14781).
 uint32_t
 getNumberOfProcessors (void)
 {
-    static uint32_t nproc = 0;
-
+    uint32_t nproc = RELAXED_LOAD(&nproc_cache);
     if (nproc == 0) {
-#if defined(HAVE_SYSCONF) && defined(_SC_NPROCESSORS_ONLN)
-        nproc = sysconf(_SC_NPROCESSORS_ONLN);
-#elif defined(HAVE_SYSCONF) && defined(_SC_NPROCESSORS_CONF)
-        nproc = sysconf(_SC_NPROCESSORS_CONF);
-#elif defined(darwin_HOST_OS)
+#if defined(HAVE_SCHED_GETAFFINITY)
+        cpu_set_t mask;
+        CPU_ZERO(&mask);
+        if (sched_getaffinity(0, sizeof(mask), &mask) == 0) {
+            for (int i = 0; i < CPU_SETSIZE; i++) {
+                if (CPU_ISSET(i, &mask))
+                    nproc++;
+            }
+            return nproc;
+        }
+#endif
+
+#if defined(darwin_HOST_OS)
         size_t size = sizeof(uint32_t);
-        if(sysctlbyname("hw.logicalcpu",&nproc,&size,NULL,0) != 0) {
+        if (sysctlbyname("machdep.cpu.thread_count",&nproc,&size,NULL,0) != 0) {
+            if (sysctlbyname("hw.logicalcpu",&nproc,&size,NULL,0) != 0) {
+                if (sysctlbyname("hw.ncpu",&nproc,&size,NULL,0) != 0)
+                    nproc = 1;
+            }
+        }
+#elif defined(freebsd_HOST_OS) && !defined(HAVE_SCHED_GETAFFINITY)
+        cpuset_t mask;
+        CPU_ZERO(&mask);
+        if(cpuset_getaffinity(CPU_LEVEL_CPUSET, CPU_WHICH_PID, -1, sizeof(mask), &mask) == 0) {
+            return CPU_COUNT(&mask);
+        } else {
+            size_t size = sizeof(uint32_t);
             if(sysctlbyname("hw.ncpu",&nproc,&size,NULL,0) != 0)
                 nproc = 1;
         }
-#elif defined(freebsd_HOST_OS)
-        size_t size = sizeof(uint32_t);
-        if(sysctlbyname("hw.ncpu",&nproc,&size,NULL,0) != 0)
-            nproc = 1;
+#elif defined(netbsd_HOST_OS)
+        int mib[2] = { CTL_HW, HW_NCPUONLINE };
+        size_t size = sizeof(nproc);
+        if (sysctl(mib, 2, &nproc, &size, NULL, 0) != 0) {
+            mib[1] = HW_NCPU;
+            if (sysctl(mib, 2, &nproc, &size, NULL, 0) != 0) {
+                nproc = 1;
+            }
+        }
+#elif defined(HAVE_SYSCONF) && defined(_SC_NPROCESSORS_ONLN)
+        // N.B. This is the number of physical processors.
+        nproc = sysconf(_SC_NPROCESSORS_ONLN);
+#elif defined(HAVE_SYSCONF) && defined(_SC_NPROCESSORS_CONF)
+        // N.B. This is the number of physical processors.
+        nproc = sysconf(_SC_NPROCESSORS_CONF);
 #else
         nproc = 1;
 #endif
+        RELAXED_STORE(&nproc_cache, nproc);
     }
 
     return nproc;
@@ -370,6 +467,15 @@ void
 interruptOSThread (OSThreadId id)
 {
     pthread_kill(id, SIGPIPE);
+}
+
+void
+joinOSThread (OSThreadId id)
+{
+    int ret = pthread_join(id, NULL);
+    if (ret != 0) {
+        sysErrorBelch("joinOSThread: error %d", ret);
+    }
 }
 
 KernelThreadId kernelThreadId (void)

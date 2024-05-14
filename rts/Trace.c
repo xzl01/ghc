@@ -22,42 +22,39 @@
 #include "Threads.h"
 #include "Printer.h"
 #include "RtsFlags.h"
+#include "ThreadLabels.h"
 
 #if defined(HAVE_UNISTD_H)
 #include <unistd.h>
 #endif
 
 // events
-int TRACE_sched;
-int TRACE_gc;
-int TRACE_spark_sampled;
-int TRACE_spark_full;
-int TRACE_user;
-int TRACE_cap;
+uint8_t TRACE_sched;
+uint8_t TRACE_gc;
+uint8_t TRACE_nonmoving_gc;
+uint8_t TRACE_spark_sampled;
+uint8_t TRACE_spark_full;
+uint8_t TRACE_user;
+uint8_t TRACE_cap;
 
 #if defined(THREADED_RTS)
 static Mutex trace_utx;
 #endif
 
-static bool eventlog_enabled;
+#if defined(DEBUG)
+static void traceCap_stderr(Capability *cap, char *msg, ...);
+#endif
 
 /* ---------------------------------------------------------------------------
    Starting up / shutting down the tracing facilities
  --------------------------------------------------------------------------- */
 
-static const EventLogWriter *getEventLogWriter(void)
+/*
+ * Update the TRACE_* globals. Must be called whenever RtsFlags.TraceFlags is
+ * modified.
+ */
+static void updateTraceFlagCache (void)
 {
-    return rtsConfig.eventlog_writer;
-}
-
-void initTracing (void)
-{
-    const EventLogWriter *eventlog_writer = getEventLogWriter();
-
-#if defined(THREADED_RTS)
-    initMutex(&trace_utx);
-#endif
-
     // -Ds turns on scheduler tracing too
     TRACE_sched =
         RtsFlags.TraceFlags.scheduler ||
@@ -68,9 +65,9 @@ void initTracing (void)
         RtsFlags.TraceFlags.gc ||
         RtsFlags.DebugFlags.gc ||
         RtsFlags.DebugFlags.scheduler;
-    if (TRACE_gc && RtsFlags.GcFlags.giveStats == NO_GC_STATS) {
-        RtsFlags.GcFlags.giveStats = COLLECT_GC_STATS;
-    }
+
+    TRACE_nonmoving_gc =
+        RtsFlags.TraceFlags.nonmoving_gc;
 
     TRACE_spark_sampled =
         RtsFlags.TraceFlags.sparks_sampled;
@@ -90,16 +87,32 @@ void initTracing (void)
         TRACE_spark_sampled ||
         TRACE_spark_full ||
         TRACE_user;
+}
 
-    eventlog_enabled = RtsFlags.TraceFlags.tracing == TRACE_EVENTLOG &&
-                        eventlog_writer != NULL;
+void initTracing (void)
+{
+#if defined(THREADED_RTS)
+    initMutex(&trace_utx);
+#endif
+
+    updateTraceFlagCache();
+
+    if (TRACE_gc && RtsFlags.GcFlags.giveStats == NO_GC_STATS) {
+        RtsFlags.GcFlags.giveStats = COLLECT_GC_STATS;
+    }
 
     /* Note: we can have any of the TRACE_* flags turned on even when
        eventlog_enabled is off. In the DEBUG way we may be tracing to stderr.
      */
+    initEventLogging();
 
-    if (eventlog_enabled) {
-        initEventLogging(eventlog_writer);
+    if (RtsFlags.TraceFlags.tracing == TRACE_EVENTLOG
+            && RtsFlags.TraceFlags.nullWriter) {
+        startEventLogging(&NullEventLogWriter);
+    }
+    else if (RtsFlags.TraceFlags.tracing == TRACE_EVENTLOG
+            && rtsConfig.eventlog_writer != NULL) {
+        startEventLogging(rtsConfig.eventlog_writer);
     }
 }
 
@@ -117,23 +130,16 @@ void freeTracing (void)
     }
 }
 
+// Used to reset tracing in a forked child
 void resetTracing (void)
 {
-    const EventLogWriter *eventlog_writer;
-    eventlog_writer = getEventLogWriter();
-
-    if (eventlog_enabled) {
-        abortEventLogging(); // abort eventlog inherited from parent
-        if (eventlog_writer != NULL) {
-            initEventLogging(eventlog_writer); // child starts its own eventlog
-        }
-    }
+    restartEventLogging();
 }
 
 void flushTrace (void)
 {
     if (eventlog_enabled) {
-        flushEventLog();
+        flushEventLog(NULL);
     }
 }
 
@@ -183,6 +189,7 @@ static char *thread_stop_reasons[] = {
 };
 #endif
 
+
 #if defined(DEBUG)
 static void traceSchedEvent_stderr (Capability *cap, EventTypeNum tag,
                                     StgTSO *tso,
@@ -192,45 +199,50 @@ static void traceSchedEvent_stderr (Capability *cap, EventTypeNum tag,
     ACQUIRE_LOCK(&trace_utx);
 
     tracePreface();
+    char *threadLabel = (char *)lookupThreadLabel(tso->id);
+    if(!threadLabel)
+    {
+        threadLabel = "";
+    }
     switch (tag) {
     case EVENT_CREATE_THREAD:   // (cap, thread)
-        debugBelch("cap %d: created thread %" FMT_Word "\n",
-                   cap->no, (W_)tso->id);
+        debugBelch("cap %d: created thread %" FMT_Word "[\"%s\"]" "\n",
+                   cap->no, (W_)tso->id, threadLabel);
         break;
     case EVENT_RUN_THREAD:      //  (cap, thread)
-        debugBelch("cap %d: running thread %" FMT_Word " (%s)\n",
-                   cap->no, (W_)tso->id, what_next_strs[tso->what_next]);
+        debugBelch("cap %d: running thread %" FMT_Word "[\"%s\"]"" (%s)\n",
+                   cap->no, (W_)tso->id, threadLabel, what_next_strs[tso->what_next]);
         break;
     case EVENT_THREAD_RUNNABLE: // (cap, thread)
-        debugBelch("cap %d: thread %" FMT_Word " appended to run queue\n",
-                   cap->no, (W_)tso->id);
+        debugBelch("cap %d: thread %" FMT_Word "[\"%s\"]"" appended to run queue\n",
+                   cap->no, (W_)tso->id, threadLabel);
         break;
     case EVENT_MIGRATE_THREAD:  // (cap, thread, new_cap)
-        debugBelch("cap %d: thread %" FMT_Word " migrating to cap %d\n",
-                   cap->no, (W_)tso->id, (int)info1);
+        debugBelch("cap %d: thread %" FMT_Word "[\"%s\"]" " migrating to cap %d\n",
+                   cap->no, (W_)tso->id, threadLabel, (int)info1);
         break;
     case EVENT_THREAD_WAKEUP:   // (cap, thread, info1_cap)
-        debugBelch("cap %d: waking up thread %" FMT_Word " on cap %d\n",
-                   cap->no, (W_)tso->id, (int)info1);
+        debugBelch("cap %d: waking up thread %" FMT_Word "[\"%s\"]" " on cap %d\n",
+                   cap->no, (W_)tso->id, threadLabel, (int)info1);
         break;
 
     case EVENT_STOP_THREAD:     // (cap, thread, status)
         if (info1 == 6 + BlockedOnBlackHole) {
-            debugBelch("cap %d: thread %" FMT_Word " stopped (blocked on black hole owned by thread %lu)\n",
-                       cap->no, (W_)tso->id, (long)info2);
+            debugBelch("cap %d: thread %" FMT_Word "[\"%s\"]" " stopped (blocked on black hole owned by thread %lu)\n",
+                       cap->no, (W_)tso->id, threadLabel, (long)info2);
         } else if (info1 == StackOverflow) {
-            debugBelch("cap %d: thead %" FMT_Word
+            debugBelch("cap %d: thread %" FMT_Word "[\"%s\"]"
                        " stopped (stack overflow, size %lu)\n",
-                      cap->no, (W_)tso->id, (long)info2);
+                      cap->no, (W_)tso->id, threadLabel, (long)info2);
 
         } else {
-            debugBelch("cap %d: thread %" FMT_Word " stopped (%s)\n",
-                       cap->no, (W_)tso->id, thread_stop_reasons[info1]);
+            debugBelch("cap %d: thread %" FMT_Word "[\"%s\"]" " stopped (%s)\n",
+                       cap->no, (W_)tso->id, threadLabel, thread_stop_reasons[info1]);
         }
         break;
     default:
-        debugBelch("cap %d: thread %" FMT_Word ": event %d\n\n",
-                   cap->no, (W_)tso->id, tag);
+        debugBelch("cap %d: thread %" FMT_Word "[\"%s\"]" ": event %d\n\n",
+                   cap->no, (W_)tso->id, threadLabel, tag);
         break;
     }
 
@@ -375,6 +387,23 @@ void traceEventGcStats_  (Capability *cap,
     }
 }
 
+void traceEventMemReturn_ (Capability *cap,
+                          uint32_t    current_mblocks,
+                          uint32_t    needed_mblocks,
+                          uint32_t    returned_mblocks)
+{
+#if defined(DEBUG)
+    if (RtsFlags.TraceFlags.tracing == TRACE_STDERR) {
+        traceCap_stderr(cap, "Memory Return (Current: %u) (Needed: %u) (Returned: %u)"
+                       , current_mblocks, needed_mblocks, returned_mblocks);
+    } else
+#endif
+    {
+        postEventMemReturn( cap, CAPSET_HEAP_DEFAULT
+                          , current_mblocks, needed_mblocks, returned_mblocks);
+    }
+}
+
 void traceCapEvent_ (Capability   *cap,
                      EventTypeNum  tag)
 {
@@ -458,7 +487,7 @@ void traceOSProcessInfo_(void) {
                         CAPSET_OSPROCESS_DEFAULT,
                         getpid());
 
-#if !defined (mingw32_HOST_OS)
+#if !defined(mingw32_HOST_OS)
 /* Windows has no strong concept of process hierarchy, so no getppid().
  * In any case, this trace event is mainly useful for tracing programs
  * that use 'forkProcess' which Windows doesn't support anyway.
@@ -615,6 +644,12 @@ void traceHeapProfBegin(StgWord8 profile_id)
         postHeapProfBegin(profile_id);
     }
 }
+void traceHeapBioProfSampleBegin(StgInt era, StgWord64 time)
+{
+    if (eventlog_enabled) {
+        postHeapBioProfSampleBegin(era, time);
+    }
+}
 
 void traceHeapProfSampleBegin(StgInt era)
 {
@@ -623,11 +658,37 @@ void traceHeapProfSampleBegin(StgInt era)
     }
 }
 
+void traceHeapProfSampleEnd(StgInt era)
+{
+    if (eventlog_enabled) {
+        postHeapProfSampleEnd(era);
+    }
+}
+
 void traceHeapProfSampleString(StgWord8 profile_id,
                                const char *label, StgWord residency)
 {
     if (eventlog_enabled) {
         postHeapProfSampleString(profile_id, label, residency);
+    }
+}
+
+void traceIPE(const InfoProvEnt *ipe)
+{
+#if defined(DEBUG)
+    if (RtsFlags.TraceFlags.tracing == TRACE_STDERR) {
+        ACQUIRE_LOCK(&trace_utx);
+
+        tracePreface();
+        debugBelch("IPE: table_name %s, closure_desc %s, ty_desc %s, label %s, module %s, srcloc %s\n",
+                   ipe->prov.table_name, ipe->prov.closure_desc, ipe->prov.ty_desc,
+                   ipe->prov.label, ipe->prov.module, ipe->prov.srcloc);
+
+        RELEASE_LOCK(&trace_utx);
+    } else
+#endif
+    if (eventlog_enabled) {
+        postIPE(ipe);
     }
 }
 
@@ -643,11 +704,27 @@ void traceHeapProfCostCentre(StgWord32 ccID,
     }
 }
 
+// This one is for .hp samples
 void traceHeapProfSampleCostCentre(StgWord8 profile_id,
                                    CostCentreStack *stack, StgWord residency)
 {
     if (eventlog_enabled) {
         postHeapProfSampleCostCentre(profile_id, stack, residency);
+    }
+}
+
+// This one is for .prof samples
+void traceProfSampleCostCentre(Capability *cap,
+                               CostCentreStack *stack, StgWord tick)
+{
+    if (eventlog_enabled) {
+        postProfSampleCostCentre(cap, stack, tick);
+    }
+}
+void traceProfBegin(void)
+{
+    if (eventlog_enabled) {
+        postProfBegin();
     }
 }
 #endif
@@ -787,6 +864,55 @@ void traceThreadLabel_(Capability *cap,
     {
         postThreadLabel(cap, tso->id, label);
     }
+}
+
+void traceConcMarkBegin(void)
+{
+    if (eventlog_enabled)
+        postEventNoCap(EVENT_CONC_MARK_BEGIN);
+}
+
+void traceConcMarkEnd(StgWord32 marked_obj_count)
+{
+    if (eventlog_enabled)
+        postConcMarkEnd(marked_obj_count);
+}
+
+void traceConcSyncBegin(void)
+{
+    if (eventlog_enabled)
+        postEventNoCap(EVENT_CONC_SYNC_BEGIN);
+}
+
+void traceConcSyncEnd(void)
+{
+    if (eventlog_enabled)
+        postEventNoCap(EVENT_CONC_SYNC_END);
+}
+
+void traceConcSweepBegin(void)
+{
+    if (eventlog_enabled)
+        postEventNoCap(EVENT_CONC_SWEEP_BEGIN);
+}
+
+void traceConcSweepEnd(void)
+{
+    if (eventlog_enabled)
+        postEventNoCap(EVENT_CONC_SWEEP_END);
+}
+
+void traceConcUpdRemSetFlush(Capability *cap)
+{
+    if (eventlog_enabled)
+        postConcUpdRemSetFlush(cap);
+}
+
+void traceNonmovingHeapCensus(uint32_t log_blk_size,
+                              const struct NonmovingAllocCensus *census)
+{
+    if (eventlog_enabled && TRACE_nonmoving_gc)
+        postNonmovingHeapCensus(log_blk_size, census);
 }
 
 void traceThreadStatus_ (StgTSO *tso USED_IF_DEBUG)

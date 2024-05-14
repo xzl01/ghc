@@ -1,12 +1,10 @@
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE Trustworthy #-}
-{-# LANGUAGE BangPatterns
-           , CPP
-           , ExistentialQuantification
-           , NoImplicitPrelude
-           , RecordWildCards
-           , TypeSynonymInstances
-           , FlexibleInstances
-  #-}
 
 -- |
 -- The event manager supports event notification on fds. Each fd may
@@ -372,7 +370,7 @@ registerFd mgr cb fd evs lt = do
     when we register an event.
 
     For more information, please read:
-        http://ghc.haskell.org/trac/ghc/ticket/7651
+        https://gitlab.haskell.org/ghc/ghc/issues/7651
 -}
 -- | Wake up the event manager.
 wakeManager :: EventManager -> IO ()
@@ -417,7 +415,8 @@ unregisterFd mgr reg = do
   wake <- unregisterFd_ mgr reg
   when wake $ wakeManager mgr
 
--- | Close a file descriptor in a race-safe way.
+-- | Close a file descriptor in a race-safe way.  It might block, although for
+-- a very short time; and thus it is interruptible by asynchronous exceptions.
 closeFd :: EventManager -> (Fd -> IO ()) -> Fd -> IO ()
 closeFd mgr close fd = do
   fds <- withMVar (callbackTableVar mgr fd) $ \tbl -> do
@@ -438,9 +437,9 @@ closeFd mgr close fd = do
 -- holds the callback table lock for the fd. It must hold this lock because
 -- this command executes a backend command on the fd.
 closeFd_ :: EventManager
-            -> IntTable [FdData]
-            -> Fd
-            -> IO (IO ())
+         -> IntTable [FdData]
+         -> Fd
+         -> IO (IO ())
 closeFd_ mgr tbl fd = do
   prev <- IT.delete (fromIntegral fd) tbl
   case prev of
@@ -507,8 +506,8 @@ onFdEvent mgr fd evs
                 -- if there are no saved events and we registered with one-shot
                 -- semantics then there is no need to re-arm
                 unless (OneShot == I.elLifetime allEls
-                        && mempty == I.elEvent savedEls) $ do
-                  void $ I.modifyFdOnce (emBackend mgr) fd (I.elEvent savedEls)
+                  && mempty == I.elEvent savedEls) $
+                    void $ I.modifyFdOnce (emBackend mgr) fd (I.elEvent savedEls)
               _ ->
                 -- we need to re-arm with multi-shot semantics
                 void $ I.modifyFd (emBackend mgr) fd

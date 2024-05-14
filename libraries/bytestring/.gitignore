@@ -7,3 +7,6 @@ ghc.mk
 cabal.sandbox.config
 .hsenv
 *~
+dist-newstyle/
+cabal.project.local*
+.nvimrc

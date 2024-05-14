@@ -1,6 +1,6 @@
 #if __GLASGOW_HASKELL__ >= 709
 {-# LANGUAGE Safe #-}
-#elif __GLASGOW_HASKELL__ >= 701
+#else
 {-# LANGUAGE Trustworthy #-}
 #endif
 -----------------------------------------------------------------------------
@@ -16,11 +16,48 @@
 -- A collection of FFI declarations for interfacing with Win32 Time API.
 --
 -----------------------------------------------------------------------------
-module System.Win32.Time where
+module System.Win32.Time
+    ( FILETIME(..)
+    , SYSTEMTIME(..)
+    , TIME_ZONE_INFORMATION(..)
+    , TimeZoneId(..)
+    , getSystemTime
+    , setSystemTime
+    , getSystemTimeAsFileTime
+    , getLocalTime
+    , setLocalTime
+    , getSystemTimeAdjustment
+    , getTickCount
+    , getLastInputInfo
+    , getIdleTime
+    , setSystemTimeAdjustment
+    , getTimeZoneInformation
+    , systemTimeToFileTime
+    , fileTimeToSystemTime
+    , getFileTime
+    , setFileTime
+    , invalidFileTime
+    , fileTimeToLocalFileTime
+    , localFileTimeToFileTime
+    , queryPerformanceFrequency
+    , queryPerformanceCounter
+    , GetTimeFormatFlags
+    , lOCALE_NOUSEROVERRIDE
+    , lOCALE_USE_CP_ACP
+    , tIME_NOMINUTESORSECONDS
+    , tIME_NOSECONDS
+    , tIME_NOTIMEMARKER
+    , tIME_FORCE24HOURFORMAT
+    , getTimeFormatEx
+    , getTimeFormat
+    ) where
 
-import System.Win32.Types   ( DWORD, WORD, LONG, BOOL, failIf, failIf_, HANDLE
-                            , peekTStringLen, LCID, LPTSTR, LPCTSTR, DDWORD
-                            , LARGE_INTEGER, ddwordToDwords, dwordsToDdword )
+import System.Win32.String  ( peekTStringLen, withTString )
+import System.Win32.Types   ( BOOL, DDWORD, DWORD, HANDLE, LARGE_INTEGER, LCID
+                            , LONG, LPCTSTR, LPCWSTR, LPTSTR, LPWSTR, UINT, WORD
+                            , dwordsToDdword, ddwordToDwords, failIf
+                            , failIfFalse_, failIf_ )
+import System.Win32.Utils   ( trySized )
 
 import Control.Monad    ( when, liftM3, liftM )
 import Data.Word        ( Word8 )
@@ -35,6 +72,7 @@ import Foreign.Marshal.Utils (maybeWith)
 ##include "windows_cconv.h"
 #include <windows.h>
 #include "alignment.h"
+#include "winnls_compat.h"
 
 ----------------------------------------------------------------
 -- data types
@@ -58,6 +96,8 @@ data TIME_ZONE_INFORMATION = TIME_ZONE_INFORMATION
 
 data TimeZoneId = TzIdUnknown | TzIdStandard | TzIdDaylight
     deriving (Show, Eq, Ord)
+
+data LASTINPUTINFO = LASTINPUTINFO DWORD deriving (Show)
 
 ----------------------------------------------------------------
 -- Instances
@@ -128,6 +168,16 @@ instance Storable TIME_ZONE_INFORMATION where
         dnam <- peekCWString (plusPtr buf (#offset TIME_ZONE_INFORMATION, DaylightName))
         return $ TIME_ZONE_INFORMATION bias snam sdat sbia dnam ddat dbia
 
+instance Storable LASTINPUTINFO where
+    sizeOf = const (#size LASTINPUTINFO)
+    alignment = sizeOf
+    poke buf (LASTINPUTINFO t) = do
+        (#poke LASTINPUTINFO, cbSize) buf ((#size LASTINPUTINFO) :: UINT)
+        (#poke LASTINPUTINFO, dwTime) buf t
+    peek buf = do
+        t <- (#peek LASTINPUTINFO, dwTime) buf
+        return $ LASTINPUTINFO t
+
 foreign import WINDOWS_CCONV "windows.h GetSystemTime"
     c_GetSystemTime :: Ptr SYSTEMTIME -> IO ()
 getSystemTime :: IO SYSTEMTIME
@@ -177,6 +227,21 @@ getSystemTimeAdjustment = alloca $ \ta -> alloca $ \ti -> alloca $ \enabled -> d
 
 foreign import WINDOWS_CCONV "windows.h GetTickCount" getTickCount :: IO DWORD
 
+foreign import WINDOWS_CCONV unsafe "windows.h GetLastInputInfo"
+  c_GetLastInputInfo :: Ptr LASTINPUTINFO -> IO Bool
+getLastInputInfo :: IO DWORD
+getLastInputInfo =
+  with (LASTINPUTINFO 0) $ \lii_p -> do
+  failIfFalse_ "GetLastInputInfo" $ c_GetLastInputInfo lii_p
+  LASTINPUTINFO lii <- peek lii_p
+  return lii
+
+getIdleTime :: IO Integer
+getIdleTime = do
+  lii <- getLastInputInfo
+  now <- getTickCount
+  return $ fromIntegral $ now - lii
+
 foreign import WINDOWS_CCONV "windows.h SetSystemTimeAdjustment"
     c_SetSystemTimeAdjustment :: DWORD -> BOOL -> IO BOOL
 setSystemTimeAdjustment :: Maybe Int -> IO ()
@@ -224,14 +289,21 @@ getFileTime h = alloca $ \crt -> alloca $ \acc -> alloca $ \wrt -> do
     failIf_ not "getFileTime: GetFileTime" $ c_GetFileTime h crt acc wrt
     liftM3 (,,) (peek crt) (peek acc) (peek wrt)
 
+invalidFileTime :: FILETIME
+invalidFileTime = FILETIME 0
+
 foreign import WINDOWS_CCONV "windows.h SetFileTime"
     c_SetFileTime :: HANDLE -> Ptr FILETIME -> Ptr FILETIME -> Ptr FILETIME -> IO BOOL
-setFileTime :: HANDLE -> FILETIME -> FILETIME -> FILETIME -> IO ()
-setFileTime h crt acc wrt = with crt $
-    \c_crt -> with acc $
-    \c_acc -> with wrt $
+setFileTime :: HANDLE -> Maybe FILETIME -> Maybe FILETIME -> Maybe FILETIME -> IO ()
+setFileTime h crt acc wrt = withTime crt $
+    \c_crt -> withTime acc $
+    \c_acc -> withTime wrt $
     \c_wrt -> do
       failIf_ not "setFileTime: SetFileTime" $ c_SetFileTime h c_crt c_acc c_wrt
+  where
+    withTime :: Maybe FILETIME -> (Ptr FILETIME -> IO a) -> IO a
+    withTime Nothing k  = k nullPtr
+    withTime (Just t) k = with t k
 
 foreign import WINDOWS_CCONV "windows.h FileTimeToLocalFileTime"
     c_FileTimeToLocalFileTime :: Ptr FILETIME -> Ptr FILETIME -> IO BOOL
@@ -303,6 +375,26 @@ type GetTimeFormatFlags = DWORD
     , tIME_NOTIMEMARKER     = TIME_NOTIMEMARKER
     , tIME_FORCE24HOURFORMAT= TIME_FORCE24HOURFORMAT
     }
+
+getTimeFormatEx :: Maybe String
+                -> GetTimeFormatFlags
+                -> Maybe SYSTEMTIME
+                -> Maybe String
+                -> IO String
+getTimeFormatEx locale flags st fmt =
+    maybeWith withTString locale $ \c_locale ->
+        maybeWith with st $ \c_st ->
+            maybeWith withTString fmt $ \c_fmt -> do
+                let c_func = c_GetTimeFormatEx c_locale flags c_st c_fmt
+                trySized "GetTimeFormatEx" c_func
+foreign import WINDOWS_CCONV "windows.h GetTimeFormatEx"
+    c_GetTimeFormatEx :: LPCWSTR
+                      -> GetTimeFormatFlags
+                      -> Ptr SYSTEMTIME
+                      -> LPCWSTR
+                      -> LPWSTR
+                      -> CInt
+                      -> IO CInt
 
 foreign import WINDOWS_CCONV "windows.h GetTimeFormatW"
     c_GetTimeFormat :: LCID -> GetTimeFormatFlags -> Ptr SYSTEMTIME -> LPCTSTR -> LPTSTR -> CInt -> IO CInt

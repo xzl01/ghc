@@ -12,7 +12,7 @@
 -- License     :  BSD-style (see the LICENSE file in the distribution)
 --
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  portable
 
 -- The 'Const' functor.
@@ -25,7 +25,7 @@ import Data.Bits (Bits, FiniteBits)
 import Data.Foldable (Foldable(foldMap))
 import Foreign.Storable (Storable)
 
-import GHC.Arr (Ix)
+import GHC.Ix (Ix)
 import GHC.Base
 import GHC.Enum (Bounded, Enum)
 import GHC.Float (Floating, RealFloat)

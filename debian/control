@@ -3,27 +3,27 @@ Section: haskell
 Priority: optional
 Maintainer: Debian Haskell Group <pkg-haskell-maintainers@lists.alioth.debian.org>
 Uploaders:
- Joachim Breitner <nomeata@debian.org>,
  Clint Adams <clint@debian.org>,
  Ilias Tsitsimpis <iliastsi@debian.org>
-Standards-Version: 4.5.0
+Standards-Version: 4.6.2
 Rules-Requires-Root: no
 Build-Depends:
   debhelper-compat (= 12),
-  haskell-devscripts-minimal <!cross>,
+  haskell-devscripts-minimal (>= 0.16.31) <!cross>,
   devscripts,
-  grep-dctrl,
   pkg-config,
-  ghc:native (>= 8.6),
+  ghc:native (>= 9.0),
+  hadrian:native (>= 9.4.7-3) <!pkg.ghc.nohadrian>,
+  hadrian:native (<< 9.5) <!pkg.ghc.nohadrian>,
+  llvm-15 [armel armhf s390x riscv64],
   libgmp-dev,
-  llvm-13 [arm64 armel armhf],
   libffi-dev,
-  libncurses5-dev,
+  libncurses-dev,
+  python3:native,
   python3-sphinx <!cross>,
-  dpkg-dev (>= 1.16.1.1)
 Build-Depends-Indep:
   hscolour,
-  fop
+  python3-sphinx-rtd-theme,
 Build-Conflicts: ccache
 Homepage: https://haskell.org/ghc/
 Vcs-Git: https://salsa.debian.org/haskell-team/DHG_packages.git [p/ghc]
@@ -32,13 +32,13 @@ Vcs-Browser: https://salsa.debian.org/haskell-team/DHG_packages/tree/master/p/gh
 Package: ghc
 Architecture: any
 Depends:
-  llvm-13 [arm64 armel armhf],
+  llvm-15 [armel armhf s390x riscv64],
   gcc,
   libgmp-dev,
   libffi-dev,
   libbsd-dev,
   libc6-dev,
-  libncurses5-dev,
+  libncurses-dev,
   ${shlibs:Depends},
   ${misc:Depends}
 Pre-Depends: dpkg (>= 1.16.1)
@@ -51,34 +51,28 @@ Provides:
   haddock,
   ghc-haddock,
   ${haddock:Provides}
-Replaces: ghc6 (<< 7), ghc-dynamic (<< 7.8), ghc-haddock (<< 7.10), ${conflicting-devs}
-Conflicts: ghc6 (<< 7), ghc-dynamic (<< 7.8)
-Breaks: cabal-install (<< 1.22), haskell-devscripts (<< 0.8.13),
- ghc-doc (<< 7.10), ghc-haddock (<< 7.10), ${conflicting-devs}
-Suggests: perl, ghc-prof, ghc-doc, haskell-doc, llvm-13
+Replaces: ${conflicting-devs}
+Breaks: ${conflicting-devs}
+Suggests: perl, ghc-prof, ghc-doc, llvm-15
 Description: The Glasgow Haskell Compilation system
  The Glorious Glasgow Haskell Compilation system (GHC) is a compiler for
  Haskell.
  .
  Haskell is "the" standard lazy functional programming language.  The language
- definition and additional documentation can be found in the `haskell-doc'
- package.  Alternatively, there is an online version at
- http://haskell.org/onlinereport/.
+ definition and additional documentation can be found at
+ https://www.haskell.org/documentation/.
 
 Package: ghc-prof
 Architecture: any
 Provides: ${provided-profs}, ${haskell:Provides}
 Depends: ghc (= ${binary:Version}), ${misc:Depends}
-Replaces: ghc6-prof (<< 7)
-Conflicts: ghc6-prof (<< 7)
 Description: Profiling libraries for the Glasgow Haskell Compilation system
  The Glorious Glasgow Haskell Compilation system (GHC) is a compiler for
  Haskell.
  .
  Haskell is "the" standard lazy functional programming language.  The language
- definition and additional documentation can be found in the `haskell-doc'
- package.  Alternatively, there is an online version at
- http://haskell.org/onlinereport/.
+ definition and additional documentation can be found at
+ https://www.haskell.org/documentation/.
  .
  This package contains additional profiling libraries. They are only needed,
  if you want to take a closer look on where exactly your program burns CPU
@@ -87,11 +81,7 @@ Description: Profiling libraries for the Glasgow Haskell Compilation system
 Package: ghc-doc
 Section: doc
 Architecture: all
-Suggests: haskell-doc
 Provides: ${provided-docs}
-Replaces: ghc6-doc (<< 7), libghc-terminfo-doc (<< 0.3.2.5-4), libghc-transformers-doc (<< 0.3.0.0-6), libghc-xhtml-doc (<< 3000.2.1-5)
-Conflicts: ghc6-doc (<< 7), ghc (<= 7.0.3-1)
-Breaks: libghc-terminfo-doc (<< 0.3.2.5-4), libghc-transformers-doc (<< 0.3.0.0-6), libghc-xhtml-doc (<< 3000.2.1-5)
 Depends: ${haddock:Depends}, ${misc:Depends}, perl, libjs-mathjax
 Pre-Depends: dpkg (>= 1.16.1)
 Description: Documentation for the Glasgow Haskell Compilation system
@@ -99,9 +89,8 @@ Description: Documentation for the Glasgow Haskell Compilation system
  Haskell.
  .
  Haskell is "the" standard lazy functional programming language.  The language
- definition and additional documentation can be found in the `haskell-doc'
- package.  Alternatively, there is an online version at
- http://haskell.org/onlinereport/.
+ definition and additional documentation can be found at
+ https://www.haskell.org/documentation/.
  .
  This package includes HTML, DVI and PS versions of the SGML-based
  documentation around GHC.

@@ -1,4 +1,6 @@
-#if __GLASGOW_HASKELL__ >= 701
+#if __GLASGOW_HASKELL__ >= 709
+{-# LANGUAGE Safe #-}
+#else
 {-# LANGUAGE Trustworthy #-}
 #endif
 -----------------------------------------------------------------------------
@@ -14,7 +16,33 @@
 -- A collection of FFI declarations for interfacing with Win32 mapped files.
 --
 -----------------------------------------------------------------------------
-module System.Win32.FileMapping where
+module System.Win32.FileMapping
+    ( mapFile
+    , MappedObject(..)
+    , withMappedFile
+    , withMappedArea
+      -- * Enums
+      -- ** Section protection flags
+    , ProtectSectionFlags
+    , sEC_COMMIT
+    , sEC_IMAGE
+    , sEC_NOCACHE
+    , sEC_RESERVE
+      -- ** Access falgs
+    , FileMapAccess
+    , fILE_MAP_ALL_ACCESS
+    , fILE_MAP_COPY
+    , fILE_MAP_READ
+    , fILE_MAP_WRITE
+    , fILE_SHARE_WRITE
+
+      -- * Mapping files
+    , createFileMapping
+    , openFileMapping
+    , mapViewOfFileEx
+    , mapViewOfFile
+    , unmapViewOfFile
+    ) where
 
 import System.Win32.Types   ( HANDLE, DWORD, BOOL, SIZE_T, LPCTSTR, withTString
                             , failIf, failIfNull, DDWORD, ddwordToDwords
@@ -24,8 +52,6 @@ import System.Win32.File
 import System.Win32.Info
 
 import Control.Exception        ( mask_, bracket )
-import Data.ByteString          ( ByteString )
-import Data.ByteString.Internal ( fromForeignPtr )
 import Foreign                  ( Ptr, nullPtr, plusPtr, maybeWith, FunPtr
                                 , ForeignPtr, newForeignPtr )
 import Foreign.C.Types (CUIntPtr(..))
@@ -54,12 +80,6 @@ mapFile path = do
                     ptr <- mapViewOfFile fm fILE_MAP_READ 0 0
                     newForeignPtr c_UnmapViewOfFileFinaliser ptr
                 return (fp, fromIntegral $ bhfiSize fi)
-
--- | As mapFile, but returns ByteString
-mapFileBs :: FilePath -> IO ByteString
-mapFileBs p = do
-    (fp,i) <- mapFile p
-    return $ fromForeignPtr fp 0 i
 
 data MappedObject = MappedObject HANDLE HANDLE FileMapAccess
 
@@ -143,7 +163,7 @@ openFileMapping access inherit name =
             c_OpenFileMapping access inherit c_name
 
 mapViewOfFileEx :: HANDLE -> FileMapAccess -> DDWORD -> SIZE_T -> Ptr a -> IO (Ptr b)
-mapViewOfFileEx h access offset size base = 
+mapViewOfFileEx h access offset size base =
     failIfNull "mapViewOfFile(Ex): c_MapViewOfFileEx" $
         c_MapViewOfFileEx h access ohi olow size base
     where
@@ -162,7 +182,7 @@ foreign import WINDOWS_CCONV "windows.h OpenFileMappingW"
     c_OpenFileMapping :: DWORD -> BOOL -> LPCTSTR -> IO HANDLE
 
 foreign import WINDOWS_CCONV "windows.h CreateFileMappingW"
-    c_CreateFileMapping :: HANDLE -> Ptr () -> DWORD -> DWORD -> DWORD -> LPCTSTR -> IO HANDLE 
+    c_CreateFileMapping :: HANDLE -> Ptr () -> DWORD -> DWORD -> DWORD -> LPCTSTR -> IO HANDLE
 
 foreign import WINDOWS_CCONV "windows.h MapViewOfFileEx"
     c_MapViewOfFileEx :: HANDLE -> DWORD -> DWORD -> DWORD -> SIZE_T -> Ptr a -> IO (Ptr b)

@@ -7,7 +7,7 @@
 -- License     :  BSD-style (see the file libraries/base/LICENSE)
 --
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  non-portable (uses Control.Monad.ST)
 --
 -- Mutable references in the (strict) ST monad.
@@ -27,6 +27,10 @@ module Data.STRef (
 import GHC.ST
 import GHC.STRef
 
+-- $setup
+-- >>> import Prelude
+-- >>> import Control.Monad.ST
+
 -- | Mutate the contents of an 'STRef'.
 --
 -- >>> :{
@@ -40,7 +44,7 @@ import GHC.STRef
 -- "Hello, world!"
 --
 -- Be warned that 'modifySTRef' does not apply the function strictly.  This
--- means if the program calls 'modifySTRef' many times, but seldomly uses the
+-- means if the program calls 'modifySTRef' many times, but seldom uses the
 -- value, thunks will pile up in memory resulting in a space leak.  This is a
 -- common mistake made when using an 'STRef' as a counter.  For example, the
 -- following will leak memory and may produce a stack overflow:

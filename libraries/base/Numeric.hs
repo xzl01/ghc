@@ -24,6 +24,7 @@ module Numeric (
 
         showIntAtBase,
         showInt,
+        showBin,
         showHex,
         showOct,
 
@@ -46,6 +47,7 @@ module Numeric (
         readSigned,
 
         readInt,
+        readBin,
         readDec,
         readOct,
         readHex,
@@ -70,17 +72,26 @@ import GHC.Show
 import Text.ParserCombinators.ReadP( ReadP, readP_to_S, pfail )
 import qualified Text.Read.Lex as L
 
+-- $setup
+-- >>> import Prelude
 
 -- -----------------------------------------------------------------------------
 -- Reading
 
--- | Reads an /unsigned/ 'Integral' value in an arbitrary base.
+-- | Reads an /unsigned/ integral value in an arbitrary base.
 readInt :: Num a
   => a                  -- ^ the base
   -> (Char -> Bool)     -- ^ a predicate distinguishing valid digits in this base
   -> (Char -> Int)      -- ^ a function converting a valid digit character to an 'Int'
   -> ReadS a
 readInt base isDigit valDigit = readP_to_S (L.readIntP base isDigit valDigit)
+
+-- | Read an unsigned number in binary notation.
+--
+-- >>> readBin "10011"
+-- [(19,"")]
+readBin :: (Eq a, Num a) => ReadS a
+readBin = readP_to_S L.readBinP
 
 -- | Read an unsigned number in octal notation.
 --
@@ -266,10 +277,10 @@ showHFloat = showString . fmt
 
 -- | Shows a /non-negative/ 'Integral' number using the base specified by the
 -- first argument, and the character representation specified by the second.
-showIntAtBase :: (Integral a, Show a) => a -> (Int -> Char) -> a -> ShowS
+showIntAtBase :: Integral a => a -> (Int -> Char) -> a -> ShowS
 showIntAtBase base toChr n0 r0
-  | base <= 1 = errorWithoutStackTrace ("Numeric.showIntAtBase: applied to unsupported base " ++ show base)
-  | n0 <  0   = errorWithoutStackTrace ("Numeric.showIntAtBase: applied to negative number " ++ show n0)
+  | base <= 1 = errorWithoutStackTrace ("Numeric.showIntAtBase: applied to unsupported base " ++ show (toInteger base))
+  | n0 <  0   = errorWithoutStackTrace ("Numeric.showIntAtBase: applied to negative number " ++ show (toInteger n0))
   | otherwise = showIt (quotRem n0 base) r0
    where
     showIt (n,d) r = seq c $ -- stricter than necessary
@@ -281,9 +292,13 @@ showIntAtBase base toChr n0 r0
       r' = c : r
 
 -- | Show /non-negative/ 'Integral' numbers in base 16.
-showHex :: (Integral a,Show a) => a -> ShowS
+showHex :: Integral a => a -> ShowS
 showHex = showIntAtBase 16 intToDigit
 
 -- | Show /non-negative/ 'Integral' numbers in base 8.
-showOct :: (Integral a, Show a) => a -> ShowS
+showOct :: Integral a => a -> ShowS
 showOct = showIntAtBase 8  intToDigit
+
+-- | Show /non-negative/ 'Integral' numbers in base 2.
+showBin :: Integral a => a -> ShowS
+showBin = showIntAtBase 2  intToDigit

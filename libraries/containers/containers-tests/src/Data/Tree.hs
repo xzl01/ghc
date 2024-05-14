@@ -1,8 +1,10 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE CPP #-}
 #if __GLASGOW_HASKELL__
-{-# LANGUAGE DeriveDataTypeable, StandaloneDeriving #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveLift #-}
 {-# LANGUAGE Trustworthy #-}
 #endif
 
@@ -51,65 +53,62 @@ module Data.Tree(
 
     ) where
 
-#if MIN_VERSION_base(4,8,0)
-import Data.Foldable (toList)
-import Control.Applicative (Applicative(..), liftA2)
-#else
-import Control.Applicative (Applicative(..), liftA2, (<$>))
-import Data.Foldable (Foldable(foldMap), toList)
-import Data.Monoid (Monoid(..))
-import Data.Traversable (Traversable(traverse))
-#endif
-
+import Utils.Containers.Internal.Prelude as Prelude
+import Prelude ()
+import Data.Foldable (fold, foldl', toList)
+import Data.Traversable (foldMapDefault)
 import Control.Monad (liftM)
 import Control.Monad.Fix (MonadFix (..), fix)
 import Data.Sequence (Seq, empty, singleton, (<|), (|>), fromList,
             ViewL(..), ViewR(..), viewl, viewr)
-import Data.Typeable
 import Control.DeepSeq (NFData(rnf))
 
 #ifdef __GLASGOW_HASKELL__
 import Data.Data (Data)
 import GHC.Generics (Generic, Generic1)
+import Language.Haskell.TH.Syntax (Lift)
+-- See Note [ Template Haskell Dependencies ]
+import Language.Haskell.TH ()
 #endif
 
 import Control.Monad.Zip (MonadZip (..))
 
-#if MIN_VERSION_base(4,8,0)
 import Data.Coerce
-#endif
 
-#if MIN_VERSION_base(4,9,0)
 import Data.Functor.Classes
-#endif
-#if (!MIN_VERSION_base(4,11,0)) && MIN_VERSION_base(4,9,0)
+
+#if !MIN_VERSION_base(4,11,0)
 import Data.Semigroup (Semigroup (..))
 #endif
 
-#if !MIN_VERSION_base(4,8,0)
-import Data.Functor ((<$))
+#if MIN_VERSION_base(4,18,0)
+import qualified Data.Foldable1 as Foldable1
+import Data.List.NonEmpty (NonEmpty(..))
 #endif
 
 -- | Non-empty, possibly infinite, multi-way trees; also known as /rose trees/.
 data Tree a = Node {
         rootLabel :: a,         -- ^ label value
-        subForest :: Forest a   -- ^ zero or more child trees
+        subForest :: [Tree a]   -- ^ zero or more child trees
     }
 #ifdef __GLASGOW_HASKELL__
   deriving ( Eq
+           , Ord -- ^ @since 0.6.5
            , Read
            , Show
            , Data
            , Generic  -- ^ @since 0.5.8
            , Generic1 -- ^ @since 0.5.8
+           , Lift -- ^ @since 0.6.6
            )
 #else
-  deriving (Eq, Read, Show)
+  deriving (Eq, Ord, Read, Show)
 #endif
 
+-- | This type synonym exists primarily for historical
+-- reasons.
 type Forest a = [Tree a]
 
-#if MIN_VERSION_base(4,9,0)
 -- | @since 0.5.9
 instance Eq1 Tree where
   liftEq eq = leq
@@ -144,9 +143,6 @@ instance Read1 Tree where
       (fr, s9) <- liftReadList rd rdl s8
       ("}", s10) <- lex s9
       pure (Node a fr, s10)
-#endif
-
-INSTANCE_TYPEABLE1(Tree)
 
 instance Functor Tree where
     fmap = fmapTree
@@ -154,9 +150,8 @@ instance Functor Tree where
 
 fmapTree :: (a -> b) -> Tree a -> Tree b
 fmapTree f (Node x ts) = Node (f x) (map (fmapTree f) ts)
-#if MIN_VERSION_base(4,8,0)
--- Safe coercions were introduced in 4.7.0, but I am not sure if they played
--- well enough with RULES to do what we want.
+
+#ifdef __GLASGOW_HASKELL__
 {-# NOINLINE [1] fmapTree #-}
 {-# RULES
 "fmapTree/coerce" fmapTree coerce = coerce
@@ -192,17 +187,117 @@ mfixTree f
                     [0..] children)
 
 instance Traversable Tree where
-    traverse f (Node x ts) = liftA2 Node (f x) (traverse (traverse f) ts)
+  traverse f = go
+    where go (Node x ts) = liftA2 Node (f x) (traverse go ts)
+  {-# INLINE traverse #-}
 
+-- | Folds in preorder
+
+-- See Note [Implemented Foldable Tree functions]
 instance Foldable Tree where
-    foldMap f (Node x ts) = f x `mappend` foldMap (foldMap f) ts
+    fold = foldMap id
+    {-# INLINABLE fold #-}
 
-#if MIN_VERSION_base(4,8,0)
+    foldMap = foldMapDefault
+    {-# INLINE foldMap #-}
+
+    foldr f z = \t -> go t z  -- Use a lambda to allow inlining with two arguments
+      where
+        go (Node x ts) = f x . foldr (\t k -> go t . k) id ts
+        -- This is equivalent to the following simpler definition, but has been found to optimize
+        -- better in benchmarks:
+        -- go (Node x ts) z' = f x (foldr go z' ts)
+    {-# INLINE foldr #-}
+
+    foldl' f = go
+      where go !z (Node x ts) = foldl' go (f z x) ts
+    {-# INLINE foldl' #-}
+
+    foldr1 = foldrMap1 id
+
+    foldl1 = foldlMap1 id
+
     null _ = False
     {-# INLINE null #-}
-    toList = flatten
-    {-# INLINE toList #-}
+
+    elem = any . (==)
+    {-# INLINABLE elem #-}
+
+    maximum = foldlMap1' id max
+    {-# INLINABLE maximum #-}
+
+    minimum = foldlMap1' id min
+    {-# INLINABLE minimum #-}
+
+    sum = foldlMap1' id (+)
+    {-# INLINABLE sum #-}
+
+    product = foldlMap1' id (*)
+    {-# INLINABLE product #-}
+
+#if MIN_VERSION_base(4,18,0)
+-- | Folds in preorder
+--
+-- @since 0.6.7
+
+-- See Note [Implemented Foldable1 Tree functions]
+instance Foldable1.Foldable1 Tree where
+  foldMap1 f = go
+    where
+      -- We'd like to write
+      --
+      -- go (Node x (t : ts)) = f x <> Foldable1.foldMap1 go (t :| ts)
+      --
+      -- but foldMap1 for NonEmpty isn't very good, so we don't. See
+      -- https://github.com/haskell/containers/pull/921#issuecomment-1410398618
+      go (Node x []) = f x
+      go (Node x (t : ts)) =
+        f x <> Foldable1.foldrMap1 go (\t' z -> go t' <> z) (t :| ts)
+  {-# INLINABLE foldMap1 #-}
+
+  foldMap1' f = foldlMap1' f (\z x -> z <> f x)
+  {-# INLINABLE foldMap1' #-}
+
+  toNonEmpty (Node x ts) = x :| concatMap toList ts
+
+  maximum = maximum
+  {-# INLINABLE maximum #-}
+
+  minimum = minimum
+  {-# INLINABLE minimum #-}
+
+  foldrMap1 = foldrMap1
+
+  foldlMap1' = foldlMap1'
+
+  foldlMap1 = foldlMap1
 #endif
+
+foldrMap1 :: (a -> b) -> (a -> b -> b) -> Tree a -> b
+foldrMap1 f g = go
+  where
+    go (Node x [])     = f x
+    go (Node x (t:ts)) = g x (foldrMap1NE go (\t' z -> foldr g z t') t ts)
+{-# INLINE foldrMap1 #-}
+
+-- This is foldrMap1 for Data.List.NonEmpty, but is not available before
+-- base 4.18.
+foldrMap1NE :: (a -> b) -> (a -> b -> b) -> a -> [a] -> b
+foldrMap1NE f g = go
+  where
+    go x []      = f x
+    go x (x':xs) = g x (go x' xs)
+{-# INLINE foldrMap1NE #-}
+
+foldlMap1' :: (a -> b) -> (b -> a -> b) -> Tree a -> b
+foldlMap1' f g =  -- Use a lambda to allow inlining with two arguments
+  \(Node x ts) -> foldl' (foldl' g) (f x) ts
+{-# INLINE foldlMap1' #-}
+
+foldlMap1 :: (a -> b) -> (b -> a -> b) -> Tree a -> b
+foldlMap1 f g =  -- Use a lambda to allow inlining with two arguments
+  \(Node x ts) -> foldl (foldl g) (f x) ts
+{-# INLINE foldlMap1 #-}
 
 instance NFData a => NFData (Tree a) where
     rnf (Node x ts) = rnf x `seq` rnf ts
@@ -249,7 +344,7 @@ drawTree  = unlines . draw
 -- `- 20
 -- @
 --
-drawForest :: Forest String -> String
+drawForest :: [Tree String] -> String
 drawForest  = unlines . map drawTree
 
 draw :: Tree String -> [String]
@@ -276,8 +371,7 @@ draw (Node x ts0) = lines x ++ drawSubTrees ts0
 --
 -- > flatten (Node 1 [Node 2 [], Node 3 []]) == [1,2,3]
 flatten :: Tree a -> [a]
-flatten t = squish t []
-  where squish (Node x ts) xs = x:Prelude.foldr squish xs ts
+flatten = toList
 
 -- | Returns the list of nodes at each level of the tree.
 --
@@ -321,7 +415,7 @@ levels t =
 --
 -- Find depth of the tree; i.e. the number of branches from the root of the tree to the furthest leaf:
 --
--- > foldTree (\_ xs -> if null xs then 0 else 1 + maximum xs) (Node 1 [Node 2[], Node 3 []]) == 1
+-- > foldTree (\_ xs -> if null xs then 0 else 1 + maximum xs) (Node 1 [Node 2 [], Node 3 []]) == 1
 --
 -- You can even implement traverse using foldTree:
 --
@@ -377,7 +471,7 @@ unfoldTree f b = let (a, bs) = f b in Node a (unfoldForest f bs)
 --
 -- For a monadic version see 'unfoldForestM_BF'.
 --
-unfoldForest :: (b -> (a, [b])) -> [b] -> Forest a
+unfoldForest :: (b -> (a, [b])) -> [b] -> [Tree a]
 unfoldForest f = map (unfoldTree f)
 
 -- | Monadic tree builder, in depth-first order.
@@ -388,7 +482,7 @@ unfoldTreeM f b = do
     return (Node a ts)
 
 -- | Monadic forest builder, in depth-first order
-unfoldForestM :: Monad m => (b -> m (a, [b])) -> [b] -> m (Forest a)
+unfoldForestM :: Monad m => (b -> m (a, [b])) -> [b] -> m ([Tree a])
 unfoldForestM f = Prelude.mapM (unfoldTreeM f)
 
 -- | Monadic tree builder, in breadth-first order.
@@ -410,7 +504,7 @@ unfoldTreeM_BF f b = liftM getElement $ unfoldForestQ f (singleton b)
 --
 -- Implemented using an algorithm adapted from /Breadth-First Numbering: Lessons
 -- from a Small Exercise in Algorithm Design/, by Chris Okasaki, /ICFP'00/.
-unfoldForestM_BF :: Monad m => (b -> m (a, [b])) -> [b] -> m (Forest a)
+unfoldForestM_BF :: Monad m => (b -> m (a, [b])) -> [b] -> m ([Tree a])
 unfoldForestM_BF f = liftM toList . unfoldForestQ f . fromList
 
 -- Takes a sequence (queue) of seeds and produces a sequence (reversed queue) of
@@ -429,3 +523,39 @@ unfoldForestQ f aQ = case viewl aQ of
     splitOnto as (_:bs) q = case viewr q of
         q' :> a -> splitOnto (a:as) bs q'
         EmptyR -> error "unfoldForestQ"
+
+--------------------------------------------------------------------------------
+
+-- Note [Implemented Foldable Tree functions]
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+--
+-- Implemented:
+--
+-- foldMap, foldr, foldl': Basic functions.
+-- fold, elem: Implemented same as the default definition, but INLINABLE to
+-- allow specialization.
+-- foldr1, foldl1, null, maximum, minimum: Implemented more efficiently than
+-- defaults since trees are non-empty.
+-- sum, product: Implemented as strict left folds. Defaults use the lazy foldMap
+-- before base 4.15.1.
+--
+-- Not implemented:
+--
+-- foldMap', toList, length: Defaults perform well.
+-- foldr', foldl: Unlikely to be used.
+
+-- Note [Implemented Foldable1 Tree functions]
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+--
+-- Implemented:
+--
+-- foldrMap1, foldlMap1': Basic functions
+-- foldMap, foldMap1': Implemented same as the default definition, but
+-- INLINABLE to allow specialization.
+-- toNonEmpty, foldlMap1: Implemented more efficiently than default.
+-- maximum, minimum: Uses Foldable's implementation.
+--
+-- Not implemented:
+--
+-- fold1, head: Defaults perform well.
+-- foldrMap1': Unlikely to be used.

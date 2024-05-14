@@ -2,11 +2,11 @@
 {-# LANGUAGE CPP
            , NoImplicitPrelude
            , BangPatterns
+           , RankNTypes
   #-}
 {-# OPTIONS_GHC -Wno-identities #-}
 -- Whether there are identities depends on the platform
 {-# OPTIONS_HADDOCK not-home #-}
-
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  GHC.IO.FD
@@ -23,7 +23,7 @@
 
 module GHC.IO.FD (
         FD(..),
-        openFile, mkFD, release,
+        openFileWith, openFile, mkFD, release,
         setNonBlockingMode,
         readRawBufferPtr, readRawBufferPtrNoBlock, writeRawBufferPtr,
         stdin, stdout, stderr
@@ -46,6 +46,7 @@ import GHC.IO.Exception
 #if defined(mingw32_HOST_OS)
 import GHC.Windows
 import Data.Bool
+import GHC.IO.SubSystem ((<!>))
 #endif
 
 import Foreign
@@ -67,16 +68,13 @@ import System.Posix.Types
 c_DEBUG_DUMP :: Bool
 c_DEBUG_DUMP = False
 
--- Darwin limits the length of writes to 2GB. See
--- #17414.
+-- Darwin limits the length of writes to 2GB. See #17414.
+-- Moreover, Linux will only transfer up to 0x7ffff000 and interpreting the
+-- result of write/read is tricky above 2GB due to its signed type. For
+-- simplicity we therefore clamp on all platforms.
 clampWriteSize, clampReadSize :: Int -> Int
-#if defined(darwin_HOST_OS)
-clampWriteSize = min 0x7fffffff
-clampReadSize  = min 0x7fffffff
-#else
-clampWriteSize = id
-clampReadSize  = id
-#endif
+clampWriteSize = min 0x7ffff000
+clampReadSize  = min 0x7ffff000
 
 -- -----------------------------------------------------------------------------
 -- The file-descriptor IO device
@@ -104,29 +102,37 @@ fdIsSocket fd = fdIsSocket_ fd /= 0
 instance Show FD where
   show fd = show (fdFD fd)
 
+{-# INLINE ifSupported #-}
+ifSupported :: String -> a -> a
+#if defined(mingw32_HOST_OS)
+ifSupported s a = a <!> (error $ "FD:" ++ s ++ " not supported")
+#else
+ifSupported _ = id
+#endif
+
 -- | @since 4.1.0.0
 instance GHC.IO.Device.RawIO FD where
-  read             = fdRead
-  readNonBlocking  = fdReadNonBlocking
-  write            = fdWrite
-  writeNonBlocking = fdWriteNonBlocking
+  read             = ifSupported "fdRead" fdRead
+  readNonBlocking  = ifSupported "fdReadNonBlocking" fdReadNonBlocking
+  write            = ifSupported "fdWrite" fdWrite
+  writeNonBlocking = ifSupported "fdWriteNonBlocking" fdWriteNonBlocking
 
 -- | @since 4.1.0.0
 instance GHC.IO.Device.IODevice FD where
-  ready         = ready
-  close         = close
-  isTerminal    = isTerminal
-  isSeekable    = isSeekable
-  seek          = seek
-  tell          = tell
-  getSize       = getSize
-  setSize       = setSize
-  setEcho       = setEcho
-  getEcho       = getEcho
-  setRaw        = setRaw
-  devType       = devType
-  dup           = dup
-  dup2          = dup2
+  ready         = ifSupported "ready" ready
+  close         = ifSupported "close" close
+  isTerminal    = ifSupported "isTerm" isTerminal
+  isSeekable    = ifSupported "isSeek" isSeekable
+  seek          = ifSupported "seek" seek
+  tell          = ifSupported "tell" tell
+  getSize       = ifSupported "getSize" getSize
+  setSize       = ifSupported "setSize" setSize
+  setEcho       = ifSupported "setEcho" setEcho
+  getEcho       = ifSupported "getEcho" getEcho
+  setRaw        = ifSupported "setRaw" setRaw
+  devType       = ifSupported "devType" devType
+  dup           = ifSupported "dup" dup
+  dup2          = ifSupported "dup2" dup2
 
 -- We used to use System.Posix.Internals.dEFAULT_BUFFER_SIZE, which is
 -- taken from the value of BUFSIZ on the current platform.  This value
@@ -137,11 +143,11 @@ dEFAULT_FD_BUFFER_SIZE = 8192
 
 -- | @since 4.1.0.0
 instance BufferedIO FD where
-  newBuffer _dev state = newByteBuffer dEFAULT_FD_BUFFER_SIZE state
-  fillReadBuffer    fd buf = readBuf' fd buf
-  fillReadBuffer0   fd buf = readBufNonBlocking fd buf
-  flushWriteBuffer  fd buf = writeBuf' fd buf
-  flushWriteBuffer0 fd buf = writeBufNonBlocking fd buf
+  newBuffer _dev state = ifSupported "newBuf" $ newByteBuffer dEFAULT_FD_BUFFER_SIZE state
+  fillReadBuffer    fd buf = ifSupported "readBuf" $ readBuf' fd buf
+  fillReadBuffer0   fd buf = ifSupported "readBufNonBlock" $ readBufNonBlocking fd buf
+  flushWriteBuffer  fd buf = ifSupported "writeBuf" $ writeBuf' fd buf
+  flushWriteBuffer0 fd buf = ifSupported "writeBufNonBlock" $ writeBufNonBlocking fd buf
 
 readBuf' :: FD -> Buffer Word8 -> IO (Int, Buffer Word8)
 readBuf' fd buf = do
@@ -161,17 +167,46 @@ writeBuf' fd buf = do
 -- -----------------------------------------------------------------------------
 -- opening files
 
--- | Open a file and make an 'FD' for it.  Truncates the file to zero
--- size when the `IOMode` is `WriteMode`.
-openFile
+-- | Open a file and make an 'FD' for it. Truncates the file to zero size when
+-- the `IOMode` is `WriteMode`.
+--
+-- `openFileWith` takes two actions, @act1@ and @act2@, to perform after
+-- opening the file.
+--
+-- @act1@ is passed a file descriptor and I/O device type for the newly opened
+-- file. If an exception occurs in @act1@, then the file will be closed.
+-- @act1@ /must not/ close the file itself. If it does so and then receives an
+-- exception, then the exception handler will attempt to close it again, which
+-- is impermissable.
+--
+-- @act2@ is performed with asynchronous exceptions masked. It is passed a
+-- function to restore the masking state and the result of @act1@.  It /must
+-- not/ throw an exception (or deliver one via an interruptible operation)
+-- without first closing the file or arranging for it to be closed. @act2@
+-- /may/ close the file, but is not required to do so.  If @act2@ leaves the
+-- file open, then the file will remain open on return from `openFileWith`.
+--
+-- Code calling `openFileWith` that wishes to install a finalizer to close
+-- the file should do so in @act2@. Doing so in @act1@ could potentially close
+-- the file in the finalizer first and then in the exception handler. See
+-- 'GHC.IO.Handle.FD.openFile'' for an example of this use. Regardless, the
+-- caller is responsible for ensuring that the file is eventually closed,
+-- perhaps using 'Control.Exception.bracket'.
+
+openFileWith
   :: FilePath -- ^ file to open
   -> IOMode   -- ^ mode in which to open the file
   -> Bool     -- ^ open the file in non-blocking mode?
-  -> IO (FD,IODeviceType)
-
-openFile filepath iomode non_blocking =
+  -> (FD -> IODeviceType -> IO r) -- ^ @act1@: An action to perform
+                    -- on the file descriptor with the masking state
+                    -- restored and an exception handler that closes
+                    -- the file on exception.
+  -> ((forall x. IO x -> IO x) -> r -> IO s)
+                    -- ^ @act2@: An action to perform with async exceptions
+                    -- masked and no exception handler.
+  -> IO s
+openFileWith filepath iomode non_blocking act1 act2 =
   withFilePath filepath $ \ f ->
-
     let
       oflags1 = case iomode of
                   ReadMode      -> read_flags
@@ -190,25 +225,47 @@ openFile filepath iomode non_blocking =
       oflags | non_blocking = oflags2 .|. nonblock_flags
              | otherwise    = oflags2
     in do
+      -- We want to be sure all the arguments to c_interruptible_open
+      -- are fully evaluated *before* it slips under a mask (assuming we're
+      -- not already under a user-imposed mask).
+      oflags' <- evaluate oflags
+      -- NB. always use a safe open(), because we don't know whether open()
+      -- will be fast or not.  It can be slow on NFS and FUSE filesystems,
+      -- for example.
 
-    -- NB. always use a safe open(), because we don't know whether open()
-    -- will be fast or not.  It can be slow on NFS and FUSE filesystems,
-    -- for example.
-    fd <- throwErrnoIfMinus1Retry "openFile" $ c_safe_open f oflags 0o666
+      mask $ \restore -> do
+        fileno <- throwErrnoIfMinus1Retry "openFile" $
+                c_interruptible_open f oflags' 0o666
 
-    (fD,fd_type) <- mkFD fd iomode Nothing{-no stat-}
-                            False{-not a socket-}
-                            non_blocking
-            `catchAny` \e -> do _ <- c_close fd
-                                throwIO e
+        (fD,fd_type) <- mkFD fileno iomode Nothing{-no stat-}
+                                False{-not a socket-}
+                                non_blocking `onException` c_close fileno
 
-    -- we want to truncate() if this is an open in WriteMode, but only
-    -- if the target is a RegularFile.  ftruncate() fails on special files
-    -- like /dev/null.
-    when (iomode == WriteMode && fd_type == RegularFile) $
-      setSize fD 0
+        -- we want to truncate() if this is an open in WriteMode, but only
+        -- if the target is a RegularFile.  ftruncate() fails on special files
+        -- like /dev/null.
 
-    return (fD,fd_type)
+        when (iomode == WriteMode && fd_type == RegularFile) $
+          setSize fD 0 `onException` close fD
+
+        carry <- restore (act1 fD fd_type) `onException` close fD
+
+        act2 restore carry
+
+-- | Open a file and make an 'FD' for it.  Truncates the file to zero
+-- size when the `IOMode` is `WriteMode`. This function is difficult
+-- to use without potentially leaking the file descriptor on exception.
+-- In particular, it must be used with exceptions masked, which is a
+-- bit rude because the thread will be uninterruptible while the file
+-- path is being encoded. Use 'openFileWith' instead.
+openFile
+  :: FilePath -- ^ file to open
+  -> IOMode   -- ^ mode in which to open the file
+  -> Bool     -- ^ open the file in non-blocking mode?
+  -> IO (FD,IODeviceType)
+openFile filepath iomode non_blocking =
+  openFileWith filepath iomode non_blocking
+    (\ fd fd_type -> pure (fd, fd_type)) (\_ r -> pure r)
 
 std_flags, output_flags, read_flags, write_flags, rw_flags,
     append_flags, nonblock_flags :: CInt
@@ -259,8 +316,10 @@ mkFD fd iomode mb_stat is_socket is_nonblock = do
         RegularFile -> do
            -- On Windows we need an additional call to get a unique device id
            -- and inode, since fstat just returns 0 for both.
+           -- See also Note [RTS File locking]
            (unique_dev, unique_ino) <- getUniqueFileInfo fd dev ino
-           r <- lockFile fd unique_dev unique_ino (fromBool write)
+           r <- lockFile (fromIntegral fd) unique_dev unique_ino
+                         (fromBool write)
            when (r == -1)  $
                 ioException (IOError Nothing ResourceBusy "openFile"
                                    "file is locked" Nothing Nothing)
@@ -338,7 +397,7 @@ close fd =
      closeFdWith closer (fromIntegral (fdFD fd))
 
 release :: FD -> IO ()
-release fd = do _ <- unlockFile (fdFD fd)
+release fd = do _ <- unlockFile (fromIntegral $ fdFD fd)
                 return ()
 
 #if defined(mingw32_HOST_OS)
@@ -351,10 +410,10 @@ isSeekable fd = do
   t <- devType fd
   return (t == RegularFile || t == RawDevice)
 
-seek :: FD -> SeekMode -> Integer -> IO ()
-seek fd mode off = do
-  throwErrnoIfMinus1Retry_ "seek" $
-     c_lseek (fdFD fd) (fromIntegral off) seektype
+seek :: FD -> SeekMode -> Integer -> IO Integer
+seek fd mode off = fromIntegral `fmap`
+  (throwErrnoIfMinus1Retry "seek" $
+     c_lseek (fdFD fd) (fromIntegral off) seektype)
  where
     seektype :: CInt
     seektype = case mode of
@@ -372,8 +431,8 @@ getSize :: FD -> IO Integer
 getSize fd = fdFileSize (fdFD fd)
 
 setSize :: FD -> Integer -> IO ()
-setSize fd size = do
-  throwErrnoIf_ (/=0) "GHC.IO.FD.setSize"  $
+setSize fd size =
+  throwErrnoIf_ (/=0) "GHC.IO.FD.setSize" $
      c_ftruncate (fdFD fd) (fromIntegral size)
 
 devType :: FD -> IO IODeviceType
@@ -439,14 +498,14 @@ setRaw fd raw = System.Posix.Internals.setCooked (fdFD fd) (not raw)
 -- -----------------------------------------------------------------------------
 -- Reading and Writing
 
-fdRead :: FD -> Ptr Word8 -> Int -> IO Int
-fdRead fd ptr bytes
+fdRead :: FD -> Ptr Word8 -> Word64 -> Int -> IO Int
+fdRead fd ptr _offset bytes
   = do { r <- readRawBufferPtr "GHC.IO.FD.fdRead" fd ptr 0
                 (fromIntegral $ clampReadSize bytes)
        ; return (fromIntegral r) }
 
-fdReadNonBlocking :: FD -> Ptr Word8 -> Int -> IO (Maybe Int)
-fdReadNonBlocking fd ptr bytes = do
+fdReadNonBlocking :: FD -> Ptr Word8 -> Word64 -> Int -> IO (Maybe Int)
+fdReadNonBlocking fd ptr _offset bytes = do
   r <- readRawBufferPtrNoBlock "GHC.IO.FD.fdReadNonBlocking" fd ptr
            0 (fromIntegral $ clampReadSize bytes)
   case fromIntegral r of
@@ -454,18 +513,18 @@ fdReadNonBlocking fd ptr bytes = do
     n    -> return (Just n)
 
 
-fdWrite :: FD -> Ptr Word8 -> Int -> IO ()
-fdWrite fd ptr bytes = do
+fdWrite :: FD -> Ptr Word8 -> Word64 -> Int -> IO ()
+fdWrite fd ptr _offset bytes = do
   res <- writeRawBufferPtr "GHC.IO.FD.fdWrite" fd ptr 0
           (fromIntegral $ clampWriteSize bytes)
   let res' = fromIntegral res
   if res' < bytes
-     then fdWrite fd (ptr `plusPtr` res') (bytes - res')
+     then fdWrite fd (ptr `plusPtr` res') (_offset + fromIntegral res') (bytes - res')
      else return ()
 
 -- XXX ToDo: this isn't non-blocking
-fdWriteNonBlocking :: FD -> Ptr Word8 -> Int -> IO Int
-fdWriteNonBlocking fd ptr bytes = do
+fdWriteNonBlocking :: FD -> Ptr Word8 -> Word64 -> Int -> IO Int
+fdWriteNonBlocking fd ptr _offset bytes = do
   res <- writeRawBufferPtrNoBlock "GHC.IO.FD.fdWriteNonBlocking" fd ptr 0
             (fromIntegral $ clampWriteSize bytes)
   return (fromIntegral res)
@@ -478,8 +537,8 @@ fdWriteNonBlocking fd ptr bytes = do
 #if !defined(mingw32_HOST_OS)
 
 {-
-NOTE [nonblock]:
-
+Note [nonblock]
+~~~~~~~~~~~~~~~
 Unix has broken semantics when it comes to non-blocking I/O: you can
 set the O_NONBLOCK flag on an FD, but it applies to the all other FDs
 attached to the same underlying file, pipe or TTY; there's no way to
@@ -682,7 +741,7 @@ throwErrnoIfMinus1RetryOnBlock loc f on_block  =
         if err == eINTR
           then throwErrnoIfMinus1RetryOnBlock loc f on_block
           else if err == eWOULDBLOCK || err == eAGAIN
-                 then do on_block
+                 then on_block
                  else throwErrno loc
       else return res
 #endif
@@ -691,10 +750,10 @@ throwErrnoIfMinus1RetryOnBlock loc f on_block  =
 -- Locking/unlocking
 
 foreign import ccall unsafe "lockFile"
-  lockFile :: CInt -> Word64 -> Word64 -> CInt -> IO CInt
+  lockFile :: Word64 -> Word64 -> Word64 -> CInt -> IO CInt
 
 foreign import ccall unsafe "unlockFile"
-  unlockFile :: CInt -> IO CInt
+  unlockFile :: Word64 -> IO CInt
 
 #if defined(mingw32_HOST_OS)
 foreign import ccall unsafe "get_unique_file_info"

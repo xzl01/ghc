@@ -1,3 +1,5 @@
+{-# LANGUAGE CPP #-}
+
 module System.Console.Haskeline.Backend.Win32(
                 win32Term,
                 win32TermStdin,
@@ -8,17 +10,29 @@ module System.Console.Haskeline.Backend.Win32(
 import System.IO
 import Foreign
 import Foreign.C
+#if MIN_VERSION_Win32(2,9,0)
+import System.Win32 hiding (multiByteToWideChar, setConsoleMode, getConsoleMode)
+#else
 import System.Win32 hiding (multiByteToWideChar)
+#endif
 import Graphics.Win32.Misc(getStdHandle, sTD_OUTPUT_HANDLE)
 import Data.List(intercalate)
 import Control.Concurrent.STM
 import Control.Concurrent hiding (throwTo)
-import Data.Char(isPrint)
+import Data.Char(isPrint, chr, ord)
 import Data.Maybe(mapMaybe)
+import Control.Exception (IOException, throwTo)
 import Control.Monad
+import Control.Monad.Catch
+    ( MonadThrow
+    , MonadCatch
+    , MonadMask
+    , bracket
+    , handle
+    )
 
 import System.Console.Haskeline.Key
-import System.Console.Haskeline.Monads hiding (Handler)
+import System.Console.Haskeline.Monads
 import System.Console.Haskeline.LineState
 import System.Console.Haskeline.Term
 import System.Console.Haskeline.Backend.WCWidth
@@ -58,7 +72,15 @@ eventReader h = do
         then eventReader h
         else do
             es <- readEvents h
-            return $ mapMaybe processEvent es
+            return $ combineSurrogatePairs $ mapMaybe processEvent es
+
+combineSurrogatePairs :: [Event] -> [Event]
+combineSurrogatePairs (KeyInput [Key m1 (KeyChar c1)] : KeyInput [Key _ (KeyChar c2)] : es)
+    | 0xD800 <= ord c1 && ord c1 < 0xDC00 && 0xDC00 <= ord c2 && ord c2 < 0xE000
+    = let c = (((ord c1 .&. 0x3FF) `shiftL` 10) .|. (ord c2 .&. 0x3FF)) + 0x10000
+      in KeyInput [Key m1 (KeyChar (chr c))] : combineSurrogatePairs es
+combineSurrogatePairs (e:es) = e : combineSurrogatePairs es
+combineSurrogatePairs [] = []
 
 consoleHandles :: MaybeT IO Handles
 consoleHandles = do
@@ -169,9 +191,9 @@ instance Storable Coord where
     sizeOf _ = (#size COORD)
     alignment _ = (#alignment COORD)
     peek p = do
-        x :: CShort <- (#peek COORD, X) p
-        y :: CShort <- (#peek COORD, Y) p
-        return Coord {coordX = fromEnum x, coordY = fromEnum y}
+        cx :: CShort <- (#peek COORD, X) p
+        cy :: CShort <- (#peek COORD, Y) p
+        return Coord {coordX = fromEnum cx, coordY = fromEnum cy}
     poke p c = do
         (#poke COORD, X) p (toEnum (coordX c) :: CShort)
         (#poke COORD, Y) p (toEnum (coordY c) :: CShort)
@@ -218,10 +240,10 @@ writeConsole h str = writeConsole' >> writeConsole h ys
     -- To be safe, we pick a round number we know to be less than the limit.
     limit = 20000 -- known to be less than WriteConsoleW's buffer limit
     writeConsole'
-        = withArray (map (toEnum . fromEnum) xs)
-            $ \t_arr -> alloca $ \numWritten -> do
+        = withCWStringLen xs
+            $ \(t_arr, len) -> alloca $ \numWritten -> do
                     failIfFalse_ "WriteConsoleW"
-                        $ c_WriteConsoleW h t_arr (toEnum $ length xs)
+                        $ c_WriteConsoleW h t_arr (toEnum len)
                                 numWritten nullPtr
 
 foreign import WINDOWS_CCONV "windows.h MessageBeep" c_messageBeep :: UINT -> IO Bool
@@ -239,7 +261,7 @@ foreign import WINDOWS_CCONV "windows.h GetConsoleMode" c_GetConsoleMode
 foreign import WINDOWS_CCONV "windows.h SetConsoleMode" c_SetConsoleMode
     :: HANDLE -> DWORD -> IO Bool
 
-withWindowMode :: MonadException m => Handles -> m a -> m a
+withWindowMode :: (MonadIO m, MonadMask m) => Handles -> m a -> m a
 withWindowMode hs f = do
     let h = hIn hs
     bracket (getConsoleMode h) (setConsoleMode h)
@@ -259,7 +281,8 @@ closeHandles :: Handles -> IO ()
 closeHandles hs = closeHandle (hIn hs) >> closeHandle (hOut hs)
 
 newtype Draw m a = Draw {runDraw :: ReaderT Handles m a}
-    deriving (Functor, Applicative, Monad, MonadIO, MonadException, MonadReader Handles)
+    deriving (Functor, Applicative, Monad, MonadIO, MonadReader Handles,
+              MonadThrow, MonadCatch, MonadMask)
 
 type DrawM a = forall m . (MonadIO m, MonadReader Layout m) => Draw m a
 
@@ -345,7 +368,7 @@ movePosLeft str = do
 crlf :: String
 crlf = "\r\n"
 
-instance (MonadException m, MonadReader Layout m) => Term (Draw m) where
+instance (MonadMask m, MonadIO m, MonadReader Layout m) => Term (Draw m) where
     drawLineDiff (xs1,ys1) (xs2,ys2) = let
         fixEsc = filter ((/= '\ESC') . baseChar)
         in drawLineDiffWin (fixEsc xs1, fixEsc ys1) (fixEsc xs2, fixEsc ys2)
@@ -391,7 +414,7 @@ win32Term = do
           closeHandles hs
       }
 
-win32WithEvent :: MonadException m => Handles -> TChan Event
+win32WithEvent :: MonadIO m => Handles -> TChan Event
                                         -> (m Event -> m a) -> m a
 win32WithEvent h eventChan f = f $ liftIO $ getEvent (hIn h) eventChan
 
@@ -437,7 +460,7 @@ foreign import WINDOWS_CCONV "windows.h SetConsoleCtrlHandler" c_SetConsoleCtrlH
     :: FunPtr Handler -> BOOL -> IO BOOL
 
 -- sets the tv to True when ctrl-c is pressed.
-withCtrlCHandler :: MonadException m => m a -> m a
+withCtrlCHandler :: (MonadMask m, MonadIO m) => m a -> m a
 withCtrlCHandler f = bracket (liftIO $ do
                                     tid <- myThreadId
                                     fp <- wrapHandler (handler tid)

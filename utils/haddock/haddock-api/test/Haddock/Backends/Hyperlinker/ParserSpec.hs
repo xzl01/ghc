@@ -4,8 +4,8 @@ module Haddock.Backends.Hyperlinker.ParserSpec (main, spec) where
 import Test.Hspec
 import Test.QuickCheck
 
-import GHC           ( runGhc, getSessionDynFlags )
-import DynFlags      ( DynFlags )
+import GHC                ( runGhc, getSessionDynFlags )
+import GHC.Driver.Session ( DynFlags )
 import Control.Monad.IO.Class
 
 import Data.String     ( fromString )
@@ -19,7 +19,7 @@ import Haddock.Backends.Hyperlinker.Types
 withDynFlags :: (DynFlags -> IO ()) -> IO ()
 withDynFlags cont = do
   libDir <- fmap snd (getGhcDirs [])
-  runGhc (Just libDir) $ do
+  runGhc libDir $ do
     dflags <- getSessionDynFlags
     liftIO $ cont dflags
 

@@ -1,23 +1,35 @@
 #!/bin/sh
-set -eu
+set -eux
 
 ghcflags="-rtsopts -threaded -Werror"
 testflags="CreateDirectoryIfMissing001.num-repeats=100000 +RTS -N2"
 
-if [ -z "${STACK_RESOLVER+x}" ]; then
-    if cabal --version | python -c 'import re, sys; sys.exit(1 - (tuple(map(int, re.search("([.0-9]+)", next(sys.stdin)).group(1).split("."))) >= (2,)))'; then
+if [ -z "${STACK_RESOLVER-}" ]; then
+    if cabal --version | python -c 'import re, sys; sys.exit(1 - (tuple(map(int, re.search("([.0-9]+)", next(sys.stdin)).group(1).split("."))) >= (2, 4)))'; then
         v1=v1-
     else
         v1=
     fi
 fi
 
+relocate_v1_sdist_to_v2_dir() {
+    if [ -f dist/*-*.tar.gz ]; then
+        mkdir -p dist-newstyle/sdist
+        mv dist/*-*.tar.gz dist-newstyle/sdist
+    fi
+}
+
+# overridable hook
+before_prepare() {
+    :
+}
+
 prepare() {
-    eval "${PREBUILD-}"
+    before_prepare
     if [ -f configure.ac ]; then
         autoreconf -i
     fi
-    if [ "${STACK_RESOLVER+x}" ]; then
+    if [ "${STACK_RESOLVER-}" ]; then
 
         # workaround for commercialhaskell/stack#3213:
         # use official GHC tarball instead of stack's patched tarball
@@ -73,14 +85,14 @@ EOF
 
         ghc --version
         cabal --version
-        tools/retry cabal "$v1"update
+        tools/retry cabal update
         cabal "$v1"install --enable-tests --only-dependencies
 
     fi
 }
 
 build() {
-    if [ "${STACK_RESOLVER+x}" ]; then
+    if [ "${STACK_RESOLVER-}" ]; then
         stack="stack --no-terminal ${STACK_FLAGS-}"
 
         # workaround for https://github.com/haskell/cabal/issues/2375
@@ -141,9 +153,10 @@ build() {
         cabal "$v1"build
         cabal "$v1"test --show-details="$streaming" $testflags
         cabal check
-        cabal "$v1"sdist
+        cabal sdist
+        relocate_v1_sdist_to_v2_dir
         cabal "$v1"copy
-        cabal_install_run_tests dist/*-*.tar.gz --force-reinstalls
+        cabal_install_run_tests dist-newstyle/sdist/*-*.tar.gz --force-reinstalls
 
     fi
 
@@ -154,4 +167,5 @@ build() {
     }
 }
 
+eval "${TESTSCRIPT_OVERRIDES-}"
 "$@"

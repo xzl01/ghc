@@ -10,58 +10,53 @@
 --
 module GHCi.InfoTable
   (
-#ifdef GHCI
     mkConInfoTable
-#endif
   ) where
 
-import Prelude -- See note [Why do we import Prelude here?]
-#ifdef GHCI
+import Prelude hiding (fail) -- See note [Why do we import Prelude here?]
+
 import Foreign
 import Foreign.C
 import GHC.Ptr
 import GHC.Exts
 import GHC.Exts.Heap
-#endif
+import Data.ByteString (ByteString)
+import Control.Monad.Fail
+import qualified Data.ByteString as BS
+import GHC.Platform.Host (hostPlatformArch)
+import GHC.Platform.ArchOS
 
-ghciTablesNextToCode :: Bool
-#ifdef TABLES_NEXT_TO_CODE
-ghciTablesNextToCode = True
-#else
-ghciTablesNextToCode = False
-#endif
-
-#ifdef GHCI /* To end */
 -- NOTE: Must return a pointer acceptable for use in the header of a closure.
--- If tables_next_to_code is enabled, then it must point the the 'code' field.
+-- If tables_next_to_code is enabled, then it must point the 'code' field.
 -- Otherwise, it should point to the start of the StgInfoTable.
 mkConInfoTable
-   :: Int     -- ptr words
+   :: Bool    -- TABLES_NEXT_TO_CODE
+   -> Int     -- ptr words
    -> Int     -- non-ptr words
    -> Int     -- constr tag
    -> Int     -- pointer tag
-   -> [Word8]  -- con desc
+   -> ByteString  -- con desc
    -> IO (Ptr StgInfoTable)
-      -- resulting info table is allocated with allocateExec(), and
-      -- should be freed with freeExec().
+      -- resulting info table is allocated with allocateExecPage(), and
+      -- should be freed with freeExecPage().
 
-mkConInfoTable ptr_words nonptr_words tag ptrtag con_desc =
-  castFunPtrToPtr <$> newExecConItbl itbl con_desc
-  where
-     entry_addr = interpConstrEntry !! ptrtag
-     code' = mkJumpToAddr entry_addr
+mkConInfoTable tables_next_to_code ptr_words nonptr_words tag ptrtag con_desc = do
+  let entry_addr = interpConstrEntry !! ptrtag
+  code' <- if tables_next_to_code
+    then Just <$> mkJumpToAddr entry_addr
+    else pure Nothing
+  let
      itbl  = StgInfoTable {
-                 entry = if ghciTablesNextToCode
+                 entry = if tables_next_to_code
                          then Nothing
                          else Just entry_addr,
                  ptrs  = fromIntegral ptr_words,
                  nptrs = fromIntegral nonptr_words,
                  tipe  = CONSTR,
                  srtlen = fromIntegral tag,
-                 code  = if ghciTablesNextToCode
-                         then Just code'
-                         else Nothing
+                 code  = code'
               }
+  castFunPtrToPtr <$> newExecConItbl tables_next_to_code itbl con_desc
 
 
 -- -----------------------------------------------------------------------------
@@ -70,71 +65,9 @@ mkConInfoTable ptr_words nonptr_words tag ptrtag con_desc =
 funPtrToInt :: FunPtr a -> Int
 funPtrToInt (FunPtr a) = I## (addr2Int## a)
 
-data Arch = ArchSPARC
-          | ArchPPC
-          | ArchX86
-          | ArchX86_64
-          | ArchAlpha
-          | ArchARM
-          | ArchARM64
-          | ArchPPC64
-          | ArchPPC64LE
-          | ArchUnknown
- deriving Show
-
-platform :: Arch
-platform =
-#if defined(sparc_HOST_ARCH)
-       ArchSPARC
-#elif defined(powerpc_HOST_ARCH)
-       ArchPPC
-#elif defined(i386_HOST_ARCH)
-       ArchX86
-#elif defined(x86_64_HOST_ARCH)
-       ArchX86_64
-#elif defined(alpha_HOST_ARCH)
-       ArchAlpha
-#elif defined(arm_HOST_ARCH)
-       ArchARM
-#elif defined(aarch64_HOST_ARCH)
-       ArchARM64
-#elif defined(powerpc64_HOST_ARCH)
-       ArchPPC64
-#elif defined(powerpc64le_HOST_ARCH)
-       ArchPPC64LE
-#else
-#    if defined(TABLES_NEXT_TO_CODE)
-#        error Unimplemented architecture
-#    else
-       ArchUnknown
-#    endif
-#endif
-
-mkJumpToAddr :: EntryFunPtr -> ItblCodes
-mkJumpToAddr a = case platform of
-    ArchSPARC ->
-        -- After some consideration, we'll try this, where
-        -- 0x55555555 stands in for the address to jump to.
-        -- According to includes/rts/MachRegs.h, %g3 is very
-        -- likely indeed to be baggable.
-        --
-        --   0000 07155555              sethi   %hi(0x55555555), %g3
-        --   0004 8610E155              or      %g3, %lo(0x55555555), %g3
-        --   0008 81C0C000              jmp     %g3
-        --   000c 01000000              nop
-
-        let w32 = fromIntegral (funPtrToInt a)
-
-            hi22, lo10 :: Word32 -> Word32
-            lo10 x = x .&. 0x3FF
-            hi22 x = (x `shiftR` 10) .&. 0x3FFFF
-
-        in Right [ 0x07000000 .|. (hi22 w32),
-                   0x8610E000 .|. (lo10 w32),
-                   0x81C0C000,
-                   0x01000000 ]
-
-    ArchPPC ->
+mkJumpToAddr :: MonadFail m => EntryFunPtr-> m ItblCodes
+mkJumpToAddr a = case hostPlatformArch of
+    ArchPPC -> pure $
         -- We'll use r12, for no particular reason.
         -- 0xDEADBEEF stands for the address:
         -- 3D80DEAD lis r12,0xDEAD
@@ -149,7 +82,7 @@ mkJumpToAddr a = case platform of
                    0x618C0000 .|. lo16 w32,
                    0x7D8903A6, 0x4E800420 ]
 
-    ArchX86 ->
+    ArchX86 -> pure $
         -- Let the address to jump to be 0xWWXXYYZZ.
         -- Generate   movl $0xWWXXYYZZ,%eax  ;  jmp *%eax
         -- which is
@@ -164,7 +97,7 @@ mkJumpToAddr a = case platform of
         in
             Left insnBytes
 
-    ArchX86_64 ->
+    ArchX86_64 -> pure $
         -- Generates:
         --      jmpq *.L1(%rip)
         --      .align 8
@@ -188,7 +121,7 @@ mkJumpToAddr a = case platform of
         in
             Left insnBytes
 
-    ArchAlpha ->
+    ArchAlpha -> pure $
         let w64 = fromIntegral (funPtrToInt a) :: Word64
         in Right [ 0xc3800000      -- br   at, .+4
                  , 0xa79c000c      -- ldq  at, 12(at)
@@ -197,7 +130,7 @@ mkJumpToAddr a = case platform of
                  , fromIntegral (w64 .&. 0x0000FFFF)
                  , fromIntegral ((w64 `shiftR` 32) .&. 0x0000FFFF) ]
 
-    ArchARM { } ->
+    ArchARM {} -> pure $
         -- Generates Arm sequence,
         --      ldr r1, [pc, #0]
         --      bx r1
@@ -211,7 +144,7 @@ mkJumpToAddr a = case platform of
                 , 0x11, 0xff, 0x2f, 0xe1
                 , byte0 w32, byte1 w32, byte2 w32, byte3 w32]
 
-    ArchARM64 { } ->
+    ArchAArch64 {} -> pure $
         -- Generates:
         --
         --      ldr     x1, label
@@ -227,7 +160,8 @@ mkJumpToAddr a = case platform of
                 , 0xd61f0020
                 , fromIntegral w64
                 , fromIntegral (w64 `shiftR` 32) ]
-    ArchPPC64 ->
+
+    ArchPPC_64 ELF_V1 -> pure $
         -- We use the compiler's register r12 to read the function
         -- descriptor and the linker's register r11 as a temporary
         -- register to hold the function entry point.
@@ -253,7 +187,7 @@ mkJumpToAddr a = case platform of
                   0xE96C0010,
                   0x4E800420]
 
-    ArchPPC64LE ->
+    ArchPPC_64 ELF_V2 -> pure $
         -- The ABI requires r12 to point to the function's entry point.
         -- We use the medium code model where code resides in the first
         -- two gigabytes, so loading a non-negative32 bit address
@@ -271,10 +205,34 @@ mkJumpToAddr a = case platform of
                    0x618C0000 .|. lo16 w32,
                    0x7D8903A6, 0x4E800420 ]
 
-    -- This code must not be called. You either need to
-    -- add your architecture as a distinct case or
-    -- use non-TABLES_NEXT_TO_CODE mode
-    ArchUnknown -> error "mkJumpToAddr: ArchUnknown is unsupported"
+    ArchS390X -> pure $
+        -- Let 0xAABBCCDDEEFFGGHH be the address to jump to.
+        -- The following code loads the address into scratch
+        -- register r1 and jumps to it.
+        --
+        --    0:   C0 1E AA BB CC DD       llihf   %r1,0xAABBCCDD
+        --    6:   C0 19 EE FF GG HH       iilf    %r1,0xEEFFGGHH
+        --   12:   07 F1                   br      %r1
+
+        let w64 = fromIntegral (funPtrToInt a) :: Word64
+        in Left [ 0xC0, 0x1E, byte7 w64, byte6 w64, byte5 w64, byte4 w64,
+                  0xC0, 0x19, byte3 w64, byte2 w64, byte1 w64, byte0 w64,
+                  0x07, 0xF1 ]
+
+    ArchRISCV64 -> pure $
+        let w64 = fromIntegral (funPtrToInt a) :: Word64
+        in Right [ 0x00000297          -- auipc t0,0
+                 , 0x01053283          -- ld    t0,16(t0)
+                 , 0x00028067          -- jr    t0
+                 , 0x00000013          -- nop
+                 , fromIntegral w64
+                 , fromIntegral (w64 `shiftR` 32) ]
+
+    arch ->
+      -- The arch isn't supported. You either need to add your architecture as a
+      -- distinct case, or use non-TABLES_NEXT_TO_CODE mode.
+      fail $ "mkJumpToAddr: arch is not supported with TABLES_NEXT_TO_CODE ("
+             ++ show arch ++ ")"
 
 byte0 :: (Integral w) => w -> Word8
 byte0 w = fromIntegral w
@@ -319,60 +277,102 @@ data StgConInfoTable = StgConInfoTable {
 
 
 pokeConItbl
-  :: Ptr StgConInfoTable -> Ptr StgConInfoTable -> StgConInfoTable
+  :: Bool -> Ptr StgConInfoTable -> Ptr StgConInfoTable -> StgConInfoTable
   -> IO ()
-pokeConItbl wr_ptr _ex_ptr itbl = do
-#if defined(TABLES_NEXT_TO_CODE)
-  -- Write the offset to the con_desc from the end of the standard InfoTable
-  -- at the first byte.
-  let con_desc_offset = conDesc itbl `minusPtr` (_ex_ptr `plusPtr` conInfoTableSizeB)
-  (#poke StgConInfoTable, con_desc) wr_ptr con_desc_offset
-#else
-  -- Write the con_desc address after the end of the info table.
-  -- Use itblSize because CPP will not pick up PROFILING when calculating
-  -- the offset.
-  pokeByteOff wr_ptr itblSize (conDesc itbl)
-#endif
+pokeConItbl tables_next_to_code wr_ptr _ex_ptr itbl = do
+  if tables_next_to_code
+    then do
+      -- Write the offset to the con_desc from the end of the standard InfoTable
+      -- at the first byte.
+      let con_desc_offset = conDesc itbl `minusPtr` (_ex_ptr `plusPtr` conInfoTableSizeB)
+      (#poke StgConInfoTable, con_desc) wr_ptr con_desc_offset
+    else do
+      -- Write the con_desc address after the end of the info table.
+      -- Use itblSize because CPP will not pick up PROFILING when calculating
+      -- the offset.
+      pokeByteOff wr_ptr itblSize (conDesc itbl)
   pokeItbl (wr_ptr `plusPtr` (#offset StgConInfoTable, i)) (infoTable itbl)
 
-sizeOfEntryCode :: Int
-sizeOfEntryCode
-  | not ghciTablesNextToCode = 0
-  | otherwise =
-     case mkJumpToAddr undefined of
+sizeOfEntryCode :: MonadFail m => Bool -> m Int
+sizeOfEntryCode tables_next_to_code
+  | not tables_next_to_code = pure 0
+  | otherwise = do
+     code' <- mkJumpToAddr undefined
+     pure $ case code' of
        Left  xs -> sizeOf (head xs) * length xs
        Right xs -> sizeOf (head xs) * length xs
 
 -- Note: Must return proper pointer for use in a closure
-newExecConItbl :: StgInfoTable -> [Word8] -> IO (FunPtr ())
-newExecConItbl obj con_desc
-   = alloca $ \pcode -> do
-        let lcon_desc = length con_desc + 1{- null terminator -}
-            -- SCARY
-            -- This size represents the number of bytes in an StgConInfoTable.
-            sz = fromIntegral (conInfoTableSizeB + sizeOfEntryCode)
-               -- Note: we need to allocate the conDesc string next to the info
-               -- table, because on a 64-bit platform we reference this string
-               -- with a 32-bit offset relative to the info table, so if we
-               -- allocated the string separately it might be out of range.
-        wr_ptr <- _allocateExec (sz + fromIntegral lcon_desc) pcode
-        ex_ptr <- peek pcode
+newExecConItbl :: Bool -> StgInfoTable -> ByteString -> IO (FunPtr ())
+newExecConItbl tables_next_to_code obj con_desc = do
+    sz0 <- sizeOfEntryCode tables_next_to_code
+    let lcon_desc = BS.length con_desc + 1{- null terminator -}
+        -- SCARY
+        -- This size represents the number of bytes in an StgConInfoTable.
+        sz = fromIntegral $ conInfoTableSizeB + sz0
+            -- Note: we need to allocate the conDesc string next to the info
+            -- table, because on a 64-bit platform we reference this string
+            -- with a 32-bit offset relative to the info table, so if we
+            -- allocated the string separately it might be out of range.
+
+    ex_ptr <- fillExecBuffer (sz + fromIntegral lcon_desc) $ \wr_ptr ex_ptr -> do
         let cinfo = StgConInfoTable { conDesc = ex_ptr `plusPtr` fromIntegral sz
                                     , infoTable = obj }
-        pokeConItbl wr_ptr ex_ptr cinfo
-        pokeArray0 0 (castPtr wr_ptr `plusPtr` fromIntegral sz) con_desc
-        _flushExec sz ex_ptr -- Cache flush (if needed)
-#if defined(TABLES_NEXT_TO_CODE)
-        return (castPtrToFunPtr (ex_ptr `plusPtr` conInfoTableSizeB))
-#else
-        return (castPtrToFunPtr ex_ptr)
-#endif
+        pokeConItbl tables_next_to_code wr_ptr ex_ptr cinfo
+        BS.useAsCStringLen con_desc $ \(src, len) ->
+            copyBytes (castPtr wr_ptr `plusPtr` fromIntegral sz) src len
+        let null_off = fromIntegral sz + fromIntegral (BS.length con_desc)
+        poke (castPtr wr_ptr `plusPtr` null_off) (0 :: Word8)
+
+    pure $ if tables_next_to_code
+      then castPtrToFunPtr $ ex_ptr `plusPtr` conInfoTableSizeB
+      else castPtrToFunPtr ex_ptr
+
+-- | Allocate a buffer of a given size, use the given action to fill it with
+-- data, and mark it as executable. The action is given a writable pointer and
+-- the executable pointer. Returns a pointer to the executable code.
+fillExecBuffer :: CSize -> (Ptr a -> Ptr a -> IO ()) -> IO (Ptr a)
+
+#if MIN_VERSION_rts(1,0,2)
+
+data ExecPage
+
+foreign import ccall unsafe "allocateExecPage"
+  _allocateExecPage :: IO (Ptr ExecPage)
+
+foreign import ccall unsafe "freezeExecPage"
+  _freezeExecPage :: Ptr ExecPage -> IO ()
+
+fillExecBuffer sz cont
+    -- we can only allocate single pages. This assumes a 4k page size which
+    -- isn't strictly correct but is a reasonable conservative lower bound.
+  | sz > 4096 = fail "withExecBuffer: Too large"
+  | otherwise = do
+        pg <- _allocateExecPage
+        cont (castPtr pg) (castPtr pg)
+        _freezeExecPage pg
+        return (castPtr pg)
+
+#elif MIN_VERSION_rts(1,0,1)
 
 foreign import ccall unsafe "allocateExec"
   _allocateExec :: CUInt -> Ptr (Ptr a) -> IO (Ptr a)
 
 foreign import ccall unsafe "flushExec"
   _flushExec :: CUInt -> Ptr a -> IO ()
+
+fillExecBuffer sz cont = alloca $ \pcode -> do
+    wr_ptr <- _allocateExec (fromIntegral sz) pcode
+    ex_ptr <- peek pcode
+    cont wr_ptr ex_ptr
+    _flushExec (fromIntegral sz) ex_ptr -- Cache flush (if needed)
+    return (ex_ptr)
+
+#else
+
+#error Sorry, rts versions <= 1.0 are not supported
+
+#endif
 
 -- -----------------------------------------------------------------------------
 -- Constants and config
@@ -382,4 +382,3 @@ wORD_SIZE = (#const SIZEOF_HSINT)
 
 conInfoTableSizeB :: Int
 conInfoTableSizeB = wORD_SIZE + itblSize
-#endif /* GHCI */

@@ -1,0 +1,28 @@
+From dfe1c3540e4b519b62b862b5966dfec5cae9ece1 Mon Sep 17 00:00:00 2001
+From: Stefan Schulze Frielinghaus <stefansf@linux.ibm.com>
+Date: Mon, 27 Nov 2023 12:34:47 +0100
+Subject: [PATCH] llvmGen: Align objects in the data section
+
+Objects in the data section may be referenced via tagged pointers.
+Thus, align those objects to a 4- or 8-byte boundary for 32- or 64-bit
+platforms, respectively.  Note, this may need to be reconsidered if
+objects with a greater natural alignment requirement are emitted as e.g.
+128-bit atomics.
+
+Fixes #24163.
+---
+ compiler/GHC/CmmToLlvm/Data.hs | 1 +
+ 1 file changed, 1 insertion(+)
+
+Index: b/compiler/GHC/CmmToLlvm/Data.hs
+===================================================================
+--- a/compiler/GHC/CmmToLlvm/Data.hs
++++ b/compiler/GHC/CmmToLlvm/Data.hs
+@@ -89,6 +89,7 @@ genLlvmData (sec, CmmStaticsRaw lbl xs)
+         align          = case sec of
+                             Section CString _ -> if (platformArch platform == ArchS390X)
+                                                     then Just 2 else Just 1
++                            Section Data _    -> Just $ platformWordSizeInBytes platform
+                             _                 -> Nothing
+         const          = if sectionProtection sec == ReadOnlySection
+                             then Constant else Global

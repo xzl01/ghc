@@ -21,7 +21,13 @@
 typedef struct _RtsSymbolVal {
     const SymbolName* lbl;
     SymbolAddr* addr;
-    bool weak;
+    SymStrength strength;
+    SymType type;
 } RtsSymbolVal;
 
 extern RtsSymbolVal rtsSyms[];
+
+/* See Note [_iob_func symbol].  */
+#if defined(mingw32_HOST_OS)
+extern const void* __rts_iob_func;
+#endif

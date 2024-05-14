@@ -1,4 +1,6 @@
 {-# LANGUAGE CPP, RankNTypes, ScopedTypeVariables #-}
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 -----------------------------------------------------------------------------
 -- |
@@ -14,43 +16,70 @@
 -- Reading and writing the .haddock interface file
 -----------------------------------------------------------------------------
 module Haddock.InterfaceFile (
-  InterfaceFile(..), ifUnitId, ifModule,
-  readInterfaceFile, nameCacheFromGhc, freshNameCache, NameCacheAccessor,
-  writeInterfaceFile, binaryInterfaceVersion, binaryInterfaceVersionCompatibility
+  InterfaceFile(..), PackageInfo(..), ifUnitId, ifModule,
+  PackageInterfaces(..), mkPackageInterfaces, ppPackageInfo,
+  readInterfaceFile, writeInterfaceFile,
+  freshNameCache,
+  binaryInterfaceVersion, binaryInterfaceVersionCompatibility
 ) where
 
 
 import Haddock.Types
-import Haddock.Utils hiding (out)
 
-import Control.Monad
-import Data.Array
 import Data.IORef
-import Data.List
 import qualified Data.Map as Map
 import Data.Map (Map)
+import Data.Version
 import Data.Word
+import Text.ParserCombinators.ReadP (readP_to_S)
 
-import BinIface (getSymtabName, getDictFastString)
-import Binary
-import FastMutInt
-import FastString
+import GHC.Iface.Binary (getWithUserData, putSymbolTable)
+import GHC.Unit.State
+import GHC.Utils.Binary
+import GHC.Data.FastMutInt
+import GHC.Data.FastString
 import GHC hiding (NoLink)
-import GhcMonad (withSession)
-import HscTypes
-import NameCache
-import IfaceEnv
-import Name
-import UniqFM
-import UniqSupply
-import Unique
+import GHC.Types.Name.Cache
+import GHC.Types.Unique.FM
+import GHC.Types.Unique
 
+import Haddock.Options (Visibility (..))
 
 data InterfaceFile = InterfaceFile {
   ifLinkEnv         :: LinkEnv,
+  -- | Package meta data.  Currently it only consist of a package name, which
+  -- is not read from the interface file, but inferred from its name.
+  --
+  -- issue #
+  ifPackageInfo     :: PackageInfo,
   ifInstalledIfaces :: [InstalledInterface]
 }
 
+data PackageInfo = PackageInfo {
+  piPackageName    :: PackageName,
+  piPackageVersion :: Data.Version.Version
+}
+
+ppPackageInfo :: PackageInfo -> String
+ppPackageInfo (PackageInfo name version) | version == makeVersion []
+                                         = unpackFS (unPackageName name)
+ppPackageInfo (PackageInfo name version) = unpackFS (unPackageName name) ++ "-" ++ showVersion version
+
+data PackageInterfaces = PackageInterfaces {
+  piPackageInfo         :: PackageInfo,
+  piVisibility          :: Visibility,
+  piInstalledInterfaces :: [InstalledInterface]
+}
+
+mkPackageInterfaces :: Visibility -> InterfaceFile -> PackageInterfaces
+mkPackageInterfaces piVisibility
+                    InterfaceFile { ifPackageInfo
+                                  , ifInstalledIfaces
+                                  } = 
+  PackageInterfaces { piPackageInfo = ifPackageInfo
+                    , piVisibility
+                    , piInstalledInterfaces = ifInstalledIfaces
+                    }
 
 ifModule :: InterfaceFile -> Module
 ifModule if_ =
@@ -58,16 +87,28 @@ ifModule if_ =
     [] -> error "empty InterfaceFile"
     iface:_ -> instMod iface
 
-ifUnitId :: InterfaceFile -> UnitId
+ifUnitId :: InterfaceFile -> Unit
 ifUnitId if_ =
   case ifInstalledIfaces if_ of
     [] -> error "empty InterfaceFile"
-    iface:_ -> moduleUnitId $ instMod iface
+    iface:_ -> moduleUnit $ instMod iface
 
 
 binaryInterfaceMagic :: Word32
 binaryInterfaceMagic = 0xD0Cface
 
+-- Note [The DocModule story]
+--
+-- Breaking changes to the DocH type result in Haddock being unable to read
+-- existing interfaces. This is especially painful for interfaces shipped
+-- with GHC distributions since there is no easy way to regenerate them!
+--
+-- PR #1315 introduced a breaking change to the DocModule constructor. To
+-- maintain backward compatibility we
+--
+-- Parse the old DocModule constructor format (tag 5) and parse the contained
+-- string into a proper ModLink structure. When writing interfaces we exclusively
+-- use the new DocModule format (tag 24)
 
 -- IMPORTANT: Since datatypes in the GHC API might change between major
 -- versions, and because we store GHC datatypes in our interface files, we need
@@ -82,8 +123,8 @@ binaryInterfaceMagic = 0xD0Cface
 -- (2) set `binaryInterfaceVersionCompatibility` to [binaryInterfaceVersion]
 --
 binaryInterfaceVersion :: Word16
-#if (__GLASGOW_HASKELL__ >= 807) && (__GLASGOW_HASKELL__ < 809)
-binaryInterfaceVersion = 35
+#if MIN_VERSION_ghc(9,4,0) && !MIN_VERSION_ghc(9,5,0)
+binaryInterfaceVersion = 41
 
 binaryInterfaceVersionCompatibility :: [Word16]
 binaryInterfaceVersionCompatibility = [binaryInterfaceVersion]
@@ -111,14 +152,12 @@ writeInterfaceFile filename iface = do
   put_ bh0 symtab_p_p
 
   -- Make some intial state
-  symtab_next <- newFastMutInt
-  writeFastMutInt symtab_next 0
+  symtab_next <- newFastMutInt 0
   symtab_map <- newIORef emptyUFM
   let bin_symtab = BinSymbolTable {
                       bin_symtab_next = symtab_next,
                       bin_symtab_map  = symtab_map }
-  dict_next_ref <- newFastMutInt
-  writeFastMutInt dict_next_ref 0
+  dict_next_ref <- newFastMutInt 0
   dict_map_ref <- newIORef emptyUFM
   let bin_dict = BinDictionary {
                       bin_dict_next = dict_next_ref,
@@ -128,7 +167,7 @@ writeInterfaceFile filename iface = do
   let bh = setUserData bh0 $ newWriteState (putName bin_symtab)
                                            (putName bin_symtab)
                                            (putFastString bin_dict)
-  put_ bh iface
+  putInterfaceFile_ bh iface
 
   -- write the symtab pointer at the front of the file
   symtab_p <- tellBin bh
@@ -155,103 +194,31 @@ writeInterfaceFile filename iface = do
   return ()
 
 
-type NameCacheAccessor m = (m NameCache, NameCache -> m ())
-
-
-nameCacheFromGhc :: forall m. (GhcMonad m, MonadIO m) => NameCacheAccessor m
-nameCacheFromGhc = ( read_from_session , write_to_session )
-  where
-    read_from_session = do
-       ref <- withSession (return . hsc_NC)
-       liftIO $ readIORef ref
-    write_to_session nc' = do
-       ref <- withSession (return . hsc_NC)
-       liftIO $ writeIORef ref nc'
-
-
-freshNameCache :: NameCacheAccessor IO
-freshNameCache = ( create_fresh_nc , \_ -> return () )
-  where
-    create_fresh_nc = do
-       u  <- mkSplitUniqSupply 'a' -- ??
-       return (initNameCache u [])
-
+freshNameCache :: IO NameCache
+freshNameCache = initNameCache 'a' -- ??
+                               []
 
 -- | Read a Haddock (@.haddock@) interface file. Return either an
 -- 'InterfaceFile' or an error message.
 --
 -- This function can be called in two ways.  Within a GHC session it will
 -- update the use and update the session's name cache.  Outside a GHC session
--- a new empty name cache is used.  The function is therefore generic in the
--- monad being used.  The exact monad is whichever monad the first
--- argument, the getter and setter of the name cache, requires.
---
-readInterfaceFile :: forall m.
-                     MonadIO m
-                  => NameCacheAccessor m
+-- a new empty name cache is used.
+readInterfaceFile :: NameCache
                   -> FilePath
                   -> Bool  -- ^ Disable version check. Can cause runtime crash.
-                  -> m (Either String InterfaceFile)
-readInterfaceFile (get_name_cache, set_name_cache) filename bypass_checks = do
-  bh0 <- liftIO $ readBinMem filename
+                  -> IO (Either String InterfaceFile)
+readInterfaceFile name_cache filename bypass_checks = do
+  bh <- readBinMem filename
 
-  magic   <- liftIO $ get bh0
-  version <- liftIO $ get bh0
-
-  case () of
-    _ | magic /= binaryInterfaceMagic -> return . Left $
-      "Magic number mismatch: couldn't load interface file: " ++ filename
-      | not bypass_checks
-      , (version `notElem` binaryInterfaceVersionCompatibility) -> return . Left $
-      "Interface file is of wrong version: " ++ filename
-      | otherwise -> with_name_cache $ \update_nc -> do
-
-      dict  <- get_dictionary bh0
-
-      -- read the symbol table so we are capable of reading the actual data
-      bh1 <- do
-          let bh1 = setUserData bh0 $ newReadState (error "getSymtabName")
-                                                   (getDictFastString dict)
-          symtab <- update_nc (get_symbol_table bh1)
-          return $ setUserData bh1 $ newReadState (getSymtabName (NCU (\f -> update_nc (return . f))) dict symtab)
-                                                  (getDictFastString dict)
-
-      -- load the actual data
-      iface <- liftIO $ get bh1
-      return (Right iface)
- where
-   with_name_cache :: forall a.
-                      ((forall n b. MonadIO n
-                                => (NameCache -> n (NameCache, b))
-                                -> n b)
-                       -> m a)
-                   -> m a
-   with_name_cache act = do
-      nc_var <-  get_name_cache >>= (liftIO . newIORef)
-      x <- act $ \f -> do
-              nc <- liftIO $ readIORef nc_var
-              (nc', x) <- f nc
-              liftIO $ writeIORef nc_var nc'
-              return x
-      liftIO (readIORef nc_var) >>= set_name_cache
-      return x
-
-   get_dictionary bin_handle = liftIO $ do
-      dict_p <- get bin_handle
-      data_p <- tellBin bin_handle
-      seekBin bin_handle dict_p
-      dict <- getDictionary bin_handle
-      seekBin bin_handle data_p
-      return dict
-
-   get_symbol_table bh1 theNC = liftIO $ do
-      symtab_p <- get bh1
-      data_p'  <- tellBin bh1
-      seekBin bh1 symtab_p
-      (nc', symtab) <- getSymbolTable bh1 theNC
-      seekBin bh1 data_p'
-      return (nc', symtab)
-
+  magic   <- get bh
+  if magic /= binaryInterfaceMagic
+    then return . Left $ "Magic number mismatch: couldn't load interface file: " ++ filename
+    else do
+      version <- get bh
+      if not bypass_checks && (version `notElem` binaryInterfaceVersionCompatibility)
+        then return . Left $ "Interface file is of wrong version: " ++ filename
+        else Right <$> getWithUserData name_cache bh
 
 -------------------------------------------------------------------------------
 -- * Symbol table
@@ -276,7 +243,7 @@ putName BinSymbolTable{
 
 data BinSymbolTable = BinSymbolTable {
         bin_symtab_next :: !FastMutInt, -- The next index to use
-        bin_symtab_map  :: !(IORef (UniqFM (Int,Name)))
+        bin_symtab_map  :: !(IORef (UniqFM Name (Int,Name)))
                                 -- indexed by Name
   }
 
@@ -286,71 +253,21 @@ putFastString BinDictionary { bin_dict_next = j_r,
                               bin_dict_map  = out_r}  bh f
   = do
     out <- readIORef out_r
-    let unique = getUnique f
-    case lookupUFM out unique of
+    let !unique = getUnique f
+    case lookupUFM_Directly out unique of
         Just (j, _)  -> put_ bh (fromIntegral j :: Word32)
         Nothing -> do
            j <- readFastMutInt j_r
            put_ bh (fromIntegral j :: Word32)
            writeFastMutInt j_r (j + 1)
-           writeIORef out_r $! addToUFM out unique (j, f)
+           writeIORef out_r $! addToUFM_Directly out unique (j, f)
 
 
 data BinDictionary = BinDictionary {
         bin_dict_next :: !FastMutInt, -- The next index to use
-        bin_dict_map  :: !(IORef (UniqFM (Int,FastString)))
+        bin_dict_map  :: !(IORef (UniqFM FastString (Int,FastString)))
                                 -- indexed by FastString
   }
-
-
-putSymbolTable :: BinHandle -> Int -> UniqFM (Int,Name) -> IO ()
-putSymbolTable bh next_off symtab = do
-  put_ bh next_off
-  let names = elems (array (0,next_off-1) (eltsUFM symtab))
-  mapM_ (\n -> serialiseName bh n symtab) names
-
-
-getSymbolTable :: BinHandle -> NameCache -> IO (NameCache, Array Int Name)
-getSymbolTable bh namecache = do
-  sz <- get bh
-  od_names <- replicateM sz (get bh)
-  let arr = listArray (0,sz-1) names
-      (namecache', names) = mapAccumR (fromOnDiskName arr) namecache od_names
-  return (namecache', arr)
-
-
-type OnDiskName = (UnitId, ModuleName, OccName)
-
-
-fromOnDiskName
-   :: Array Int Name
-   -> NameCache
-   -> OnDiskName
-   -> (NameCache, Name)
-fromOnDiskName _ nc (pid, mod_name, occ) =
-  let
-        modu  = mkModule pid mod_name
-        cache = nsNames nc
-  in
-  case lookupOrigNameCache cache modu occ of
-     Just name -> (nc, name)
-     Nothing   ->
-        let
-                us        = nsUniqs nc
-                u         = uniqFromSupply us
-                name      = mkExternalName u modu occ noSrcSpan
-                new_cache = extendNameCache cache modu occ name
-        in
-        case splitUniqSupply us of { (us',_) ->
-        ( nc{ nsUniqs = us', nsNames = new_cache }, name )
-        }
-
-
-serialiseName :: BinHandle -> Name -> UniqFM (Int,Name) -> IO ()
-serialiseName bh name _ = do
-  let modu = nameModule name
-  put_ bh (moduleUnitId modu, moduleName modu, nameOccName name)
-
 
 -------------------------------------------------------------------------------
 -- * GhcBinary instances
@@ -361,17 +278,36 @@ instance (Ord k, Binary k, Binary v) => Binary (Map k v) where
   put_ bh m = put_ bh (Map.toList m)
   get bh = fmap (Map.fromList) (get bh)
 
+instance Binary PackageInfo where
+  put_ bh PackageInfo { piPackageName, piPackageVersion } = do
+    put_ bh (unPackageName piPackageName)
+    put_ bh (showVersion piPackageVersion)
+  get bh = do
+    name <- PackageName <$> get bh
+    versionString <- get bh
+    let version = case readP_to_S parseVersion versionString of
+          [] -> makeVersion []
+          vs -> fst (last vs)
+    return $ PackageInfo name version
 
 instance Binary InterfaceFile where
-  put_ bh (InterfaceFile env ifaces) = do
+  put_ bh (InterfaceFile env info ifaces) = do
     put_ bh env
+    put_ bh info
     put_ bh ifaces
 
   get bh = do
     env    <- get bh
+    info   <- get bh
     ifaces <- get bh
-    return (InterfaceFile env ifaces)
+    return (InterfaceFile env info ifaces)
 
+
+putInterfaceFile_ :: BinHandle -> InterfaceFile -> IO ()
+putInterfaceFile_ bh (InterfaceFile env info ifaces) = do
+  put_ bh env
+  put_ bh info
+  put_ bh ifaces
 
 instance Binary InstalledInterface where
   put_ bh (InstalledInterface modu is_sig info docMap argMap
@@ -442,6 +378,15 @@ instance Binary a => Binary (Hyperlink a) where
         url <- get bh
         label <- get bh
         return (Hyperlink url label)
+
+instance Binary a => Binary (ModLink a) where
+    put_ bh (ModLink m label) = do
+        put_ bh m
+        put_ bh label
+    get bh = do
+        m <- get bh
+        label <- get bh
+        return (ModLink m label)
 
 instance Binary Picture where
     put_ bh (Picture uri title) = do
@@ -521,9 +466,6 @@ instance (Binary mod, Binary id) => Binary (DocH mod id) where
     put_ bh (DocIdentifier ae) = do
             putByte bh 4
             put_ bh ae
-    put_ bh (DocModule af) = do
-            putByte bh 5
-            put_ bh af
     put_ bh (DocEmphasis ag) = do
             putByte bh 6
             put_ bh ag
@@ -578,6 +520,10 @@ instance (Binary mod, Binary id) => Binary (DocH mod id) where
     put_ bh (DocTable x) = do
             putByte bh 23
             put_ bh x
+    -- See note [The DocModule story]
+    put_ bh (DocModule af) = do
+            putByte bh 24
+            put_ bh af
 
     get bh = do
             h <- getByte bh
@@ -597,9 +543,13 @@ instance (Binary mod, Binary id) => Binary (DocH mod id) where
               4 -> do
                     ae <- get bh
                     return (DocIdentifier ae)
+              -- See note [The DocModule story]
               5 -> do
                     af <- get bh
-                    return (DocModule af)
+                    return $ DocModule ModLink
+                      { modLinkName  = af
+                      , modLinkLabel = Nothing
+                      }
               6 -> do
                     ag <- get bh
                     return (DocEmphasis ag)
@@ -654,6 +604,10 @@ instance (Binary mod, Binary id) => Binary (DocH mod id) where
               23 -> do
                     x <- get bh
                     return (DocTable x)
+              -- See note [The DocModule story]
+              24 -> do
+                    af <- get bh
+                    return (DocModule af)
               _ -> error "invalid binary data found in the interface file"
 
 

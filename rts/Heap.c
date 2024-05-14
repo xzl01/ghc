@@ -8,6 +8,7 @@
 
 #include "Rts.h"
 #include "RtsAPI.h"
+#include "RtsUtils.h"
 
 #include "Capability.h"
 #include "Printer.h"
@@ -76,23 +77,12 @@ void heap_view_closure_ptrs_in_pap_payload(StgClosure *ptrs[], StgWord *nptrs
     }
 }
 
-StgMutArrPtrs *heap_view_closurePtrs(Capability *cap, StgClosure *closure) {
-    ASSERT(LOOKS_LIKE_CLOSURE_PTR(closure));
-
-    StgWord size = heap_view_closureSize(closure);
+// See Heap.h
+StgWord collect_pointers(StgClosure *closure, StgClosure *ptrs[]) {
+    StgClosure **end;
+    const StgInfoTable *info = get_itbl(closure);
     StgWord nptrs = 0;
     StgWord i;
-
-    // First collect all pointers here, with the comfortable memory bound
-    // of the whole closure. Afterwards we know how many pointers are in
-    // the closure and then we can allocate space on the heap and copy them
-    // there
-    StgClosure *ptrs[size];
-
-    StgClosure **end;
-    StgClosure **ptr;
-
-    const StgInfoTable *info = get_itbl(closure);
 
     switch (info->type) {
         case INVALID_OBJECT:
@@ -101,6 +91,7 @@ StgMutArrPtrs *heap_view_closurePtrs(Capability *cap, StgClosure *closure) {
 
         // No pointers
         case ARR_WORDS:
+        case STACK:
             break;
 
         // Default layout
@@ -110,6 +101,7 @@ StgMutArrPtrs *heap_view_closurePtrs(Capability *cap, StgClosure *closure) {
         case CONSTR_1_1:
         case CONSTR_0_2:
         case CONSTR:
+        case CONSTR_NOCAF:
 
 
         case PRIM:
@@ -122,7 +114,7 @@ StgMutArrPtrs *heap_view_closurePtrs(Capability *cap, StgClosure *closure) {
         case FUN_0_2:
         case FUN_STATIC:
             end = closure->payload + info->layout.payload.ptrs;
-            for (ptr = closure->payload; ptr < end; ptr++) {
+            for (StgClosure **ptr = closure->payload; ptr < end; ptr++) {
                 ptrs[nptrs++] = *ptr;
             }
             break;
@@ -135,7 +127,7 @@ StgMutArrPtrs *heap_view_closurePtrs(Capability *cap, StgClosure *closure) {
         case THUNK_0_2:
         case THUNK_STATIC:
             end = ((StgThunk *)closure)->payload + info->layout.payload.ptrs;
-            for (ptr = ((StgThunk *)closure)->payload; ptr < end; ptr++) {
+            for (StgClosure **ptr = ((StgThunk *)closure)->payload; ptr < end; ptr++) {
                 ptrs[nptrs++] = *ptr;
             }
             break;
@@ -192,6 +184,16 @@ StgMutArrPtrs *heap_view_closurePtrs(Capability *cap, StgClosure *closure) {
                 ptrs[nptrs++] = ((StgMutArrPtrs *)closure)->payload[i];
             }
             break;
+
+        case SMALL_MUT_ARR_PTRS_CLEAN:
+        case SMALL_MUT_ARR_PTRS_DIRTY:
+        case SMALL_MUT_ARR_PTRS_FROZEN_CLEAN:
+        case SMALL_MUT_ARR_PTRS_FROZEN_DIRTY:
+            for (i = 0; i < ((StgSmallMutArrPtrs *)closure)->ptrs; ++i) {
+                ptrs[nptrs++] = ((StgSmallMutArrPtrs *)closure)->payload[i];
+            }
+            break;
+
         case MUT_VAR_CLEAN:
         case MUT_VAR_DIRTY:
             ptrs[nptrs++] = ((StgMutVar *)closure)->var;
@@ -202,12 +204,60 @@ StgMutArrPtrs *heap_view_closurePtrs(Capability *cap, StgClosure *closure) {
             ptrs[nptrs++] = (StgClosure *)((StgMVar *)closure)->tail;
             ptrs[nptrs++] = ((StgMVar *)closure)->value;
             break;
+        case TSO:
+            ASSERT((StgClosure *)((StgTSO *)closure)->_link != NULL);
+            ptrs[nptrs++] = (StgClosure *)((StgTSO *)closure)->_link;
+
+            ASSERT((StgClosure *)((StgTSO *)closure)->global_link != NULL);
+            ptrs[nptrs++] = (StgClosure *)((StgTSO *)closure)->global_link;
+
+            ASSERT((StgClosure *)((StgTSO *)closure)->stackobj != NULL);
+            ptrs[nptrs++] = (StgClosure *)((StgTSO *)closure)->stackobj;
+
+            ASSERT((StgClosure *)((StgTSO *)closure)->trec != NULL);
+            ptrs[nptrs++] = (StgClosure *)((StgTSO *)closure)->trec;
+
+            ASSERT((StgClosure *)((StgTSO *)closure)->blocked_exceptions != NULL);
+            ptrs[nptrs++] = (StgClosure *)((StgTSO *)closure)->blocked_exceptions;
+
+            ASSERT((StgClosure *)((StgTSO *)closure)->bq != NULL);
+            ptrs[nptrs++] = (StgClosure *)((StgTSO *)closure)->bq;
+
+            break;
+        case WEAK: {
+            StgWeak *w = (StgWeak *)closure;
+            ptrs[nptrs++] = (StgClosure *) w->cfinalizers;
+            ptrs[nptrs++] = (StgClosure *) w->key;
+            ptrs[nptrs++] = (StgClosure *) w->value;
+            ptrs[nptrs++] = (StgClosure *) w->finalizer;
+            // link may be NULL which is not a valid GC pointer
+            if (w->link) {
+                ptrs[nptrs++] = (StgClosure *) w->link;
+            }
+            break;
+        }
 
         default:
             fprintf(stderr,"closurePtrs: Cannot handle type %s yet\n",
                            closure_type_names[info->type]);
             break;
     }
+
+    return nptrs;
+}
+
+StgMutArrPtrs *heap_view_closurePtrs(Capability *cap, StgClosure *closure) {
+    ASSERT(LOOKS_LIKE_CLOSURE_PTR(closure));
+
+    StgWord size = heap_view_closureSize(closure);
+
+    // First collect all pointers here, with the comfortable memory bound
+    // of the whole closure. Afterwards we know how many pointers are in
+    // the closure and then we can allocate space on the heap and copy them
+    // there. Note that we cannot allocate this on the C stack as the closure
+    // may be, e.g., a large array.
+    StgClosure **ptrs = (StgClosure **) stgMallocBytes(sizeof(StgClosure *) * size, "heap_view_closurePtrs");
+    StgWord nptrs = collect_pointers(closure, ptrs);
 
     size = nptrs + mutArrPtrsCardTableSize(nptrs);
     StgMutArrPtrs *arr =
@@ -217,9 +267,10 @@ StgMutArrPtrs *heap_view_closurePtrs(Capability *cap, StgClosure *closure) {
     arr->ptrs = nptrs;
     arr->size = size;
 
-    for (i = 0; i<nptrs; i++) {
+    for (StgWord i = 0; i<nptrs; i++) {
         arr->payload[i] = ptrs[i];
     }
+    free(ptrs);
 
     return arr;
 }

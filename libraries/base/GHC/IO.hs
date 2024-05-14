@@ -24,12 +24,12 @@
 -----------------------------------------------------------------------------
 
 module GHC.IO (
-        IO(..), unIO, failIO, liftIO, mplusIO,
+        IO(..), unIO, liftIO, mplusIO,
         unsafePerformIO, unsafeInterleaveIO,
         unsafeDupablePerformIO, unsafeDupableInterleaveIO,
         noDuplicate,
 
-        -- To and from from ST
+        -- To and from ST
         stToIO, ioToST, unsafeIOToST, unsafeSTToIO,
 
         FilePath,
@@ -38,7 +38,8 @@ module GHC.IO (
         mask, mask_, uninterruptibleMask, uninterruptibleMask_,
         MaskingState(..), getMaskingState,
         unsafeUnmask, interruptible,
-        onException, bracket, finally, evaluate
+        onException, bracket, finally, evaluate,
+        mkUserError
     ) where
 
 import GHC.Base
@@ -46,6 +47,7 @@ import GHC.ST
 import GHC.Exception
 import GHC.Show
 import GHC.IO.Unsafe
+import Unsafe.Coerce ( unsafeCoerce )
 
 import {-# SOURCE #-} GHC.IO.Exception ( userError, IOError )
 
@@ -60,7 +62,7 @@ implement IO exceptions.
 NOTE: The IO representation is deeply wired in to various parts of the
 system.  The following list may or may not be exhaustive:
 
-Compiler  - types of various primitives in PrimOp.hs
+Compiler  - types of various primitives in GHC.Builtin.PrimOps
 
 RTS       - forceIO (StgStartup.cmm)
           - catchzh_fast, (un)?blockAsyncExceptionszh_fast, raisezh_fast
@@ -77,9 +79,6 @@ Libraries - parts of hslibs/lang.
 
 liftIO :: IO a -> State# RealWorld -> STret RealWorld a
 liftIO (IO m) = \s -> case m s of (# s', r #) -> STret s' r
-
-failIO :: String -> IO a
-failIO s = IO (raiseIO# (toException (userError s)))
 
 -- ---------------------------------------------------------------------------
 -- Coercions between IO and ST
@@ -101,7 +100,7 @@ ioToST (IO m) = (ST m)
 -- This relies on 'IO' and 'ST' having the same representation modulo the
 -- constraint on the state thread type parameter.
 unsafeIOToST        :: IO a -> ST s a
-unsafeIOToST (IO io) = ST $ \ s -> (unsafeCoerce# io) s
+unsafeIOToST (IO io) = ST $ \ s -> (unsafeCoerce io) s
 
 -- | Convert an 'ST' action to an 'IO' action.
 -- This relies on 'IO' and 'ST' having the same representation modulo the
@@ -110,7 +109,7 @@ unsafeIOToST (IO io) = ST $ \ s -> (unsafeCoerce# io) s
 -- For an example demonstrating why this is unsafe, see
 -- https://mail.haskell.org/pipermail/haskell-cafe/2009-April/060719.html
 unsafeSTToIO :: ST s a -> IO a
-unsafeSTToIO (ST m) = IO (unsafeCoerce# m)
+unsafeSTToIO (ST m) = IO (unsafeCoerce m)
 
 -- -----------------------------------------------------------------------------
 -- | File and directory names are values of type 'String', whose precise
@@ -173,8 +172,8 @@ catchException !io handler = catch io handler
 -- might catch either. If you are calling @catch@ with type
 -- @IO Int -> (ArithException -> IO Int) -> IO Int@ then the handler may
 -- get run with @DivideByZero@ as an argument, or an @ErrorCall \"urk\"@
--- exception may be propogated further up. If you call it again, you
--- might get a the opposite behaviour. This is ok, because 'catch' is an
+-- exception may be propagated further up. If you call it again, you
+-- might get the opposite behaviour. This is ok, because 'catch' is an
 -- 'IO' computation.
 --
 catch   :: Exception e
@@ -208,16 +207,34 @@ mplusIO m n = m `catchException` \ (_ :: IOError) -> n
 -- Although 'throwIO' has a type that is an instance of the type of 'throw', the
 -- two functions are subtly different:
 --
--- > throw e   `seq` x  ===> throw e
--- > throwIO e `seq` x  ===> x
+-- > throw e   `seq` ()  ===> throw e
+-- > throwIO e `seq` ()  ===> ()
 --
 -- The first example will cause the exception @e@ to be raised,
 -- whereas the second one won\'t.  In fact, 'throwIO' will only cause
 -- an exception to be raised when it is used within the 'IO' monad.
+--
 -- The 'throwIO' variant should be used in preference to 'throw' to
 -- raise an exception within the 'IO' monad because it guarantees
--- ordering with respect to other 'IO' operations, whereas 'throw'
--- does not.
+-- ordering with respect to other operations, whereas 'throw'
+-- does not. We say that 'throwIO' throws *precise* exceptions and
+-- 'throw', 'error', etc. all throw *imprecise* exceptions.
+-- For example
+--
+-- > throw e + error "boom" ===> error "boom"
+-- > throw e + error "boom" ===> throw e
+--
+-- are both valid reductions and the compiler may pick any (loop, even), whereas
+--
+-- > throwIO e >> error "boom" ===> throwIO e
+--
+-- will always throw @e@ when executed.
+--
+-- See also the
+-- [GHC wiki page on precise exceptions](https://gitlab.haskell.org/ghc/ghc/-/wikis/exceptions/precise-exceptions)
+-- for a more technical introduction to how GHC optimises around precise vs.
+-- imprecise exceptions.
+--
 throwIO :: Exception e => e -> IO a
 throwIO e = IO (raiseIO# (toException e))
 
@@ -440,7 +457,7 @@ evaluate a = IO $ \s -> seq# a s -- NB. see #2273, #5129
 {- $exceptions_and_strictness
 
 Laziness can interact with @catch@-like operations in non-obvious ways (see,
-e.g. GHC Trac #11555 and #13330). For instance, consider these subtly-different
+e.g. GHC #11555 and #13330). For instance, consider these subtly-different
 examples:
 
 > test1 = Control.Exception.catch (error "uh oh") (\(_ :: SomeException) -> putStrLn "it failed")
@@ -457,3 +474,7 @@ Since this strictness is a small optimization and may lead to surprising
 results, all of the @catch@ and @handle@ variants offered by "Control.Exception"
 use 'catch' rather than 'catchException'.
 -}
+
+-- For SOURCE import by GHC.Base to define failIO.
+mkUserError       :: [Char]  -> SomeException
+mkUserError str   = toException (userError str)

@@ -1,5 +1,3 @@
-{-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE Trustworthy #-} -- can't use Safe due to IsList instance
 {-# LANGUAGE TypeFamilies #-}
 
@@ -42,6 +40,7 @@ module Data.List.NonEmpty (
    , tail        -- :: NonEmpty a -> [a]
    , last        -- :: NonEmpty a -> a
    , init        -- :: NonEmpty a -> [a]
+   , singleton   -- :: a -> NonEmpty a
    , (<|), cons  -- :: a -> NonEmpty a -> NonEmpty a
    , uncons      -- :: NonEmpty a -> (a, Maybe (NonEmpty a))
    , unfoldr     -- :: (a -> (b, Maybe a)) -> a -> NonEmpty b
@@ -49,6 +48,9 @@ module Data.List.NonEmpty (
    , reverse     -- :: NonEmpty a -> NonEmpty a
    , inits       -- :: Foldable f => f a -> NonEmpty a
    , tails       -- :: Foldable f => f a -> NonEmpty a
+   , append      -- :: NonEmpty a -> NonEmpty a -> NonEmpty a
+   , appendList  -- :: NonEmpty a -> [a] -> NonEmpty a
+   , prependList -- :: [a] -> NonEmpty a -> NonEmpty a
    -- * Building streams
    , iterate     -- :: (a -> a) -> a -> NonEmpty a
    , repeat      -- :: a -> NonEmpty a
@@ -108,8 +110,12 @@ import           Data.Function       (on)
 import qualified Data.List           as List
 import           Data.Ord            (comparing)
 import           GHC.Base            (NonEmpty(..))
+import           GHC.Stack.Types     (HasCallStack)
 
 infixr 5 <|
+
+-- $setup
+-- >>> import Prelude (negate)
 
 -- | Number of elements in 'NonEmpty' list.
 length :: NonEmpty a -> Int
@@ -154,11 +160,11 @@ unfoldr f a = case f a of
 
 -- | Extract the first element of the stream.
 head :: NonEmpty a -> a
-head ~(a :| _) = a
+head (a :| _) = a
 
 -- | Extract the possibly-empty tail of the stream.
 tail :: NonEmpty a -> [a]
-tail ~(_ :| as) = as
+tail (_ :| as) = as
 
 -- | Extract the last element of the stream.
 last :: NonEmpty a -> a
@@ -167,6 +173,12 @@ last ~(a :| as) = List.last (a : as)
 -- | Extract everything except the last element of the stream.
 init :: NonEmpty a -> [a]
 init ~(a :| as) = List.init (a : as)
+
+-- | Construct a 'NonEmpty' list from a single element.
+--
+-- @since 4.15
+singleton :: a -> NonEmpty a
+singleton a = a :| []
 
 -- | Prepend an element to the stream.
 (<|) :: a -> NonEmpty a -> NonEmpty a
@@ -183,9 +195,9 @@ sort = lift List.sort
 -- | Converts a normal list to a 'NonEmpty' stream.
 --
 -- Raises an error if given an empty list.
-fromList :: [a] -> NonEmpty a
+fromList :: HasCallStack => [a] -> NonEmpty a
 fromList (a:as) = a :| as
-fromList [] = errorWithoutStackTrace "NonEmpty.fromList: empty list"
+fromList [] = error "NonEmpty.fromList: empty list"
 
 -- | Convert a stream to a normal list efficiently.
 toList :: NonEmpty a -> [a]
@@ -390,11 +402,11 @@ isPrefixOf (y:ys) (x :| xs) = (y == x) && List.isPrefixOf ys xs
 -- @n@. Note that the head of the stream has index 0.
 --
 -- /Beware/: a negative or out-of-bounds index will cause an error.
-(!!) :: NonEmpty a -> Int -> a
+(!!) :: HasCallStack => NonEmpty a -> Int -> a
 (!!) ~(x :| xs) n
   | n == 0 = x
   | n > 0  = xs List.!! (n - 1)
-  | otherwise = errorWithoutStackTrace "NonEmpty.!! negative argument"
+  | otherwise = error "NonEmpty.!! negative index"
 infixl 9 !!
 
 -- | The 'zip' function takes two streams and returns a stream of
@@ -443,3 +455,38 @@ sortBy f = lift (List.sortBy f)
 -- > sortBy . comparing
 sortWith :: Ord o => (a -> o) -> NonEmpty a -> NonEmpty a
 sortWith = sortBy . comparing
+
+-- | A monomorphic version of '<>' for 'NonEmpty'.
+--
+-- >>> append (1 :| []) (2 :| [3])
+-- 1 :| [2,3]
+--
+-- @since 4.16
+append :: NonEmpty a -> NonEmpty a -> NonEmpty a
+append = (<>)
+
+-- | Attach a list at the end of a 'NonEmpty'.
+--
+-- >>> appendList (1 :| [2,3]) []
+-- 1 :| [2,3]
+--
+-- >>> appendList (1 :| [2,3]) [4,5]
+-- 1 :| [2,3,4,5]
+--
+-- @since 4.16
+appendList :: NonEmpty a -> [a] -> NonEmpty a
+appendList (x :| xs) ys = x :| xs <> ys
+
+-- | Attach a list at the beginning of a 'NonEmpty'.
+--
+-- >>> prependList [] (1 :| [2,3])
+-- 1 :| [2,3]
+--
+-- >>> prependList [negate 1, 0] (1 :| [2, 3])
+-- -1 :| [0,1,2,3]
+--
+-- @since 4.16
+prependList :: [a] -> NonEmpty a -> NonEmpty a
+prependList ls ne = case ls of
+  [] -> ne
+  (x : xs) -> x :| xs <> toList ne

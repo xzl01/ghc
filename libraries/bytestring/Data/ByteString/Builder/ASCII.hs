@@ -1,9 +1,8 @@
-{-# LANGUAGE ScopedTypeVariables, CPP, ForeignFunctionInterface,
-             MagicHash, UnboxedTuples #-}
-{-# OPTIONS_HADDOCK not-home #-}
-#if __GLASGOW_HASKELL__ >= 701
+{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE Trustworthy #-}
-#endif
+
+{-# OPTIONS_HADDOCK not-home #-}
+
 -- | Copyright : (c) 2010 - 2011 Simon Meier
 -- License     : BSD3-style (see LICENSE)
 --
@@ -18,7 +17,7 @@ module Data.ByteString.Builder.ASCII
       -- | Formatting of numbers as ASCII text.
       --
       -- Note that you can also use these functions for the ISO/IEC 8859-1 and
-      -- UTF-8 encodings, as the ASCII encoding is equivalent on the 
+      -- UTF-8 encodings, as the ASCII encoding is equivalent on the
       -- codepoints 0-127.
 
       -- *** Decimal numbers
@@ -81,53 +80,11 @@ import           Data.ByteString                                as S
 import           Data.ByteString.Lazy                           as L
 import           Data.ByteString.Builder.Internal (Builder)
 import qualified Data.ByteString.Builder.Prim                   as P
+import qualified Data.ByteString.Builder.Prim.Internal          as P
+import           Data.ByteString.Builder.RealFloat (floatDec, doubleDec)
 
 import           Foreign
-
-
-#if __GLASGOW_HASKELL__ >= 811
-
-import GHC.Num.Integer
-#define HAS_INTEGER_CONSTR 1
-#define quotRemInteger integerQuotRem#
-
-#elif defined(INTEGER_GMP)
-
-#define HAS_INTEGER_CONSTR 1
-#define IS S#
-
-# if !(MIN_VERSION_base(4,8,0))
-import           Data.Monoid (mappend)
-# endif
-
-# if __GLASGOW_HASKELL__ < 710
-import           GHC.Num     (quotRemInteger)
-# endif
-
-# if __GLASGOW_HASKELL__ < 611
-import GHC.Integer.Internals
-# else
-import GHC.Integer.GMP.Internals
-# endif
-#endif
-
-#if HAS_INTEGER_CONSTR
-import qualified Data.ByteString.Builder.Prim.Internal          as P
-import           Data.ByteString.Builder.Prim.Internal.UncheckedShifts
-                   ( caseWordSize_32_64 )
 import           Foreign.C.Types
-import           GHC.Types   (Int(..))
-#endif
-
-------------------------------------------------------------------------------
--- Decimal Encoding
-------------------------------------------------------------------------------
-
-
--- | Encode a 'String' using 'P.char7'.
-{-# INLINE string7 #-}
-string7 :: String -> Builder
-string7 = P.primMapListFixed P.char7
 
 ------------------------------------------------------------------------------
 -- Decimal Encoding
@@ -195,22 +152,6 @@ word64Dec = P.primBounded P.word64Dec
 {-# INLINE wordDec #-}
 wordDec :: Word -> Builder
 wordDec = P.primBounded P.wordDec
-
-
--- Floating point numbers
--------------------------
-
--- TODO: Use Bryan O'Sullivan's double-conversion package to speed it up.
-
--- | /Currently slow./ Decimal encoding of an IEEE 'Float'.
-{-# INLINE floatDec #-}
-floatDec :: Float -> Builder
-floatDec = string7 . show
-
--- | /Currently slow./ Decimal encoding of an IEEE 'Double'.
-{-# INLINE doubleDec #-}
-doubleDec :: Double -> Builder
-doubleDec = string7 . show
 
 
 ------------------------------------------------------------------------------
@@ -314,13 +255,10 @@ lazyByteStringHex = P.primMapLazyByteStringFixed P.word8HexFixed
 -- Fast decimal 'Integer' encoding.
 ------------------------------------------------------------------------------
 
-#if HAS_INTEGER_CONSTR
 -- An optimized version of the integer serialization code
 -- in blaze-textual (c) 2011 MailRank, Inc. Bryan O'Sullivan
 -- <bos@mailrank.com>. It is 2.5x faster on Int-sized integers and 4.5x faster
 -- on larger integers.
-
-# define PAIR(a,b) (# a,b #)
 
 -- | Maximal power of 10 fitting into an 'Int' without using the MSB.
 --     10 ^ 9  for 32 bit ints  (31 * log 2 / log 10 =  9.33)
@@ -329,14 +267,14 @@ lazyByteStringHex = P.primMapLazyByteStringFixed P.word8HexFixed
 -- FIXME: Think about also using the MSB. For 64 bit 'Int's this makes a
 -- difference.
 maxPow10 :: Integer
-maxPow10 = toInteger $ (10 :: Int) ^ caseWordSize_32_64 (9 :: Int) 18
+maxPow10 = toInteger $ (10 :: Int) ^ P.caseWordSize_32_64 (9 :: Int) 18
 
 -- | Decimal encoding of an 'Integer' using the ASCII digits.
 integerDec :: Integer -> Builder
-integerDec (IS i#) = intDec (I# i#)
 integerDec i
+    | i' <- fromInteger i, toInteger i' == i = intDec i'
     | i < 0     = P.primFixed P.char8 '-' `mappend` go (-i)
-    | otherwise =                                   go ( i)
+    | otherwise =                                   go i
   where
     errImpossible fun =
         error $ "integerDec: " ++ fun ++ ": the impossible happened."
@@ -355,18 +293,18 @@ integerDec i
       where
         splith []     = errImpossible "splith"
         splith (n:ns) =
-            case n `quotRemInteger` pow10 of
-                PAIR(q,r) | q > 0     -> q : r : splitb ns
-                          | otherwise ->     r : splitb ns
+            case n `quotRem` pow10 of
+                (q,r) | q > 0     -> q : r : splitb ns
+                      | otherwise ->     r : splitb ns
 
         splitb []     = []
-        splitb (n:ns) = case n `quotRemInteger` pow10 of
-                            PAIR(q,r) -> q : r : splitb ns
+        splitb (n:ns) = case n `quotRem` pow10 of
+                            (q,r) -> q : r : splitb ns
 
     putH :: [Integer] -> [Int]
     putH []     = errImpossible "putH"
-    putH (n:ns) = case n `quotRemInteger` maxPow10 of
-                    PAIR(x,y)
+    putH (n:ns) = case n `quotRem` maxPow10 of
+                    (x,y)
                         | q > 0     -> q : r : putB ns
                         | otherwise ->     r : putB ns
                         where q = fromInteger x
@@ -374,8 +312,8 @@ integerDec i
 
     putB :: [Integer] -> [Int]
     putB []     = []
-    putB (n:ns) = case n `quotRemInteger` maxPow10 of
-                    PAIR(q,r) -> fromInteger q : fromInteger r : putB ns
+    putB (n:ns) = case n `quotRem` maxPow10 of
+                    (q,r) -> fromInteger q : fromInteger r : putB ns
 
 
 foreign import ccall unsafe "static _hs_bytestring_int_dec_padded9"
@@ -386,15 +324,6 @@ foreign import ccall unsafe "static _hs_bytestring_long_long_int_dec_padded18"
 
 {-# INLINE intDecPadded #-}
 intDecPadded :: P.BoundedPrim Int
-intDecPadded = P.liftFixedToBounded $ caseWordSize_32_64
+intDecPadded = P.liftFixedToBounded $ P.caseWordSize_32_64
     (P.fixedPrim  9 $ c_int_dec_padded9            . fromIntegral)
     (P.fixedPrim 18 $ c_long_long_int_dec_padded18 . fromIntegral)
-
-#else
--- compilers other than GHC
-
--- | Decimal encoding of an 'Integer' using the ASCII digits. Implemented
--- using via the 'Show' instance of 'Integer's.
-integerDec :: Integer -> Builder
-integerDec = string7 . show
-#endif

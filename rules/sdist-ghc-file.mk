@@ -3,8 +3,8 @@
 # This file is part of the GHC build system.
 #
 # To understand how the build system works and how to modify it, see
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Architecture
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Modifying
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/architecture
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/modifying
 #
 # -----------------------------------------------------------------------------
 
@@ -16,7 +16,7 @@
 # $(eval $(call sdist-ghc-file,compiler,stage2,parser,Parser,y))
 #
 # This adds the file 'compiler/stage2/build/Parser.hs' to the sdist, in the
-# same directory as 'compiler/parser/Parser.y' (which is renamed).
+# same directory as 'compiler/GHC/Parser.y' (which is renamed).
 
 define sdist-ghc-file
 # $1 = dir
@@ -37,7 +37,7 @@ sdist_$1_$2_$4 : sdist-ghc-prep-tree
 # Generate the .hs files if they don't exist yet, then do actual copying and
 # moving.
 sdist_$1_$2_$4 : $1/$2/build/$4.hs
-	"$(CP)" $1/$2/build/$4.hs $(SRC_DIST_GHC_DIR)/$1/$3
+	"$(CP)" $1/$2/build/$4.hs $(SRC_DIST_GHC_DIR)/$1/$3/$$(dir $4)
 	mv $(SRC_DIST_GHC_DIR)/$1/$3/$4.$5 $(SRC_DIST_GHC_DIR)/$1/$3/$4.$5.source
 
 # And make sure the rules for generating the .hs files exist, even when we

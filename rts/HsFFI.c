@@ -6,9 +6,9 @@
  *
  * ---------------------------------------------------------------------------*/
 
-#include "PosixSource.h"
-#include "HsFFI.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
+#include "HsFFI.h"
 
 #include "StablePtr.h"
 #include "Task.h"

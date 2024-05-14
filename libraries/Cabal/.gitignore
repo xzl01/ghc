@@ -1,4 +1,3 @@
-# trivial gitignore file
 .cabal-sandbox/
 cabal.sandbox.config
 cabal.project.local
@@ -15,9 +14,9 @@ dist-*
 register.sh
 ./cabal.config
 cabal-tests.log
+bootstrap/*.plan.json
 
 /Cabal/dist/
-/Cabal/.python-sphinx-virtualenv/
 /Cabal/tests/Setup
 /Cabal/Setup
 /Cabal/source-file-list
@@ -26,6 +25,13 @@ cabal-tests.log
 /cabal-install/Setup
 /cabal-install/source-file-list
 
+.stylish-haskell.yaml
+.stylish-haskell.yml
+.ghci
+.ghcid
+
+# Output of release and bootstrap
+_build
 
 # editor temp files
 
@@ -50,6 +56,7 @@ ctags
 
 # stack artifacts
 /.stack-work/
+stack.yaml.lock
 
 # Shake artifacts
 .shake*
@@ -58,5 +65,20 @@ progress.txt
 # test files
 register.sh
 
+# windows test artifacts
+cabal-testsuite/**/*.exe
+cabal-testsuite/**/*.bat
+
 # python artifacts from documentation builds
 *.pyc
+.python-sphinx-virtualenv/
+/doc/.skjold_cache/
+
+# macOS folder metadata
+.DS_Store
+
+# benchmarks
+bench.html
+
+# Emacs
+.projectile

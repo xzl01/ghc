@@ -12,6 +12,6 @@ hpc_prefix = "perl hpcrun.pl --clear --exeext={exeext} --hpc={hpc}"
 # not the same) copy of this program.
 test('hpc_raytrace',
      [extra_files(['../hpcrun.pl', 'CSG.hs', 'Construct.hs', 'Data.hs', 'Eval.hs', 'Geometry.hs', 'Illumination.hs', 'Intersections.hs', 'Interval.hs', 'Main.hs', 'Misc.hs', 'Parse.hs', 'Primitives.hs', 'Surface.hs', 'galois.gml', 'galois.sample']),
-      cmd_prefix(hpc_prefix), reqlib('parsec'), ignore_stdout],
+      cmd_prefix(hpc_prefix), ignore_stdout],
      multimod_compile_and_run, ['Main','-fhpc -package parsec'])
 

@@ -17,15 +17,17 @@
      * ReFS doesn't support hard link currently.
 -}
 module System.Win32.HardLink
-  ( module System.Win32.HardLink
+  ( createHardLink
+  , createHardLink'
   ) where
+
 import System.Win32.File   ( LPSECURITY_ATTRIBUTES, failIfFalseWithRetry_ )
 import System.Win32.String ( LPCTSTR, withTString )
 import System.Win32.Types  ( BOOL, nullPtr )
 
 #include "windows_cconv.h"
 
--- | NOTE: createHardLink is /flipped arguments/ to provide compatiblity for Unix.
+-- | NOTE: createHardLink is /flipped arguments/ to provide compatibility for Unix.
 -- 
 -- If you want to create hard link by Windows way, use 'createHardLink'' instead.
 createHardLink :: FilePath -- ^ Target file path

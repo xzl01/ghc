@@ -66,6 +66,9 @@
 /* The alignment of a `void *'. */
 #undef ALIGNMENT_VOID_P
 
+/* Define (to 1) if C compiler has an LLVM back end */
+#undef CC_LLVM_BACKEND
+
 /* Define to 1 if __thread is supported */
 #undef CC_SUPPORTS_TLS
 
@@ -76,6 +79,9 @@
 
 /* Define to 1 if using `alloca.c'. */
 #undef C_ALLOCA
+
+/* Enable Native I/O manager as default. */
+#undef DEFAULT_NATIVE_IO_MANAGER
 
 /* Define to 1 if your processor stores words of floats with the most
    significant byte first */
@@ -94,7 +100,7 @@
 /* Define to 1 if you have the <bfd.h> header file. */
 #undef HAVE_BFD_H
 
-/* Does GCC support __atomic primitives? */
+/* Does C compiler support __atomic primitives? */
 #undef HAVE_C11_ATOMICS
 
 /* Define to 1 if you have the `clock_gettime' function. */
@@ -109,6 +115,10 @@
 /* Define to 1 if you have the declaration of `ctime_r', and to 0 if you
    don't. */
 #undef HAVE_DECL_CTIME_R
+
+/* Define to 1 if you have the declaration of `environ', and to 0 if you
+   don't. */
+#undef HAVE_DECL_ENVIRON
 
 /* Define to 1 if you have the declaration of `MADV_DONTNEED', and to 0 if you
    don't. */
@@ -127,6 +137,12 @@
 
 /* Define to 1 if you have the <dlfcn.h> header file. */
 #undef HAVE_DLFCN_H
+
+/* Define to 1 if you have the `dlinfo' function. */
+#undef HAVE_DLINFO
+
+/* Define to 1 if you have the <elfutils/libdw.h> header file. */
+#undef HAVE_ELFUTILS_LIBDW_H
 
 /* Define to 1 if you have the <errno.h> header file. */
 #undef HAVE_ERRNO_H
@@ -167,14 +183,14 @@
 /* Define to 1 if you have the `dl' library (-ldl). */
 #undef HAVE_LIBDL
 
-/* Define to 1 if you have libffi. */
-#undef HAVE_LIBFFI
-
 /* Define to 1 if you have the `iberty' library (-liberty). */
 #undef HAVE_LIBIBERTY
 
 /* Define to 1 if you need to link with libm */
 #undef HAVE_LIBM
+
+/* Define to 1 if you have the `mingwex' library (-lmingwex). */
+#undef HAVE_LIBMINGWEX
 
 /* Define to 1 if you have libnuma */
 #undef HAVE_LIBNUMA
@@ -197,9 +213,6 @@
 /* Define to 1 if you have the <memory.h> header file. */
 #undef HAVE_MEMORY_H
 
-/* Define to 1 if you have the mingwex library. */
-#undef HAVE_MINGWEX
-
 /* Define to 1 if you have the <nlist.h> header file. */
 #undef HAVE_NLIST_H
 
@@ -212,14 +225,32 @@
 /* Define to 1 if we have printf$LDBLStub (Apple Mac OS >= 10.4, PPC). */
 #undef HAVE_PRINTF_LDBLSTUB
 
+/* Define to 1 if you have the `pthread_condattr_setclock' function. */
+#undef HAVE_PTHREAD_CONDATTR_SETCLOCK
+
 /* Define to 1 if you have the <pthread.h> header file. */
 #undef HAVE_PTHREAD_H
+
+/* Define to 1 if you have the <pthread_np.h> header file. */
+#undef HAVE_PTHREAD_NP_H
 
 /* Define to 1 if you have the glibc version of pthread_setname_np */
 #undef HAVE_PTHREAD_SETNAME_NP
 
+/* Define to 1 if you have the Darwin version of pthread_setname_np */
+#undef HAVE_PTHREAD_SETNAME_NP_DARWIN
+
+/* Define to 1 if you have the NetBSD version of pthread_setname_np */
+#undef HAVE_PTHREAD_SETNAME_NP_NETBSD
+
+/* Define to 1 if you have pthread_set_name_np */
+#undef HAVE_PTHREAD_SET_NAME_NP
+
 /* Define to 1 if you have the <pwd.h> header file. */
 #undef HAVE_PWD_H
+
+/* Define to 1 if you have the `sched_getaffinity' function. */
+#undef HAVE_SCHED_GETAFFINITY
 
 /* Define to 1 if you have the <sched.h> header file. */
 #undef HAVE_SCHED_H
@@ -256,6 +287,9 @@
 
 /* Define to 1 if you have the `sysconf' function. */
 #undef HAVE_SYSCONF
+
+/* Define to 1 if you have libffi. */
+#undef HAVE_SYSTEM_LIBFFI
 
 /* Define to 1 if you have the <sys/cpuset.h> header file. */
 #undef HAVE_SYS_CPUSET_H
@@ -317,6 +351,9 @@
 /* Define to 1 if you have the <unistd.h> header file. */
 #undef HAVE_UNISTD_H
 
+/* Define to 1 if you have the `uselocale' function. */
+#undef HAVE_USELOCALE
+
 /* Define to 1 if you have the <utime.h> header file. */
 #undef HAVE_UTIME_H
 
@@ -344,6 +381,9 @@
 /* Define to 1 if C symbols have a leading underscore added by the compiler.
    */
 #undef LEADING_UNDERSCORE
+
+/* Define to 1 if we need -latomic. */
+#undef NEED_ATOMIC_LIB
 
 /* Define 1 if we need to link code using pthreads with -lpthread */
 #undef NEED_PTHREAD_LIB
@@ -443,8 +483,14 @@
 /* Define to 1 if you have the ANSI C header files. */
 #undef STDC_HEADERS
 
+/* Define to 1 if info tables are laid out next to code */
+#undef TABLES_NEXT_TO_CODE
+
 /* Define to 1 if you can safely include both <sys/time.h> and <time.h>. */
 #undef TIME_WITH_SYS_TIME
+
+/* Compile-in ASSERTs in all ways. */
+#undef USE_ASSERTS_ALL_WAYS
 
 /* Enable single heap address space support */
 #undef USE_LARGE_ADDRESS_SPACE
@@ -522,8 +568,11 @@
 /* Define to `int' if <sys/types.h> does not define. */
 #undef pid_t
 
-/* The supported LLVM version number */
-#undef sUPPORTED_LLVM_VERSION
+/* The maximum supported LLVM version number */
+#undef sUPPORTED_LLVM_VERSION_MAX
+
+/* The minimum supported LLVM version number */
+#undef sUPPORTED_LLVM_VERSION_MIN
 
 /* Define to `unsigned int' if <sys/types.h> does not define. */
 #undef size_t

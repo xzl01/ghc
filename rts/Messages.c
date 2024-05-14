@@ -14,6 +14,7 @@
 #include "Threads.h"
 #include "RaiseAsync.h"
 #include "sm/Storage.h"
+#include "CloneStack.h"
 
 /* ----------------------------------------------------------------------------
    Send a message to another Capability
@@ -32,14 +33,15 @@ void sendMessage(Capability *from_cap, Capability *to_cap, Message *msg)
             i != &stg_MSG_BLACKHOLE_info &&
             i != &stg_MSG_TRY_WAKEUP_info &&
             i != &stg_IND_info && // can happen if a MSG_BLACKHOLE is revoked
-            i != &stg_WHITEHOLE_info) {
+            i != &stg_WHITEHOLE_info &&
+            i != &stg_MSG_CLONE_STACK_info) {
             barf("sendMessage: %p", i);
         }
     }
 #endif
 
     msg->link = to_cap->inbox;
-    to_cap->inbox = msg;
+    RELAXED_STORE(&to_cap->inbox, msg);
 
     recordClosureMutated(from_cap,(StgClosure*)msg);
 
@@ -68,13 +70,12 @@ executeMessage (Capability *cap, Message *m)
     const StgInfoTable *i;
 
 loop:
-    write_barrier(); // allow m->header to be modified by another thread
-    i = m->header.info;
+    i = ACQUIRE_LOAD(&m->header.info);
     if (i == &stg_MSG_TRY_WAKEUP_info)
     {
         StgTSO *tso = ((MessageWakeup *)m)->tso;
-        debugTraceCap(DEBUG_sched, cap, "message: try wakeup thread %ld",
-                      (W_)tso->id);
+        debugTraceCap(DEBUG_sched, cap, "message: try wakeup thread %"
+                      FMT_StgThreadID, tso->id);
         tryWakeupThread(cap, tso);
     }
     else if (i == &stg_MSG_THROWTO_info)
@@ -92,16 +93,13 @@ loop:
         debugTraceCap(DEBUG_sched, cap, "message: throwTo %ld -> %ld",
                       (W_)t->source->id, (W_)t->target->id);
 
-        ASSERT(t->source->why_blocked == BlockedOnMsgThrowTo);
-        ASSERT(t->source->block_info.closure == (StgClosure *)m);
-
         r = throwToMsg(cap, t);
 
         switch (r) {
         case THROWTO_SUCCESS: {
             // this message is done
             StgTSO *source = t->source;
-            doneWithMsgThrowTo(t);
+            doneWithMsgThrowTo(cap, t);
             tryWakeupThread(cap, source);
             break;
         }
@@ -130,9 +128,13 @@ loop:
     else if (i == &stg_WHITEHOLE_info)
     {
 #if defined(PROF_SPIN)
-        ++whitehole_executeMessage_spin;
+        NONATOMIC_ADD(&whitehole_executeMessage_spin, 1);
 #endif
         goto loop;
+    }
+    else if(i == &stg_MSG_CLONE_STACK_info){
+        MessageCloneStack *cloneStackMessage = (MessageCloneStack*) m;
+        handleCloneStackMessage(cloneStackMessage);
     }
     else
     {
@@ -169,11 +171,10 @@ uint32_t messageBlackHole(Capability *cap, MessageBlackHole *msg)
     StgClosure *bh = UNTAG_CLOSURE(msg->bh);
     StgTSO *owner;
 
-    debugTraceCap(DEBUG_sched, cap, "message: thread %d blocking on "
-                  "blackhole %p", (W_)msg->tso->id, msg->bh);
+    debugTraceCap(DEBUG_sched, cap, "message: thread %" FMT_StgThreadID
+                  " blocking on blackhole %p", msg->tso->id, msg->bh);
 
-    info = bh->header.info;
-    load_load_barrier();  // See Note [Heap memory barriers] in SMP.h
+    info = ACQUIRE_LOAD(&bh->header.info);
 
     // If we got this message in our inbox, it might be that the
     // BLACKHOLE has already been updated, and GC has shorted out the
@@ -193,11 +194,11 @@ uint32_t messageBlackHole(Capability *cap, MessageBlackHole *msg)
     // The blackhole must indirect to a TSO, a BLOCKING_QUEUE, an IND,
     // or a value.
 loop:
-    // NB. VOLATILE_LOAD(), because otherwise gcc hoists the load
-    // and turns this into an infinite loop.
-    p = UNTAG_CLOSURE((StgClosure*)VOLATILE_LOAD(&((StgInd*)bh)->indirectee));
-    info = p->header.info;
-    load_load_barrier();  // See Note [Heap memory barriers] in SMP.h
+    // If we are being called from stg_BLACKHOLE then TSAN won't know about the
+    // previous read barrier that makes the following access safe.
+    TSAN_ANNOTATE_BENIGN_RACE(&((StgInd*)bh)->indirectee, "messageBlackHole");
+    p = UNTAG_CLOSURE(ACQUIRE_LOAD(&((StgInd*)bh)->indirectee));
+    info = RELAXED_LOAD(&p->header.info);
 
     if (info == &stg_IND_info)
     {
@@ -243,9 +244,8 @@ loop:
         // We are about to make the newly-constructed message visible to other cores;
         // a barrier is necessary to ensure that all writes are visible.
         // See Note [Heap memory barriers] in SMP.h.
-        write_barrier();
-        owner->bq = bq;
-        dirty_TSO(cap, owner); // we modified owner->bq
+        dirty_TSO(cap, owner); // we will modify owner->bq
+        RELEASE_STORE(&owner->bq, bq);
 
         // If the owner of the blackhole is currently runnable, then
         // bump it to the front of the run queue.  This gives the
@@ -261,12 +261,15 @@ loop:
         }
 
         // point to the BLOCKING_QUEUE from the BLACKHOLE
-        write_barrier(); // make the BQ visible, see Note [Heap memory barriers].
-        ((StgInd*)bh)->indirectee = (StgClosure *)bq;
+        // RELEASE to make the BQ visible, see Note [Heap memory barriers].
+        RELEASE_STORE(&((StgInd*)bh)->indirectee, (StgClosure *)bq);
+        IF_NONMOVING_WRITE_BARRIER_ENABLED {
+            updateRemembSetPushClosure(cap, (StgClosure*)p);
+        }
         recordClosureMutated(cap,bh); // bh was mutated
 
-        debugTraceCap(DEBUG_sched, cap, "thread %d blocked on thread %d",
-                      (W_)msg->tso->id, (W_)owner->id);
+        debugTraceCap(DEBUG_sched, cap, "thread %" FMT_StgThreadID " blocked on"
+                      " thread %" FMT_StgThreadID, msg->tso->id, owner->id);
 
         return 1; // blocked
     }
@@ -290,23 +293,28 @@ loop:
         }
 #endif
 
-        msg->link = bq->queue;
+        IF_NONMOVING_WRITE_BARRIER_ENABLED {
+            // We are about to overwrite bq->queue; make sure its current value
+            // makes it into the update remembered set
+            updateRemembSetPushClosure(cap, (StgClosure*)bq->queue);
+        }
+        RELAXED_STORE(&msg->link, bq->queue);
         bq->queue = msg;
         // No barrier is necessary here: we are only exposing the
         // closure to the GC. See Note [Heap memory barriers] in SMP.h.
         recordClosureMutated(cap,(StgClosure*)msg);
 
         if (info == &stg_BLOCKING_QUEUE_CLEAN_info) {
-            bq->header.info = &stg_BLOCKING_QUEUE_DIRTY_info;
+            RELAXED_STORE(&bq->header.info, &stg_BLOCKING_QUEUE_DIRTY_info);
             // No barrier is necessary here: we are only exposing the
             // closure to the GC. See Note [Heap memory barriers] in SMP.h.
             recordClosureMutated(cap,(StgClosure*)bq);
         }
 
         debugTraceCap(DEBUG_sched, cap,
-                      "thread %d blocked on existing BLOCKING_QUEUE "
-                      "owned by thread %d",
-                      (W_)msg->tso->id, (W_)owner->id);
+                      "thread %" FMT_StgThreadID " blocked on existing "
+                      "BLOCKING_QUEUE owned by thread %" FMT_StgThreadID,
+                      msg->tso->id, owner->id);
 
         // See above, #3838
         if (owner->why_blocked == NotBlocked && owner->id != msg->tso->id) {
@@ -328,7 +336,7 @@ StgTSO * blackHoleOwner (StgClosure *bh)
     const StgInfoTable *info;
     StgClosure *p;
 
-    info = bh->header.info;
+    info = RELAXED_LOAD(&bh->header.info);
 
     if (info != &stg_BLACKHOLE_info &&
         info != &stg_CAF_BLACKHOLE_info &&
@@ -340,10 +348,8 @@ StgTSO * blackHoleOwner (StgClosure *bh)
     // The blackhole must indirect to a TSO, a BLOCKING_QUEUE, an IND,
     // or a value.
 loop:
-    // NB. VOLATILE_LOAD(), because otherwise gcc hoists the load
-    // and turns this into an infinite loop.
-    p = UNTAG_CLOSURE((StgClosure*)VOLATILE_LOAD(&((StgInd*)bh)->indirectee));
-    info = p->header.info;
+    p = UNTAG_CLOSURE(ACQUIRE_LOAD(&((StgInd*)bh)->indirectee));
+    info = RELAXED_LOAD(&p->header.info);
 
     if (info == &stg_IND_info) goto loop;
 
@@ -355,7 +361,7 @@ loop:
              info == &stg_BLOCKING_QUEUE_DIRTY_info)
     {
         StgBlockingQueue *bq = (StgBlockingQueue *)p;
-        return bq->owner;
+        return RELAXED_LOAD(&bq->owner);
     }
 
     return NULL; // not blocked

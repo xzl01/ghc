@@ -15,7 +15,7 @@ module Haddock.Backends.Xhtml.Layout (
 
   divPackageHeader, divContent, divModuleHeader, divFooter,
   divTableOfContents, divDescription, divSynopsis, divInterface,
-  divIndex, divAlphabet, divModuleList, divContentsList,
+  divIndex, divAlphabet, divPackageList, divModuleList,  divContentsList,
 
   sectionName,
   nonEmptySectionName,
@@ -50,9 +50,9 @@ import qualified Data.Map as Map
 import Text.XHtml hiding ( name, title, quote )
 import Data.Maybe (fromMaybe)
 
-import FastString            ( unpackFS )
-import GHC
-import Name (nameOccName)
+import GHC.Data.FastString ( unpackFS )
+import GHC hiding (anchor)
+import GHC.Types.Name (nameOccName)
 
 --------------------------------------------------------------------------------
 -- * Sections of the document
@@ -81,7 +81,7 @@ nonEmptySectionName c
 
 divPackageHeader, divContent, divModuleHeader, divFooter,
   divTableOfContents, divDescription, divSynopsis, divInterface,
-  divIndex, divAlphabet, divModuleList, divContentsList
+  divIndex, divAlphabet, divPackageList, divModuleList, divContentsList
     :: Html -> Html
 
 divPackageHeader    = sectionDiv "package-header"
@@ -96,6 +96,7 @@ divInterface        = sectionDiv "interface"
 divIndex            = sectionDiv "index"
 divAlphabet         = sectionDiv "alphabet"
 divModuleList       = sectionDiv "module-list"
+divPackageList      = sectionDiv "module-list"
 
 
 --------------------------------------------------------------------------------
@@ -167,7 +168,7 @@ subTableSrc pkg qual lnks splice decls = Just $ table << aboves (concatMap subRo
       : map (cell . (td <<)) subs
 
     linkHtml :: SrcSpan -> Maybe Module -> DocName -> Html
-    linkHtml loc@(RealSrcSpan _) mdl dn = links lnks loc splice mdl dn
+    linkHtml loc@(RealSrcSpan _ _) mdl dn = links lnks loc splice mdl dn
     linkHtml _ _ _ = noHtml
 
 subBlock :: [Html] -> Maybe Html
@@ -219,7 +220,7 @@ subOrphanInstances pkg qual lnks splice  = maybe noHtml wrap . instTable
   where
     wrap = ((h1 << "Orphan instances") +++)
     instTable = fmap (thediv ! [ identifier ("section." ++ id_) ] <<) . subTableSrc pkg qual lnks splice
-    id_ = makeAnchorId $ "orphans"
+    id_ = makeAnchorId "orphans"
 
 
 subInstHead :: String -- ^ Instance unique id (for anchor generation)
@@ -310,9 +311,9 @@ links ((_,_,sourceMap,lineMap), (_,_,maybe_wiki_url)) loc splice mdl' docName@(D
         -- 'mdl'' is a way of "overriding" the module. Without it, instances
         -- will point to the module defining the class/family, which is wrong.
         origMod = fromMaybe (nameModule n) mdl'
-        origPkg = moduleUnitId origMod
+        origPkg = moduleUnit origMod
 
         fname = case loc of
-          RealSrcSpan l -> unpackFS (srcSpanFile l)
+          RealSrcSpan l _ -> unpackFS (srcSpanFile l)
           UnhelpfulSpan _ -> error "links: UnhelpfulSpan"
 links _ _ _ _ _ = noHtml

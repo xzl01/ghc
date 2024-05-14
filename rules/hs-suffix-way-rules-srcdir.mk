@@ -5,8 +5,8 @@
 # This file is part of the GHC build system.
 #
 # To understand how the build system works and how to modify it, see
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Architecture
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Modifying
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/architecture
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/modifying
 #
 # -----------------------------------------------------------------------------
 
@@ -35,11 +35,17 @@ $1/$2/build/%.$$($3_hcsuf) : $1/$4/%.lhs $$(LAX_DEPS_FOLLOW) $$$$($1_$2_HC_DEP) 
 # XXX: for some reason these get used in preference to the direct
 # .hs->.o rule, I don't know why --SDM
 
-$1/$2/build/%.$$($3_osuf) : $1/$4/%.hc includes/ghcautoconf.h includes/ghcplatform.h | $$$$(dir $$$$@)/.
-	$$(call cmd,$1_$2_CC) $$($1_$2_$3_ALL_CC_OPTS) $$(addprefix -I,$$(GHC_INCLUDE_DIRS)) -x c -c $$< -o $$@ $$(if $$(findstring YES,$$($1_$2_DYNAMIC_TOO)),-dyno $$(addsuffix .$$(dyn_osuf),$$(basename $$@)))
+$1/$2/build/%.$$($3_osuf) : $1/$4/%.hc | $$$$(dir $$$$@)/.
+	$$(call cmd,$1_$2_CC) \
+		$$($1_$2_$3_ALL_CC_OPTS) \
+		-x c -c $$< -o $$@ \
+		$$(if $$(findstring YES,$$($1_$2_DYNAMIC_TOO)),-dyno $$(addsuffix .$$(dyn_osuf),$$(basename $$@)))
 
-$1/$2/build/%.$$($3_osuf) : $1/$2/build/%.hc includes/ghcautoconf.h includes/ghcplatform.h
-	$$(call cmd,$1_$2_CC) $$($1_$2_$3_ALL_CC_OPTS) $$(addprefix -I,$$(GHC_INCLUDE_DIRS)) -x c -c $$< -o $$@ $$(if $$(findstring YES,$$($1_$2_DYNAMIC_TOO)),-dyno $$(addsuffix .$$(dyn_osuf),$$(basename $$@)))
+$1/$2/build/%.$$($3_osuf) : $1/$2/build/%.hc
+	$$(call cmd,$1_$2_CC) \
+		$$($1_$2_$3_ALL_CC_OPTS) \
+		-x c -c $$< -o $$@ \
+		$$(if $$(findstring YES,$$($1_$2_DYNAMIC_TOO)),-dyno $$(addsuffix .$$(dyn_osuf),$$(basename $$@)))
 
 # $1/$2/build/%.$$($3_osuf) : $1/$2/build/%.$$($3_hcsuf)
 # 	$$(call cmd,$1_$2_HC) $$($1_$2_$3_ALL_HC_OPTS) -c $$< -o $$@

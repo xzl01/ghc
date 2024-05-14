@@ -21,7 +21,8 @@ module Haddock.Backends.Xhtml.Utils (
   keyword, punctuate,
 
   braces, brackets, pabrackets, parens, parenList, ubxParenList, ubxSumList,
-  arrow, comma, dcolon, dot, darrow, equals, forallSymbol, quote, promoQuote,
+  arrow, lollipop, comma, dcolon, dot, darrow, equals, forallSymbol, quote, promoQuote,
+  multAnnotation,
   atSign,
 
   hsep, vcat,
@@ -38,9 +39,9 @@ import Data.Maybe
 import Text.XHtml hiding ( name, title, p, quote )
 import qualified Text.XHtml as XHtml
 
-import GHC      ( SrcSpan(..), srcSpanStartLine, Name )
-import Module   ( Module, ModuleName, moduleName, moduleNameString )
-import Name     ( getOccString, nameOccName, isValOcc )
+import GHC              ( SrcSpan(..), srcSpanStartLine, Name )
+import GHC.Unit.Module ( Module, ModuleName, moduleName, moduleNameString )
+import GHC.Types.Name   ( getOccString, nameOccName, isValOcc )
 
 
 -- | Replace placeholder string elements with provided values.
@@ -75,7 +76,7 @@ spliceURL' maybe_file maybe_mod maybe_name maybe_loc = run
     Nothing -> ""
     Just span_ ->
       case span_ of
-      RealSrcSpan span__ ->
+      RealSrcSpan span__ _ ->
         show $ srcSpanStartLine span__
       UnhelpfulSpan _ -> ""
 
@@ -187,12 +188,16 @@ ubxparens :: Html -> Html
 ubxparens h = toHtml "(#" <+> h <+> toHtml "#)"
 
 
-dcolon, arrow, darrow, forallSymbol, atSign :: Bool -> Html
+dcolon, arrow, lollipop, darrow, forallSymbol, atSign :: Bool -> Html
 dcolon unicode = toHtml (if unicode then "∷" else "::")
 arrow  unicode = toHtml (if unicode then "→" else "->")
+lollipop unicode = toHtml (if unicode then "⊸" else "%1 ->")
 darrow unicode = toHtml (if unicode then "⇒" else "=>")
 forallSymbol unicode = if unicode then toHtml "∀" else keyword "forall"
 atSign unicode = toHtml (if unicode then "@" else "@")
+
+multAnnotation :: Html
+multAnnotation = toHtml "%"
 
 dot :: Html
 dot = toHtml "."

@@ -31,6 +31,8 @@ module GHC.IO.Buffer (
     bufferAdd,
     slideContents,
     bufferAdjustL,
+    bufferAddOffset,
+    bufferAdjustOffset,
 
     -- ** Inspecting
     isEmptyBuffer,
@@ -39,6 +41,7 @@ module GHC.IO.Buffer (
     isWriteBuffer,
     bufferElems,
     bufferAvailable,
+    bufferOffset,
     summaryBuffer,
 
     -- ** Operating on the raw buffer as a Ptr
@@ -68,6 +71,8 @@ import GHC.Ptr
 import GHC.Word
 import GHC.Show
 import GHC.Real
+import GHC.List
+import GHC.ForeignPtr  (unsafeWithForeignPtr)
 import Foreign.C.Types
 import Foreign.ForeignPtr
 import Foreign.Storable
@@ -89,6 +94,9 @@ import Foreign.Storable
 -- broken.  In particular, the built-in codecs
 -- e.g. GHC.IO.Encoding.UTF{8,16,32} need to use isFullCharBuffer or
 -- similar in place of the ow >= os comparisons.
+--
+-- Tamar: We need to do this eventually for Windows, as we have to re-encode
+-- the text as UTF-16 anyway, so if we can avoid it it would be great.
 
 -- ---------------------------------------------------------------------------
 -- Raw blocks of data
@@ -96,10 +104,10 @@ import Foreign.Storable
 type RawBuffer e = ForeignPtr e
 
 readWord8Buf :: RawBuffer Word8 -> Int -> IO Word8
-readWord8Buf arr ix = withForeignPtr arr $ \p -> peekByteOff p ix
+readWord8Buf fp ix = unsafeWithForeignPtr fp $ \p -> peekByteOff p ix
 
 writeWord8Buf :: RawBuffer Word8 -> Int -> Word8 -> IO ()
-writeWord8Buf arr ix w = withForeignPtr arr $ \p -> pokeByteOff p ix w
+writeWord8Buf fp ix w = unsafeWithForeignPtr fp $ \p -> pokeByteOff p ix w
 
 #if defined(CHARBUF_UTF16)
 type CharBufElem = Word16
@@ -110,17 +118,17 @@ type CharBufElem = Char
 type RawCharBuffer = RawBuffer CharBufElem
 
 peekCharBuf :: RawCharBuffer -> Int -> IO Char
-peekCharBuf arr ix = withForeignPtr arr $ \p -> do
+peekCharBuf arr ix = unsafeWithForeignPtr arr $ \p -> do
                         (c,_) <- readCharBufPtr p ix
                         return c
 
 {-# INLINE readCharBuf #-}
 readCharBuf :: RawCharBuffer -> Int -> IO (Char, Int)
-readCharBuf arr ix = withForeignPtr arr $ \p -> readCharBufPtr p ix
+readCharBuf arr ix = unsafeWithForeignPtr arr $ \p -> readCharBufPtr p ix
 
 {-# INLINE writeCharBuf #-}
 writeCharBuf :: RawCharBuffer -> Int -> Char -> IO Int
-writeCharBuf arr ix c = withForeignPtr arr $ \p -> writeCharBufPtr p ix c
+writeCharBuf arr ix c = unsafeWithForeignPtr arr $ \p -> writeCharBufPtr p ix c
 
 {-# INLINE readCharBufPtr #-}
 readCharBufPtr :: Ptr CharBufElem -> Int -> IO (Char, Int)
@@ -177,13 +185,27 @@ charSize = 4
 -- a memory-mapped file and in which case 'bufL' will point to the
 -- next location to be written, which is not necessarily the beginning
 -- of the file.
+--
+-- On Posix systems the I/O manager has an implicit reliance on doing a file
+-- read moving the file pointer.  However on Windows async operations the kernel
+-- object representing a file does not use the file pointer offset.  Logically
+-- this makes sense since operations can be performed in any arbitrary order.
+-- OVERLAPPED operations don't respect the file pointer offset as their
+-- intention is to support arbitrary async reads to anywhere at a much lower
+-- level.  As such we should explicitly keep track of the file offsets of the
+-- target in the buffer.  Any operation to seek should also update this entry.
+--
+-- In order to keep us sane we try to uphold the invariant that any function
+-- being passed a Handle is responsible for updating the handles offset unless
+-- other behaviour is documented.
 data Buffer e
   = Buffer {
-        bufRaw   :: !(RawBuffer e),
-        bufState :: BufferState,
-        bufSize  :: !Int,          -- in elements, not bytes
-        bufL     :: !Int,          -- offset of first item in the buffer
-        bufR     :: !Int           -- offset of last item + 1
+        bufRaw    :: !(RawBuffer e),
+        bufState  :: BufferState,
+        bufSize   :: !Int,          -- in elements, not bytes
+        bufOffset :: !Word64,       -- start location for next read/write
+        bufL      :: !Int,          -- offset of first item in the buffer
+        bufR      :: !Int           -- offset of last item + 1
   }
 
 #if defined(CHARBUF_UTF16)
@@ -237,9 +259,22 @@ bufferAdjustL l buf@Buffer{ bufR=w }
 bufferAdd :: Int -> Buffer e -> Buffer e
 bufferAdd i buf@Buffer{ bufR=w } = buf{ bufR=w+i }
 
+bufferOffset :: Buffer e -> Word64
+bufferOffset Buffer{ bufOffset=off } = off
+
+bufferAdjustOffset :: Word64 -> Buffer e -> Buffer e
+bufferAdjustOffset offs buf = buf{ bufOffset=offs }
+
+-- The adjustment to the offset can be 32bit int on 32 platforms.
+-- This is fine, we only use this after reading into/writing from
+-- the buffer so we will never overflow here.
+bufferAddOffset :: Int -> Buffer e -> Buffer e
+bufferAddOffset offs buf@Buffer{ bufOffset=w } =
+  buf{ bufOffset=w+(fromIntegral offs) }
+
 emptyBuffer :: RawBuffer e -> Int -> BufferState -> Buffer e
 emptyBuffer raw sz state =
-  Buffer{ bufRaw=raw, bufState=state, bufR=0, bufL=0, bufSize=sz }
+  Buffer{ bufRaw=raw, bufState=state, bufOffset=0, bufR=0, bufL=0, bufSize=sz }
 
 newByteBuffer :: Int -> BufferState -> IO (Buffer Word8)
 newByteBuffer c st = newBuffer c c st
@@ -266,9 +301,16 @@ foreign import ccall unsafe "memmove"
 
 summaryBuffer :: Buffer a -> String
 summaryBuffer !buf  -- Strict => slightly better code
-   = "buf" ++ show (bufSize buf) ++ "(" ++ show (bufL buf) ++ "-" ++ show (bufR buf) ++ ")"
+   = ppr (show $ bufRaw buf) ++ "@buf" ++ show (bufSize buf)
+   ++ "(" ++ show (bufL buf) ++ "-" ++ show (bufR buf) ++ ")"
+   ++ " (>=" ++ show (bufOffset buf) ++ ")"
+  where ppr :: String -> String
+        ppr ('0':'x':xs) = let p = dropWhile (=='0') xs
+                           in if null p then "0x0" else '0':'x':p
+        ppr x = x
 
--- INVARIANTS on Buffers:
+-- Note [INVARIANTS on Buffers]
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 --   * r <= w
 --   * if r == w, and the buffer is for reading, then r == 0 && w == 0
 --   * a write buffer is never full.  If an operation
@@ -278,7 +320,7 @@ summaryBuffer !buf  -- Strict => slightly better code
 --     operation, a read buffer always has at least one character of space.
 
 checkBuffer :: Buffer a -> IO ()
-checkBuffer buf@Buffer{ bufState = state, bufL=r, bufR=w, bufSize=size } = do
+checkBuffer buf@Buffer{ bufState = state, bufL=r, bufR=w, bufSize=size } =
      check buf (
         size > 0
         && r <= w

@@ -24,13 +24,30 @@ source_suffix = '.rst'
 source_encoding = 'utf-8-sig'
 master_doc = 'index'
 
+nitpick_ignore = [
+    ("envvar", "EDITOR"),
+    ("envvar", "HOME"),
+    ("envvar", "LD_LIBRARY_PATH"),
+    ("envvar", "LIBRARY_PATH"),
+    ("envvar", "PATH"),
+    ("envvar", "RPATH"),
+    ("envvar", "RUNPATH"),
+    ("envvar", "TMPDIR"),
+
+    ("c:type", "bool"),
+
+    ("extension", "DoAndIfThenElse"),
+    ("extension", "RelaxedPolyRec"),
+]
+
 rst_prolog = """
-.. |llvm-version| replace:: {llvm_version}
-""".format(llvm_version=ghc_config.llvm_version)
+.. |llvm-version-min| replace:: {llvm_version_min}
+.. |llvm-version-max| replace:: {llvm_version_max}
+""".format(llvm_version_min=ghc_config.llvm_version_min, llvm_version_max=ghc_config.llvm_version_max)
 
 # General information about the project.
 project = u'Glasgow Haskell Compiler'
-copyright = u'2015, GHC Team'
+copyright = u'2020, GHC Team'
 # N.B. version comes from ghc_config
 release = version  # The full version, including alpha/beta/rc tags.
 
@@ -49,7 +66,7 @@ exclude_patterns = ['.build']
 html_title = "Glasgow Haskell Compiler %s User's Guide" % release
 html_short_title = "GHC %s User's Guide" % release
 html_theme_path = ['.']
-html_theme = 'ghc-theme'
+html_theme = 'rtd-theme'
 html_logo = None
 html_static_path = ['images']
 # Convert quotes and dashes to typographically correct entities
@@ -57,8 +74,8 @@ html_use_smartypants = True
 html_use_opensearch = 'https://downloads.haskell.org/~ghc/master/users-guide'
 html_show_copyright = True
 
-# See GHC #15006
-mathjax_path = 'https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.0/MathJax.js'
+# See GHC #15006, #19423
+mathjax_path = 'https://cdn.jsdelivr.net/npm/mathjax@2/MathJax.js?config=TeX-AMS-MML_HTMLorMML '
 
 # If true, an OpenSearch description file will be output, and all pages will
 # contain a <link> tag referring to it.  The value of this option must be the
@@ -77,13 +94,20 @@ htmlhelp_basename = 'GHCUsersGuide'
 latex_elements = {
     'inputenc': '',
     'utf8extra': '',
-    'preamble': '''
+    'preamble': r'''
 \usepackage{fontspec}
 \usepackage{makeidx}
 \setsansfont{DejaVu Sans}
 \setromanfont{DejaVu Serif}
 \setmonofont{DejaVu Sans Mono}
-\setlength{\\tymin}{45pt}
+\setlength{\tymin}{45pt}
+
+% Dynamic section number spacing. Fixes #18554
+\renewcommand{\numberline}[1]{#1~}
+
+% Avoid a torrent of over-full \hbox warnings
+\usepackage{microtype}
+\hbadness=99999
 ''',
 }
 
@@ -112,7 +136,7 @@ man_pages = [
 ]
 
 # If true, show URL addresses after external links.
-#man_show_urls = False
+man_show_urls = True
 
 
 # -- Options for Texinfo output -------------------------------------------
@@ -147,7 +171,16 @@ def parse_ghci_cmd(env, sig, signode):
     return name
 
 def parse_pragma(env, sig, signode):
-    idx = sig.split(' ')[0]
+    # Collect a prefix of alphabetical tokens to use as the pragma name
+    parts = sig.split(' ')
+    idx_parts = []
+    for part in parts:
+        if all(c.isalpha() or c == "_" for c in part):
+            idx_parts.append(part)
+        else:
+            break
+    idx = '-'.join(idx_parts)
+
     name = '{-# ' + sig + ' #-}'
     signode += addnodes.desc_name(name, name)
     return idx
@@ -176,7 +209,29 @@ def haddock_role(lib):
      * reference to identifier:  :base-ref:`Control.Applicative.pure`
      * reference to type:        :base-ref:`Control.Applicative.Applicative`
     """
-    path = '%s/%s-%s' % (ghc_config.libs_base_uri, lib, ghc_config.lib_versions[lib])
+
+    def get_relative_uri(topdir, current_doc, module, anchor):
+      lib_version = ghc_config.lib_versions[lib]
+      libs_base_uri = ghc_config.libs_base_uri
+
+      # We want to find the relative uri to the Haddocks for relative links
+      # from users guide to haddocks. The inputs are:
+      #
+      # - The users guide lives under 'topdir': //docs/users_guide
+      # - The current doc file is 'current_doc': //docs/users_guide/exts/template_haskell.rst
+      #   (The html output will be //docs/users_guide/exts/template_haskell.html)
+      # - The haddocks live under 'libs_base_uri' (relative to 'topdir'): ../libraries
+
+      # for the template_haskell.rst example this will be '..'
+      current_doc_to_topdir = os.path.relpath(topdir, os.path.dirname(current_doc))
+
+      relative_path = '%s/%s/%s-%s' % (current_doc_to_topdir, libs_base_uri, lib, lib_version)
+
+      uri = '%s/%s.html%s' % (relative_path, module, anchor)
+
+      return uri
+
+
     def role(name, rawtext, text, lineno, inliner, options={}, content=[]):
         try:
             parts = text.split('.')
@@ -192,7 +247,12 @@ def haddock_role(lib):
                 anchor = ''
                 link_text = '.'.join(module_parts)
 
-            uri = '%s/%s.html%s' % (path, '-'.join(module_parts), anchor)
+            uri = get_relative_uri(
+                  inliner.document.settings.env.srcdir,
+                  inliner.document.current_source,
+                  '-'.join(module_parts),
+                  anchor)
+
             node = nodes.reference(link_text, link_text, refuri=uri)
             return [node], []
         except ValueError:
@@ -225,7 +285,17 @@ def setup(app):
                         parse_node=parse_flag,
                         indextemplate='pair: %s; RTS option',
                         doc_field_types=[
+                            Field('since', label='Introduced in GHC version', names=['since'])
+                        ])
+
+    app.add_object_type('event-type', 'event-type',
+                        objname='event log event type',
+                        indextemplate='pair: %s; eventlog event type',
+                        doc_field_types=[
                             Field('since', label='Introduced in GHC version', names=['since']),
+                            Field('tag', label='Event type ID', names=['tag']),
+                            Field('length', label='Record length', names=['length']),
+                            TypedField('fields', label='Fields', names='field', typenames=('fieldtype', 'type'))
                         ])
 
     app.add_object_type('pragma', 'pragma',

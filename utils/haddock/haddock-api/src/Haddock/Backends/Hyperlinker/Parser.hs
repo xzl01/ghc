@@ -1,21 +1,32 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
+{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 module Haddock.Backends.Hyperlinker.Parser (parse) where
 
+import Control.Monad.Trans.Maybe
+import Control.Monad.Trans.Class
 import Control.Applicative ( Alternative(..) )
 import Data.List           ( isPrefixOf, isSuffixOf )
 
 import qualified Data.ByteString as BS
 
-import BasicTypes          ( IntegralLit(..) )
-import DynFlags
-import ErrUtils            ( emptyMessages )
-import FastString          ( mkFastString )
-import Lexer               ( P(..), ParseResult(..), PState(..), Token(..)
-                           , mkPStatePure, lexer, mkParserFlags' )
-import Outputable          ( showSDoc, panic )
-import SrcLoc
-import StringBuffer        ( StringBuffer, atEnd )
+import GHC.Platform
+import GHC.Types.SourceText
+import GHC.Driver.Session
+import GHC.Driver.Config.Diagnostic
+import GHC.Utils.Error     ( pprLocMsgEnvelope )
+import GHC.Data.FastString ( mkFastString )
+import GHC.Parser.Errors.Ppr ()
+import qualified GHC.Types.Error as E
+import GHC.Parser.Lexer    as Lexer
+                           ( P(..), ParseResult(..), PState(..), Token(..)
+                           , initParserState, lexer, mkParserOpts, getPsErrorMessages)
+import GHC.Data.Bag         ( bagToList )
+import GHC.Utils.Outputable ( text, ($$) )
+import GHC.Utils.Panic      ( panic )
+import GHC.Driver.Ppr       ( showSDoc )
+import GHC.Types.SrcLoc
+import GHC.Data.StringBuffer ( StringBuffer, atEnd )
 
 import Haddock.Backends.Hyperlinker.Types as T
 import Haddock.GhcUtils
@@ -31,16 +42,19 @@ parse
   -> [T.Token]
 parse dflags fpath bs = case unP (go False []) initState of
     POk _ toks -> reverse toks
-    PFailed _ ss errMsg -> panic $ "Hyperlinker parse error at " ++ show ss ++
-                                   ": " ++ showSDoc dflags errMsg
+    PFailed pst ->
+      let err:_ = bagToList (E.getMessages $ getPsErrorMessages pst) in
+      panic $ showSDoc dflags $
+        text "Hyperlinker parse error:" $$ pprLocMsgEnvelope err
   where
 
-    initState = mkPStatePure pflags buf start
+    initState = initParserState pflags buf start
     buf = stringBufferFromByteString bs
     start = mkRealSrcLoc (mkFastString fpath) 1 1
-    pflags = mkParserFlags' (warningFlags dflags)
-                            (extensionFlags dflags)
-                            (thisPackage dflags)
+    arch_os = platformArchOS (targetPlatform dflags)
+    pflags = mkParserOpts   (extensionFlags dflags)
+                            (initDiagOpts dflags)
+                            (supportedLanguagesAndExtensions arch_os)
                             (safeImportsOn dflags)
                             False -- lex Haddocks as comment tokens
                             True  -- produce comment tokens
@@ -53,7 +67,10 @@ parse dflags fpath bs = case unP (go False []) initState of
       (b, _) <- getInput
       if not (atEnd b)
         then do
-          (newToks, inPrag') <- parseCppLine <|> parsePlainTok inPrag <|> unknownLine
+          mtok <- runMaybeT (parseCppLine <|> parsePlainTok inPrag)
+          (newToks, inPrag') <- case mtok of
+            Nothing -> unknownLine
+            Just a -> pure a
           go inPrag' (newToks ++ toks)
         else
           pure toks
@@ -61,36 +78,36 @@ parse dflags fpath bs = case unP (go False []) initState of
     -- | Like 'Lexer.lexer', but slower, with a better API, and filtering out empty tokens
     wrappedLexer :: P (RealLocated Lexer.Token)
     wrappedLexer = Lexer.lexer False andThen
-      where andThen (L (RealSrcSpan s) t)
+      where andThen (L (RealSrcSpan s _) t)
               | srcSpanStartLine s /= srcSpanEndLine s ||
                 srcSpanStartCol s /= srcSpanEndCol s
               = pure (L s t)
-            andThen (L (RealSrcSpan s) ITeof) = pure (L s ITeof)
+            andThen (L (RealSrcSpan s _) ITeof) = pure (L s ITeof)
             andThen _ = wrappedLexer
 
     -- | Try to parse a CPP line (can fail)
-    parseCppLine :: P ([T.Token], Bool)
-    parseCppLine = do
+    parseCppLine :: MaybeT P ([T.Token], Bool)
+    parseCppLine = MaybeT $ do
       (b, l) <- getInput
       case tryCppLine l b of
         Just (cppBStr, l', b')
              -> let cppTok = T.Token { tkType = TkCpp
                                      , tkValue = cppBStr
                                      , tkSpan = mkRealSrcSpan l l' }
-                in setInput (b', l') *> pure ([cppTok], False)
-        _    -> empty
+                in setInput (b', l') *> pure (Just ([cppTok], False))
+        _    -> return Nothing
 
     -- | Try to parse a regular old token (can fail)
-    parsePlainTok :: Bool -> P ([T.Token], Bool)  -- return list is only ever 0-2 elements
+    parsePlainTok :: Bool -> MaybeT P ([T.Token], Bool)  -- return list is only ever 0-2 elements
     parsePlainTok inPrag = do
-      (bInit, lInit) <- getInput
-      L sp tok <- Lexer.lexer False return
-      (bEnd, _) <- getInput
+      (bInit, lInit) <- lift getInput
+      L sp tok <- tryP (Lexer.lexer False return)
+      (bEnd, _) <- lift getInput
       case sp of
         UnhelpfulSpan _ -> pure ([], False) -- pretend the token never existed
-        RealSrcSpan rsp -> do
+        RealSrcSpan rsp _ -> do
           let typ = if inPrag then TkPragma else classify tok
-              RealSrcLoc lStart = srcSpanStart sp -- safe since @sp@ is real
+              RealSrcLoc lStart _ = srcSpanStart sp -- safe since @sp@ is real
               (spaceBStr, bStart) = spanPosition lInit lStart bInit
               inPragDef = inPragma inPrag tok
 
@@ -98,24 +115,24 @@ parse dflags fpath bs = case unP (go False []) initState of
 
             -- Update internal line + file position if this is a LINE pragma
             ITline_prag _ -> tryOrElse (bEnd, inPragDef) $ do
-              L _ (ITinteger (IL { il_value = line })) <- wrappedLexer
-              L _ (ITstring _ file)                    <- wrappedLexer
-              L spF ITclose_prag                       <- wrappedLexer
+              L _ (ITinteger (IL { il_value = line })) <- tryP wrappedLexer
+              L _ (ITstring _ file)                    <- tryP wrappedLexer
+              L spF ITclose_prag                       <- tryP wrappedLexer
 
               let newLoc = mkRealSrcLoc file (fromIntegral line - 1) (srcSpanEndCol spF)
-              (bEnd'', _) <- getInput
-              setInput (bEnd'', newLoc)
+              (bEnd'', _) <- lift getInput
+              lift $ setInput (bEnd'', newLoc)
 
               pure (bEnd'', False)
 
             -- Update internal column position if this is a COLUMN pragma
             ITcolumn_prag _ -> tryOrElse (bEnd, inPragDef) $ do
-              L _ (ITinteger (IL { il_value = col }))  <- wrappedLexer
-              L spF ITclose_prag                       <- wrappedLexer
+              L _ (ITinteger (IL { il_value = col }))  <- tryP wrappedLexer
+              L spF ITclose_prag                       <- tryP wrappedLexer
 
               let newLoc = mkRealSrcLoc (srcSpanFile spF) (srcSpanEndLine spF) (fromIntegral col)
-              (bEnd'', _) <- getInput
-              setInput (bEnd'', newLoc)
+              (bEnd'', _) <- lift getInput
+              lift $ setInput (bEnd'', newLoc)
 
               pure (bEnd'', False)
 
@@ -145,21 +162,20 @@ parse dflags fpath bs = case unP (go False []) initState of
 
 -- | Get the input
 getInput :: P (StringBuffer, RealSrcLoc)
-getInput = P $ \p @ PState { buffer = buf, loc = srcLoc } -> POk p (buf, srcLoc)
+getInput = P $ \p@PState { buffer = buf, loc = srcLoc } -> POk p (buf, psRealLoc srcLoc)
 
 -- | Set the input
 setInput :: (StringBuffer, RealSrcLoc) -> P ()
-setInput (buf, srcLoc) = P $ \p -> POk (p { buffer = buf, loc = srcLoc }) ()
+setInput (buf, srcLoc) =
+  P $ \p@PState{ loc = PsLoc _ buf_loc } ->
+    POk (p { buffer = buf, loc = PsLoc srcLoc buf_loc }) ()
 
+tryP :: P a -> MaybeT P a
+tryP (P f) = MaybeT $ P $ \s -> case f s of
+  POk s' a -> POk s' (Just a)
+  PFailed _ -> POk s Nothing
 
--- | Orphan instance that adds backtracking to 'P'
-instance Alternative P where
-  empty = P $ \_ -> PFailed (const emptyMessages) noSrcSpan "Alterative.empty"
-  P x <|> P y = P $ \s -> case x s of { p@POk{} -> p
-                                      ; _ -> y s }
-
--- | Try a parser. If it fails, backtrack and return the pure value.
-tryOrElse :: a -> P a -> P a
+tryOrElse :: Alternative f => a -> f a -> f a
 tryOrElse x p = p <|> pure x
 
 -- | Classify given tokens as appropriate Haskell token type.
@@ -172,7 +188,7 @@ classify tok =
     ITdata                 -> TkKeyword
     ITdefault              -> TkKeyword
     ITderiving             -> TkKeyword
-    ITdo                   -> TkKeyword
+    ITdo                {} -> TkKeyword
     ITelse                 -> TkKeyword
     IThiding               -> TkKeyword
     ITforeign              -> TkKeyword
@@ -205,7 +221,7 @@ classify tok =
     ITcapiconv             -> TkKeyword
     ITprimcallconv         -> TkKeyword
     ITjavascriptcallconv   -> TkKeyword
-    ITmdo                  -> TkKeyword
+    ITmdo               {} -> TkKeyword
     ITfamily               -> TkKeyword
     ITrole                 -> TkKeyword
     ITgroup                -> TkKeyword
@@ -222,6 +238,7 @@ classify tok =
     ITrequires             -> TkKeyword
 
     ITinline_prag       {} -> TkPragma
+    ITopaque_prag       {} -> TkPragma
     ITspec_prag         {} -> TkPragma
     ITspec_inline_prag  {} -> TkPragma
     ITsource_prag       {} -> TkPragma
@@ -231,8 +248,6 @@ classify tok =
     ITline_prag         {} -> TkPragma
     ITcolumn_prag       {} -> TkPragma
     ITscc_prag          {} -> TkPragma
-    ITgenerated_prag    {} -> TkPragma
-    ITcore_prag         {} -> TkPragma
     ITunpack_prag       {} -> TkPragma
     ITnounpack_prag     {} -> TkPragma
     ITann_prag          {} -> TkPragma
@@ -254,17 +269,22 @@ classify tok =
     ITequal                -> TkGlyph
     ITlam                  -> TkGlyph
     ITlcase                -> TkGlyph
+    ITlcases               -> TkGlyph
     ITvbar                 -> TkGlyph
     ITlarrow            {} -> TkGlyph
     ITrarrow            {} -> TkGlyph
+    ITlolly             {} -> TkGlyph
     ITat                   -> TkGlyph
     ITtilde                -> TkGlyph
     ITdarrow            {} -> TkGlyph
     ITminus                -> TkGlyph
+    ITprefixminus          -> TkGlyph
     ITbang                 -> TkGlyph
     ITdot                  -> TkOperator
+    ITproj              {} -> TkOperator
     ITstar              {} -> TkOperator
     ITtypeApp              -> TkGlyph
+    ITpercent              -> TkGlyph
 
     ITbiglam               -> TkGlyph
 
@@ -317,10 +337,8 @@ classify tok =
     ITcloseQuote        {} -> TkSpecial
     ITopenTExpQuote     {} -> TkSpecial
     ITcloseTExpQuote       -> TkSpecial
-    ITidEscape          {} -> TkUnknown
-    ITparenEscape          -> TkSpecial
-    ITidTyEscape        {} -> TkUnknown
-    ITparenTyEscape        -> TkSpecial
+    ITdollar               -> TkSpecial
+    ITdollardollar         -> TkSpecial
     ITtyQuote              -> TkSpecial
     ITquasiQuote        {} -> TkUnknown
     ITqQuasiQuote       {} -> TkUnknown
@@ -339,17 +357,14 @@ classify tok =
     ITeof                  -> TkUnknown
 
     ITlineComment       {} -> TkComment
-    ITdocCommentNext    {} -> TkComment
-    ITdocCommentPrev    {} -> TkComment
-    ITdocCommentNamed   {} -> TkComment
-    ITdocSection        {} -> TkComment
+    ITdocComment        {} -> TkComment
     ITdocOptions        {} -> TkComment
 
     -- The lexer considers top-level pragmas as comments (see `pragState` in
     -- the GHC lexer for more), so we have to manually reverse this. The
     -- following is a hammer: it smashes _all_ pragma-like block comments into
     -- pragmas.
-    ITblockComment c
+    ITblockComment c _
       | isPrefixOf "{-#" c
       , isSuffixOf "#-}" c -> TkPragma
       | otherwise          -> TkComment
@@ -363,6 +378,7 @@ inPragma True _ = True
 inPragma False tok =
   case tok of
     ITinline_prag       {} -> True
+    ITopaque_prag       {} -> True
     ITspec_prag         {} -> True
     ITspec_inline_prag  {} -> True
     ITsource_prag       {} -> True
@@ -372,8 +388,6 @@ inPragma False tok =
     ITline_prag         {} -> True
     ITcolumn_prag       {} -> True
     ITscc_prag          {} -> True
-    ITgenerated_prag    {} -> True
-    ITcore_prag         {} -> True
     ITunpack_prag       {} -> True
     ITnounpack_prag     {} -> True
     ITann_prag          {} -> True

@@ -7,17 +7,17 @@
  *
  * This file contains the implementations of all the primitive
  * operations ("primops") which are not expanded inline.  See
- * ghc/compiler/prelude/primops.txt.pp for a list of all the primops;
+ * ghc/compiler/GHC/Builtin/primops.txt.pp for a list of all the primops;
  * this file contains code for most of those with the attribute
  * out_of_line=True.
  *
  * Entry convention: the entry convention for a primop is the
  * NativeNodeCall convention, and the return convention is
- * NativeReturn.  (see compiler/cmm/CmmCallConv.hs)
+ * NativeReturn.  (see compiler/GHC/Cmm/CallConv.hs)
  *
  * This file is written in a subset of C--, extended with various
  * features specific to GHC.  It is compiled by GHC directly.  For the
- * syntax of .cmm files, see the parser in ghc/compiler/cmm/CmmParse.y.
+ * syntax of .cmm files, see the parser in ghc/compiler/GHC/Cmm/Parser.y.
  *
  * ---------------------------------------------------------------------------*/
 
@@ -31,14 +31,20 @@ import pthread_mutex_unlock;
 #endif
 import CLOSURE base_ControlziExceptionziBase_nestedAtomically_closure;
 import CLOSURE base_GHCziIOziException_heapOverflow_closure;
-import EnterCriticalSection;
-import LeaveCriticalSection;
+import CLOSURE base_GHCziIOziException_blockedIndefinitelyOnMVar_closure;
+import CLOSURE base_GHCziIOPort_doubleReadException_closure;
+import AcquireSRWLockExclusive;
+import ReleaseSRWLockExclusive;
 import CLOSURE ghczmprim_GHCziTypes_False_closure;
-#if defined(USE_MINIINTERPRETER) || !defined(mingw32_HOST_OS)
-import CLOSURE sm_mutex;
-#endif
 #if defined(PROFILING)
 import CLOSURE CCS_MAIN;
+#endif
+
+#if defined(DEBUG)
+#define ASSERT_IN_BOUNDS(ind, sz) \
+    if (ind >= sz) { ccall rtsOutOfBoundsAccess(); }
+#else
+#define ASSERT_IN_BOUNDS(ind, sz)
 #endif
 
 /*-----------------------------------------------------------------------------
@@ -89,21 +95,14 @@ stg_newPinnedByteArrayzh ( W_ n )
     /* When we actually allocate memory, we need to allow space for the
        header: */
     bytes = bytes + SIZEOF_StgArrBytes;
-    /* And we want to align to BA_ALIGN bytes, so we need to allow space
-       to shift up to BA_ALIGN - 1 bytes: */
-    bytes = bytes + BA_ALIGN - 1;
     /* Now we convert to a number of words: */
     words = ROUNDUP_BYTES_TO_WDS(bytes);
 
-    ("ptr" p) = ccall allocatePinned(MyCapability() "ptr", words);
+    ("ptr" p) = ccall allocatePinned(MyCapability() "ptr", words, BA_ALIGN, SIZEOF_StgArrBytes);
     if (p == NULL) {
         jump stg_raisezh(base_GHCziIOziException_heapOverflow_closure);
     }
     TICK_ALLOC_PRIM(SIZEOF_StgArrBytes,WDS(payload_words),0);
-
-    /* Now we need to move p forward so that the payload is aligned
-       to BA_ALIGN bytes: */
-    p = p + ((-p - SIZEOF_StgArrBytes) & BA_MASK);
 
     /* No write barrier needed since this is a new allocation. */
     SET_HDR(p, stg_ARR_WORDS_info, CCCS);
@@ -121,7 +120,7 @@ stg_newAlignedPinnedByteArrayzh ( W_ n, W_ alignment )
     /* we always supply at least word-aligned memory, so there's no
        need to allow extra space for alignment if the requirement is less
        than a word.  This also prevents mischief with alignment == 0. */
-    if (alignment <= SIZEOF_W) { alignment = 1; }
+    if (alignment <= SIZEOF_W) { alignment = SIZEOF_W; }
 
     bytes = n;
 
@@ -131,22 +130,14 @@ stg_newAlignedPinnedByteArrayzh ( W_ n, W_ alignment )
     /* When we actually allocate memory, we need to allow space for the
        header: */
     bytes = bytes + SIZEOF_StgArrBytes;
-    /* And we want to align to <alignment> bytes, so we need to allow space
-       to shift up to <alignment - 1> bytes: */
-    bytes = bytes + alignment - 1;
     /* Now we convert to a number of words: */
     words = ROUNDUP_BYTES_TO_WDS(bytes);
 
-    ("ptr" p) = ccall allocatePinned(MyCapability() "ptr", words);
+    ("ptr" p) = ccall allocatePinned(MyCapability() "ptr", words, alignment, SIZEOF_StgArrBytes);
     if (p == NULL) {
         jump stg_raisezh(base_GHCziIOziException_heapOverflow_closure);
     }
     TICK_ALLOC_PRIM(SIZEOF_StgArrBytes,WDS(payload_words),0);
-
-    /* Now we need to move p forward so that the payload is aligned
-       to <alignment> bytes. Note that we are assuming that
-       <alignment> is a power of 2, which is technically not guaranteed */
-    p = p + ((-p - SIZEOF_StgArrBytes) & (alignment - 1));
 
     /* No write barrier needed since this is a new allocation. */
     SET_HDR(p, stg_ARR_WORDS_info, CCCS);
@@ -173,17 +164,26 @@ stg_isMutableByteArrayPinnedzh ( gcptr mba )
     jump stg_isByteArrayPinnedzh(mba);
 }
 
+/* Note [LDV profiling and resizing arrays]
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * As far as the LDV profiler is concerned arrays are "inherently used" which
+ * means we don't track their time of use and eventual destruction. We just
+ * assume they get used.
+ *
+ * Thus it is not necessary to call LDV_RECORD_CREATE when resizing them as we
+ * used to as the LDV profiler will essentially ignore arrays anyways.
+ */
+
 // shrink size of MutableByteArray in-place
 stg_shrinkMutableByteArrayzh ( gcptr mba, W_ new_size )
 // MutableByteArray# s -> Int# -> State# s -> State# s
 {
-   ASSERT(new_size >= 0);
    ASSERT(new_size <= StgArrBytes_bytes(mba));
 
-   OVERWRITING_CLOSURE_OFS(mba, (BYTES_TO_WDS(SIZEOF_StgArrBytes) +
-                                 ROUNDUP_BYTES_TO_WDS(new_size)));
+   OVERWRITING_CLOSURE_MUTABLE(mba, (BYTES_TO_WDS(SIZEOF_StgArrBytes) +
+                                     ROUNDUP_BYTES_TO_WDS(new_size)));
    StgArrBytes_bytes(mba) = new_size;
-   LDV_RECORD_CREATE(mba);
+   // No need to call LDV_RECORD_CREATE. See Note [LDV profiling and resizing arrays]
 
    return ();
 }
@@ -204,10 +204,10 @@ stg_resizzeMutableByteArrayzh ( gcptr mba, W_ new_size )
    new_size_wds = ROUNDUP_BYTES_TO_WDS(new_size);
 
    if (new_size_wds <= BYTE_ARR_WDS(mba)) {
-      OVERWRITING_CLOSURE_OFS(mba, (BYTES_TO_WDS(SIZEOF_StgArrBytes) +
-                                    new_size_wds));
+      OVERWRITING_CLOSURE_MUTABLE(mba, (BYTES_TO_WDS(SIZEOF_StgArrBytes) +
+                                        new_size_wds));
       StgArrBytes_bytes(mba) = new_size;
-      LDV_RECORD_CREATE(mba);
+      // No need to call LDV_RECORD_CREATE. See Note [LDV profiling and resizing arrays]
 
       return (mba);
    } else {
@@ -227,6 +227,35 @@ stg_resizzeMutableByteArrayzh ( gcptr mba, W_ new_size )
    }
 }
 
+// shrink size of SmallMutableArray in-place
+stg_shrinkSmallMutableArrayzh ( gcptr mba, W_ new_size )
+// SmallMutableArray# s -> Int# -> State# s -> State# s
+{
+   ASSERT(new_size <= StgSmallMutArrPtrs_ptrs(mba));
+
+   IF_NONMOVING_WRITE_BARRIER_ENABLED {
+     // Ensure that the elements we are about to shrink out of existence
+     // remain visible to the non-moving collector.
+     W_ p, end;
+     p = mba + SIZEOF_StgSmallMutArrPtrs + WDS(new_size);
+     end = mba + SIZEOF_StgSmallMutArrPtrs + WDS(StgSmallMutArrPtrs_ptrs(mba));
+again:
+     if (p < end) {
+       ccall updateRemembSetPushClosure_(BaseReg "ptr",
+                                         W_[p] "ptr");
+       p = p + SIZEOF_W;
+       goto again;
+     }
+   }
+
+   OVERWRITING_CLOSURE_MUTABLE(mba, (BYTES_TO_WDS(SIZEOF_StgSmallMutArrPtrs) +
+                                     new_size));
+   StgSmallMutArrPtrs_ptrs(mba) = new_size;
+   // No need to call LDV_RECORD_CREATE. See Note [LDV profiling and resizing arrays]
+
+   return ();
+}
+
 // RRN: This one does not use the "ticketing" approach because it
 // deals in unboxed scalars, not heap pointers.
 stg_casIntArrayzh( gcptr arr, W_ ind, W_ old, W_ new )
@@ -234,8 +263,65 @@ stg_casIntArrayzh( gcptr arr, W_ ind, W_ old, W_ new )
 {
     W_ p, h;
 
+    ASSERT_IN_BOUNDS(ind + WDS(1) - 1, StgArrBytes_bytes(arr));
     p = arr + SIZEOF_StgArrBytes + WDS(ind);
     (h) = prim %cmpxchgW(p, old, new);
+
+    return(h);
+}
+
+
+stg_casInt8Arrayzh( gcptr arr, W_ ind, I8 old, I8 new )
+/* MutableByteArray# s -> Int# -> Int8# -> Int8# -> State# s -> (# State# s, Int8# #) */
+{
+    W_ p;
+    I8 h;
+
+    ASSERT_IN_BOUNDS(ind, StgArrBytes_bytes(arr));
+    p = arr + SIZEOF_StgArrBytes + ind;
+    (h) = prim %cmpxchg8(p, old, new);
+
+    return(h);
+}
+
+
+stg_casInt16Arrayzh( gcptr arr, W_ ind, I16 old, I16 new )
+/* MutableByteArray# s -> Int# -> Int16# -> Int16# -> State# s -> (# State# s, Int16# #) */
+{
+    W_ p;
+    I16 h;
+
+    ASSERT_IN_BOUNDS(ind + 1, StgArrBytes_bytes(arr));
+    p = arr + SIZEOF_StgArrBytes + ind*2;
+    (h) = prim %cmpxchg16(p, old, new);
+
+    return(h);
+}
+
+
+stg_casInt32Arrayzh( gcptr arr, W_ ind, I32 old, I32 new )
+/* MutableByteArray# s -> Int# -> Int32# -> Int32# -> State# s -> (# State# s, Int32# #) */
+{
+    W_ p;
+    I32 h;
+
+    ASSERT_IN_BOUNDS(ind + 3, StgArrBytes_bytes(arr));
+    p = arr + SIZEOF_StgArrBytes + ind*4;
+    (h) = prim %cmpxchg32(p, old, new);
+
+    return(h);
+}
+
+
+stg_casInt64Arrayzh( gcptr arr, W_ ind, I64 old, I64 new )
+/* MutableByteArray# s -> Int# -> Int64# -> Int64# -> State# s -> (# State# s, Int64# #) */
+{
+    W_ p;
+    I64 h;
+
+    ASSERT_IN_BOUNDS(ind + 7, StgArrBytes_bytes(arr));
+    p = arr + SIZEOF_StgArrBytes + ind*8;
+    (h) = prim %cmpxchg64(p, old, new);
 
     return(h);
 }
@@ -304,16 +390,6 @@ stg_copyMutableArrayzh ( gcptr src, W_ src_off, gcptr dst, W_ dst_off, W_ n )
     copyMutableArray(src, src_off, dst, dst_off, n)
 }
 
-stg_copyArrayArrayzh ( gcptr src, W_ src_off, gcptr dst, W_ dst_off, W_ n )
-{
-    copyArray(src, src_off, dst, dst_off, n)
-}
-
-stg_copyMutableArrayArrayzh ( gcptr src, W_ src_off, gcptr dst, W_ dst_off, W_ n )
-{
-    copyMutableArray(src, src_off, dst, dst_off, n)
-}
-
 stg_cloneArrayzh ( gcptr src, W_ offset, W_ n )
 {
     cloneArray(stg_MUT_ARR_PTRS_FROZEN_CLEAN_info, src, offset, n)
@@ -342,6 +418,7 @@ stg_casArrayzh ( gcptr arr, W_ ind, gcptr old, gcptr new )
     gcptr h;
     W_ p, len;
 
+    ASSERT_IN_BOUNDS(ind, StgMutArrPtrs_ptrs(arr));
     p = arr + SIZEOF_StgMutArrPtrs + WDS(ind);
     (h) = prim %cmpxchgW(p, old, new);
 
@@ -352,44 +429,15 @@ stg_casArrayzh ( gcptr arr, W_ ind, gcptr old, gcptr new )
         // Compare and Swap Succeeded:
         SET_HDR(arr, stg_MUT_ARR_PTRS_DIRTY_info, CCCS);
         len = StgMutArrPtrs_ptrs(arr);
+
         // The write barrier.  We must write a byte into the mark table:
         I8[arr + SIZEOF_StgMutArrPtrs + WDS(len) + (ind >> MUT_ARR_PTRS_CARD_BITS )] = 1;
+
+        // Concurrent GC write barrier
+        updateRemembSetPushPtr(old);
+
         return (0,new);
     }
-}
-
-stg_newArrayArrayzh ( W_ n /* words */ )
-{
-    W_ words, size, p;
-    gcptr arr;
-
-    MAYBE_GC_N(stg_newArrayArrayzh, n);
-
-    // the mark area contains one byte for each 2^MUT_ARR_PTRS_CARD_BITS words
-    // in the array, making sure we round up, and then rounding up to a whole
-    // number of words.
-    size = n + mutArrPtrsCardWords(n);
-    words = BYTES_TO_WDS(SIZEOF_StgMutArrPtrs) + size;
-    ("ptr" arr) = ccall allocateMightFail(MyCapability() "ptr",words);
-    if (arr == NULL) {
-        jump stg_raisezh(base_GHCziIOziException_heapOverflow_closure);
-    }
-    TICK_ALLOC_PRIM(SIZEOF_StgMutArrPtrs, WDS(size), 0);
-
-    SET_HDR(arr, stg_MUT_ARR_PTRS_DIRTY_info, W_[CCCS]);
-    StgMutArrPtrs_ptrs(arr) = n;
-    StgMutArrPtrs_size(arr) = size;
-
-    // Initialise all elements of the array with a pointer to the new array
-    p = arr + SIZEOF_StgMutArrPtrs;
-  for:
-    if (p < arr + SIZEOF_StgMutArrPtrs + WDS(n)) (likely: True) {
-        W_[p] = arr;
-        p = p + WDS(1);
-        goto for;
-    }
-
-    return (arr);
 }
 
 
@@ -406,7 +454,7 @@ stg_newSmallArrayzh ( W_ n /* words */, gcptr init )
 
     words = BYTES_TO_WDS(SIZEOF_StgSmallMutArrPtrs) + n;
     ("ptr" arr) = ccall allocateMightFail(MyCapability() "ptr",words);
-    if (arr == NULL) {
+    if (arr == NULL) (likely: False) {
         jump stg_raisezh(base_GHCziIOziException_heapOverflow_closure);
     }
     TICK_ALLOC_PRIM(SIZEOF_StgSmallMutArrPtrs, WDS(n), 0);
@@ -417,8 +465,11 @@ stg_newSmallArrayzh ( W_ n /* words */, gcptr init )
 
     // Initialise all elements of the array with the value in R2
     p = arr + SIZEOF_StgSmallMutArrPtrs;
+    // Avoid the shift for `WDS(n)` in the inner loop
+    W_ limit;
+    limit = arr + SIZEOF_StgSmallMutArrPtrs + WDS(n);
   for:
-    if (p < arr + SIZEOF_StgSmallMutArrPtrs + WDS(n)) (likely: True) {
+    if (p < limit) (likely: True) {
         W_[p] = init;
         p = p + WDS(1);
         goto for;
@@ -462,16 +513,45 @@ stg_thawSmallArrayzh ( gcptr src, W_ offset, W_ n )
     cloneSmallArray(stg_SMALL_MUT_ARR_PTRS_DIRTY_info, src, offset, n)
 }
 
+// Concurrent GC write barrier for pointer array copies
+//
+// hdr_size in bytes. dst_off in words, n in words.
+stg_copyArray_barrier ( W_ hdr_size, gcptr dst, W_ dst_off, W_ n)
+{
+    W_ end, p;
+    ASSERT(n > 0);  // Assumes n==0 is handled by caller
+    p = dst + hdr_size + WDS(dst_off);
+    end = p + WDS(n);
+
+again:
+    ccall updateRemembSetPushClosure_(BaseReg "ptr", W_[p] "ptr");
+    p = p + WDS(1);
+    if (p < end) {
+        goto again;
+    }
+
+    return ();
+}
+
 stg_copySmallArrayzh ( gcptr src, W_ src_off, gcptr dst, W_ dst_off, W_ n)
 {
     W_ dst_p, src_p, bytes;
 
-    SET_INFO(dst, stg_SMALL_MUT_ARR_PTRS_DIRTY_info);
+    if (n > 0) {
+        IF_NONMOVING_WRITE_BARRIER_ENABLED {
+            call stg_copyArray_barrier(SIZEOF_StgSmallMutArrPtrs,
+                                      dst, dst_off, n);
+        }
 
-    dst_p = dst + SIZEOF_StgSmallMutArrPtrs + WDS(dst_off);
-    src_p = src + SIZEOF_StgSmallMutArrPtrs + WDS(src_off);
-    bytes = WDS(n);
-    prim %memcpy(dst_p, src_p, bytes, SIZEOF_W);
+        SET_INFO(dst, stg_SMALL_MUT_ARR_PTRS_DIRTY_info);
+
+        ASSERT_IN_BOUNDS(dst_off + n - 1, StgSmallMutArrPtrs_ptrs(dst));
+        ASSERT_IN_BOUNDS(src_off + n - 1, StgSmallMutArrPtrs_ptrs(src));
+        dst_p = dst + SIZEOF_StgSmallMutArrPtrs + WDS(dst_off);
+        src_p = src + SIZEOF_StgSmallMutArrPtrs + WDS(src_off);
+        bytes = WDS(n);
+        prim %memcpy(dst_p, src_p, bytes, SIZEOF_W);
+    }
 
     return ();
 }
@@ -480,15 +560,24 @@ stg_copySmallMutableArrayzh ( gcptr src, W_ src_off, gcptr dst, W_ dst_off, W_ n
 {
     W_ dst_p, src_p, bytes;
 
-    SET_INFO(dst, stg_SMALL_MUT_ARR_PTRS_DIRTY_info);
+    if (n > 0) {
+        IF_NONMOVING_WRITE_BARRIER_ENABLED {
+            call stg_copyArray_barrier(SIZEOF_StgSmallMutArrPtrs,
+                                      dst, dst_off, n);
+        }
 
-    dst_p = dst + SIZEOF_StgSmallMutArrPtrs + WDS(dst_off);
-    src_p = src + SIZEOF_StgSmallMutArrPtrs + WDS(src_off);
-    bytes = WDS(n);
-    if (src == dst) {
-        prim %memmove(dst_p, src_p, bytes, SIZEOF_W);
-    } else {
-        prim %memcpy(dst_p, src_p, bytes, SIZEOF_W);
+        SET_INFO(dst, stg_SMALL_MUT_ARR_PTRS_DIRTY_info);
+
+        ASSERT_IN_BOUNDS(dst_off + n - 1, StgSmallMutArrPtrs_ptrs(dst));
+        ASSERT_IN_BOUNDS(src_off + n - 1, StgSmallMutArrPtrs_ptrs(src));
+        dst_p = dst + SIZEOF_StgSmallMutArrPtrs + WDS(dst_off);
+        src_p = src + SIZEOF_StgSmallMutArrPtrs + WDS(src_off);
+        bytes = WDS(n);
+        if (src == dst) {
+            prim %memmove(dst_p, src_p, bytes, SIZEOF_W);
+        } else {
+            prim %memcpy(dst_p, src_p, bytes, SIZEOF_W);
+        }
     }
 
     return ();
@@ -501,6 +590,7 @@ stg_casSmallArrayzh ( gcptr arr, W_ ind, gcptr old, gcptr new )
     gcptr h;
     W_ p, len;
 
+    ASSERT_IN_BOUNDS(ind, StgSmallMutArrPtrs_ptrs(arr));
     p = arr + SIZEOF_StgSmallMutArrPtrs + WDS(ind);
     (h) = prim %cmpxchgW(p, old, new);
 
@@ -510,6 +600,10 @@ stg_casSmallArrayzh ( gcptr arr, W_ ind, gcptr old, gcptr new )
     } else {
         // Compare and Swap Succeeded:
         SET_HDR(arr, stg_SMALL_MUT_ARR_PTRS_DIRTY_info, CCCS);
+
+        // Concurrent GC write barrier
+        updateRemembSetPushPtr(old);
+
         return (0,new);
     }
 }
@@ -549,7 +643,7 @@ stg_casMutVarzh ( gcptr mv, gcptr old, gcptr new )
         return (1,h);
     } else {
         if (GET_INFO(mv) == stg_MUT_VAR_CLEAN_info) {
-            ccall dirty_MUT_VAR(BaseReg "ptr", mv "ptr");
+            ccall dirty_MUT_VAR(BaseReg "ptr", mv "ptr", old "ptr");
         }
         return (0,new);
     }
@@ -562,7 +656,7 @@ stg_casMutVarzh ( gcptr mv, gcptr old, gcptr new )
     } else {
         StgMutVar_var(mv) = new;
         if (GET_INFO(mv) == stg_MUT_VAR_CLEAN_info) {
-            ccall dirty_MUT_VAR(BaseReg "ptr", mv "ptr");
+            ccall dirty_MUT_VAR(BaseReg "ptr", mv "ptr", old "ptr");
         }
         return (0,new);
     }
@@ -629,11 +723,12 @@ stg_atomicModifyMutVar2zh ( gcptr mv, gcptr f )
     (h) = prim %cmpxchgW(mv + SIZEOF_StgHeader + OFFSET_StgMutVar_var, x, y);
     if (h != x) { goto retry; }
 #else
+    h = StgMutVar_var(mv);
     StgMutVar_var(mv) = y;
 #endif
 
     if (GET_INFO(mv) == stg_MUT_VAR_CLEAN_info) {
-        ccall dirty_MUT_VAR(BaseReg "ptr", mv "ptr");
+        ccall dirty_MUT_VAR(BaseReg "ptr", mv "ptr", h "ptr");
     }
 
     return (x,z);
@@ -685,7 +780,7 @@ stg_atomicModifyMutVarzuzh ( gcptr mv, gcptr f )
 #endif
 
     if (GET_INFO(mv) == stg_MUT_VAR_CLEAN_info) {
-        ccall dirty_MUT_VAR(BaseReg "ptr", mv "ptr");
+        ccall dirty_MUT_VAR(BaseReg "ptr", mv "ptr", x "ptr");
     }
 
     return (x,z);
@@ -754,6 +849,9 @@ stg_addCFinalizzerToWeakzh ( W_ fptr,   // finalizer
         unlockClosure(w, info);
         return (0);
     }
+
+    // Write barrier for concurrent non-moving collector
+    updateRemembSetPushPtr(StgWeak_cfinalizers(w))
 
     StgCFinalizerList_link(c) = StgWeak_cfinalizers(w);
     StgWeak_cfinalizers(w) = c;
@@ -835,6 +933,8 @@ stg_deRefWeakzh ( gcptr w )
     if (info == stg_WEAK_info) {
         code = 1;
         val = StgWeak_value(w);
+        // See Note [Concurrent read barrier on deRefWeak#] in NonMovingMark.c
+        updateRemembSetPushPtr(val);
     } else {
         code = 0;
         val = w;
@@ -939,7 +1039,7 @@ stg_forkzh ( gcptr closure )
 
     // context switch soon, but not immediately: we don't want every
     // forkIO to force a context-switch.
-    Capability_context_switch(MyCapability()) = 1 :: CInt;
+    %relaxed Capability_context_switch(MyCapability()) = 1 :: CInt;
 
     return (threadid);
 }
@@ -975,15 +1075,13 @@ stg_yieldzh ()
     // current thread to the back of the queue by setting the
     // context_switch flag.  If we don't do this, it will run the same
     // thread again.
-    Capability_context_switch(MyCapability()) = 1 :: CInt;
+    %relaxed Capability_context_switch(MyCapability()) = 1 :: CInt;
     jump stg_yield_noregs();
 }
 
 stg_labelThreadzh ( gcptr threadid, W_ addr )
 {
-#if defined(DEBUG) || defined(TRACING) || defined(DTRACE)
     ccall labelThread(MyCapability() "ptr", threadid "ptr", addr "ptr");
-#endif
     return ();
 }
 
@@ -1122,10 +1220,9 @@ INFO_TABLE_RET(stg_atomically_frame, ATOMICALLY_FRAME,
     return (P_ result) // value returned to the frame
 {
     W_ valid;
-    gcptr trec, outer, q;
+    gcptr trec;
 
-    trec   = StgTSO_trec(CurrentTSO);
-    outer  = StgTRecHeader_enclosing_trec(trec);
+    trec = StgTSO_trec(CurrentTSO);
 
     /* Back at the atomically frame */
     frame_result = result;
@@ -1246,7 +1343,7 @@ stg_atomicallyzh (P_ stm)
     code = stm;
     frame_result = NO_TREC;
 
-    /* Start the memory transcation */
+    /* Start the memory transaction */
     ("ptr" new_trec) = ccall stmStartTransaction(MyCapability() "ptr", old_trec "ptr");
     StgTSO_trec(CurrentTSO) = new_trec;
 
@@ -1464,6 +1561,23 @@ stg_writeTVarzh (P_ tvar,     /* :: TVar a */
  * exception and never perform its take or put, and we'd end up with a
  * deadlock.
  *
+ * Note [Nonmoving write barrier in Perform{Put,Take}]
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * As noted in Note [Non-moving garbage collector] in NonMoving.c, the
+ * non-moving GC requires that all overwritten pointers be pushed to the update
+ * remembered set. In the case of stack mutation this typically happens by
+ * "dirtying" the stack, which eagerly traces the entire stack chunk.
+ *
+ * An exception to this rule is PerformPut, which mutates the stack of a
+ * blocked thread (overwriting an stg_block_putmvar frame). To ensure that the
+ * collector sees the MVar and value reachable from the overwritten frame, we
+ * must push them to the update remembered set. Failing to do so was the cause
+ * of #20399.
+ *
+ * Note that unlike PerformPut, the callers of PerformTake first dirty the
+ * stack prior mutating it (since they introduce a *new*, potentially
+ * inter-generational reference to the stack) and therefore the barrier
+ * described above is unnecessary in this case.
  * -------------------------------------------------------------------------- */
 
 stg_isEmptyMVarzh ( P_ mvar /* :: MVar a */ )
@@ -1492,15 +1606,22 @@ stg_newMVarzh ()
 }
 
 
+// See Note [Nonmoving write barrier in Perform{Put,Take}].
+// Precondition: the stack must be dirtied.
 #define PerformTake(stack, value)               \
     W_ sp;                                      \
     sp = StgStack_sp(stack);                    \
     W_[sp + WDS(1)] = value;                    \
     W_[sp + WDS(0)] = stg_ret_p_info;
 
+// See Note [Nonmoving write barrier in Perform{Put,Take}].
 #define PerformPut(stack,lval)                  \
     W_ sp;                                      \
     sp = StgStack_sp(stack) + WDS(3);           \
+    IF_NONMOVING_WRITE_BARRIER_ENABLED {        \
+      ccall updateRemembSetPushClosure_(BaseReg "ptr", W_[sp - WDS(1)] "ptr"); \
+      ccall updateRemembSetPushClosure_(BaseReg "ptr", W_[sp - WDS(2)] "ptr"); \
+    }                                           \
     StgStack_sp(stack) = sp;                    \
     lval = W_[sp - WDS(1)];
 
@@ -1516,7 +1637,7 @@ stg_takeMVarzh ( P_ mvar /* :: MVar a */ )
      */
     if (StgMVar_value(mvar) == stg_END_TSO_QUEUE_closure) {
         if (info == stg_MVAR_CLEAN_info) {
-            ccall dirty_MVAR(BaseReg "ptr", mvar "ptr");
+            ccall dirty_MVAR(BaseReg "ptr", mvar "ptr", StgMVar_value(mvar) "ptr");
         }
 
         // We want to put the heap check down here in the slow path,
@@ -1534,6 +1655,7 @@ stg_takeMVarzh ( P_ mvar /* :: MVar a */ )
         SET_HDR(q, stg_MVAR_TSO_QUEUE_info, CCS_SYSTEM);
         // Write barrier before we make the new MVAR_TSO_QUEUE
         // visible to other cores.
+        // See Note [Heap memory barriers]
         prim_write_barrier;
 
         if (StgMVar_head(mvar) == stg_END_TSO_QUEUE_closure) {
@@ -1562,6 +1684,9 @@ loop:
         // If the MVar is not already dirty, then we don't need to make
         // it dirty, as it is empty with nothing blocking on it.
         unlockClosure(mvar, info);
+        // However, we do need to ensure that the nonmoving collector
+        // knows about the reference to the value that we just removed...
+        updateRemembSetPushPtr(val);
         return (val);
     }
     qinfo = StgHeader_info(q);
@@ -1575,7 +1700,7 @@ loop:
     // There are putMVar(s) waiting... wake up the first thread on the queue
 
     if (info == stg_MVAR_CLEAN_info) {
-        ccall dirty_MVAR(BaseReg "ptr", mvar "ptr");
+        ccall dirty_MVAR(BaseReg "ptr", mvar "ptr", val "ptr");
     }
 
     tso = StgMVarTSOQueue_tso(q);
@@ -1644,7 +1769,7 @@ loop:
     // There are putMVar(s) waiting... wake up the first thread on the queue
 
     if (info == stg_MVAR_CLEAN_info) {
-        ccall dirty_MVAR(BaseReg "ptr", mvar "ptr");
+        ccall dirty_MVAR(BaseReg "ptr", mvar "ptr", val "ptr");
     }
 
     tso = StgMVarTSOQueue_tso(q);
@@ -1682,7 +1807,7 @@ stg_putMVarzh ( P_ mvar, /* :: MVar a */
     if (StgMVar_value(mvar) != stg_END_TSO_QUEUE_closure) {
 
         if (info == stg_MVAR_CLEAN_info) {
-            ccall dirty_MVAR(BaseReg "ptr", mvar "ptr");
+            ccall dirty_MVAR(BaseReg "ptr", mvar "ptr", StgMVar_value(mvar) "ptr");
         }
 
         // We want to put the heap check down here in the slow path,
@@ -1699,6 +1824,7 @@ stg_putMVarzh ( P_ mvar, /* :: MVar a */
         StgMVarTSOQueue_tso(q)  = CurrentTSO;
 
         SET_HDR(q, stg_MVAR_TSO_QUEUE_info, CCS_SYSTEM);
+        // See Note [Heap memory barriers]
         prim_write_barrier;
 
         if (StgMVar_head(mvar) == stg_END_TSO_QUEUE_closure) {
@@ -1716,14 +1842,20 @@ stg_putMVarzh ( P_ mvar, /* :: MVar a */
         jump stg_block_putmvar(mvar,val);
     }
 
+    // We are going to mutate the closure, make sure its current pointers
+    // are marked.
+    if (info == stg_MVAR_CLEAN_info) {
+        ccall update_MVAR(BaseReg "ptr", mvar "ptr", StgMVar_value(mvar) "ptr");
+    }
+
     q = StgMVar_head(mvar);
 loop:
     if (q == stg_END_TSO_QUEUE_closure) {
         /* No further takes, the MVar is now full. */
-        if (info == stg_MVAR_CLEAN_info) {
-            ccall dirty_MVAR(BaseReg "ptr", mvar "ptr");
-        }
         StgMVar_value(mvar) = val;
+        if (info == stg_MVAR_CLEAN_info) {
+            ccall dirty_MVAR(BaseReg "ptr", mvar "ptr", StgMVar_value(mvar) "ptr");
+        }
         unlockClosure(mvar, stg_MVAR_DIRTY_info);
         return ();
     }
@@ -1740,9 +1872,17 @@ loop:
     // There are readMVar/takeMVar(s) waiting: wake up the first one
 
     tso = StgMVarTSOQueue_tso(q);
-    StgMVar_head(mvar) = StgMVarTSOQueue_link(q);
-    if (StgMVar_head(mvar) == stg_END_TSO_QUEUE_closure) {
+    q = StgMVarTSOQueue_link(q);
+    StgMVar_head(mvar) = q;
+    if (q == stg_END_TSO_QUEUE_closure) {
         StgMVar_tail(mvar) = stg_END_TSO_QUEUE_closure;
+    } else {
+        if (info == stg_MVAR_CLEAN_info) {
+            // Resolve #18919.
+            ccall dirty_MVAR(BaseReg "ptr", mvar "ptr",
+                             StgMVar_value(mvar) "ptr");
+            info = stg_MVAR_DIRTY_info;
+        }
     }
 
     ASSERT(StgTSO_block_info(tso) == mvar);
@@ -1754,23 +1894,20 @@ loop:
     // actually perform the takeMVar
     W_ stack;
     stack = StgTSO_stackobj(tso);
+    if (IS_STACK_CLEAN(stack)) {
+        ccall dirty_STACK(MyCapability() "ptr", stack "ptr");
+    }
     PerformTake(stack, val);
 
     // indicate that the MVar operation has now completed.
     StgTSO__link(tso) = stg_END_TSO_QUEUE_closure;
 
-    if (TO_W_(StgStack_dirty(stack)) == 0) {
-        ccall dirty_STACK(MyCapability() "ptr", stack "ptr");
-    }
-
     ccall tryWakeupThread(MyCapability() "ptr", tso);
 
     // If it was a readMVar, then we can still do work,
     // so loop back. (XXX: This could take a while)
-    if (why_blocked == BlockedOnMVarRead) {
-        q = StgMVarTSOQueue_link(q);
+    if (why_blocked == BlockedOnMVarRead)
         goto loop;
-    }
 
     ASSERT(why_blocked == BlockedOnMVar);
 
@@ -1805,7 +1942,7 @@ loop:
     if (q == stg_END_TSO_QUEUE_closure) {
         /* No further takes, the MVar is now full. */
         if (info == stg_MVAR_CLEAN_info) {
-            ccall dirty_MVAR(BaseReg "ptr", mvar "ptr");
+            ccall dirty_MVAR(BaseReg "ptr", mvar "ptr", StgMVar_value(mvar) "ptr");
         }
 
         StgMVar_value(mvar) = val;
@@ -1825,9 +1962,17 @@ loop:
     // There are takeMVar(s) waiting: wake up the first one
 
     tso = StgMVarTSOQueue_tso(q);
-    StgMVar_head(mvar) = StgMVarTSOQueue_link(q);
-    if (StgMVar_head(mvar) == stg_END_TSO_QUEUE_closure) {
+    q = StgMVarTSOQueue_link(q);
+    StgMVar_head(mvar) = q;
+    if (q == stg_END_TSO_QUEUE_closure) {
         StgMVar_tail(mvar) = stg_END_TSO_QUEUE_closure;
+    } else {
+        if (info == stg_MVAR_CLEAN_info) {
+            // Resolve #18919.
+            ccall dirty_MVAR(BaseReg "ptr", mvar "ptr",
+                             StgMVar_value(mvar) "ptr");
+            info = stg_MVAR_DIRTY_info;
+        }
     }
 
     ASSERT(StgTSO_block_info(tso) == mvar);
@@ -1839,23 +1984,20 @@ loop:
     // actually perform the takeMVar
     W_ stack;
     stack = StgTSO_stackobj(tso);
+    if (IS_STACK_CLEAN(stack)) {
+        ccall dirty_STACK(MyCapability() "ptr", stack "ptr");
+    }
     PerformTake(stack, val);
 
     // indicate that the MVar operation has now completed.
     StgTSO__link(tso) = stg_END_TSO_QUEUE_closure;
 
-    if (TO_W_(StgStack_dirty(stack)) == 0) {
-        ccall dirty_STACK(MyCapability() "ptr", stack "ptr");
-    }
-
     ccall tryWakeupThread(MyCapability() "ptr", tso);
 
     // If it was a readMVar, then we can still do work,
     // so loop back. (XXX: This could take a while)
-    if (why_blocked == BlockedOnMVarRead) {
-        q = StgMVarTSOQueue_link(q);
+    if (why_blocked == BlockedOnMVarRead)
         goto loop;
-    }
 
     ASSERT(why_blocked == BlockedOnMVar);
 
@@ -1875,8 +2017,9 @@ stg_readMVarzh ( P_ mvar, /* :: MVar a */ )
      */
     if (StgMVar_value(mvar) == stg_END_TSO_QUEUE_closure) {
 
+        // Add MVar to mutable list
         if (info == stg_MVAR_CLEAN_info) {
-            ccall dirty_MVAR(BaseReg "ptr", mvar "ptr");
+            ccall dirty_MVAR(BaseReg "ptr", mvar "ptr", StgMVar_value(mvar));
         }
 
         ALLOC_PRIM_WITH_CUSTOM_FAILURE
@@ -1892,6 +2035,7 @@ stg_readMVarzh ( P_ mvar, /* :: MVar a */ )
         StgMVarTSOQueue_tso(q)  = CurrentTSO;
 
         SET_HDR(q, stg_MVAR_TSO_QUEUE_info, CCS_SYSTEM);
+        // See Note [Heap memory barriers]
         prim_write_barrier;
 
         StgTSO__link(CurrentTSO)       = q;
@@ -1927,6 +2071,239 @@ stg_tryReadMVarzh ( P_ mvar, /* :: MVar a */ )
 
     unlockClosure(mvar, info);
     return (1, val);
+}
+
+/* -----------------------------------------------------------------------------
+ * IOPort primitives
+ *
+ * readIOPort & writeIOPort work as follows.  Firstly, an important invariant:
+ *
+ *    Only one read and one write is allowed for an IOPort.
+ *    Reading or writing to the same port twice will throw an exception.
+ *
+ * readIOPort:
+ *    IOPort empty : then add ourselves to the blocking queue
+ *    IOPort full  : remove the value from the IOPort, and
+ *                 blocking queue empty     : return
+ *                 blocking queue non-empty : perform the only blocked
+ *                                            writeIOPort from the queue, and
+ *                                            wake up the thread
+ *                                            (IOPort is now empty)
+ *
+ * writeIOPort is just the dual of the above algorithm.
+ *
+ * How do we "perform a writeIOPort"?  Well, By storing the value and prt on the
+ * stack, same way we do with MVars.  Semantically the operations mutate the
+ * stack the same way so we will re-use the logic and datastructures for MVars
+ * for IOPort.  See stg_block_putmvar and stg_block_takemvar in HeapStackCheck.c
+ * for the stack layout, and the PerformPut and PerformTake macros below.  We
+ * also re-use the closure types MVAR_CLEAN/_DIRTY for IOPort.
+ *
+ * The remaining caveats of MVar thus also apply for an IOPort.  The main
+ * crucial difference between an MVar and IOPort is that the scheduler will not
+ * be allowed to interrupt a blocked IOPort just because it thinks there's a
+ * deadlock.  This is especially crucial for the non-threaded runtime.
+ *
+ * To avoid double reads/writes we set only the head to a MVarTSOQueue when
+ * a reader queues up on a port.
+ * We set the tail to the port itself upon reading. We can do this
+ * since there can only be one reader/writer for the port. In contrast to MVars
+ * which do need to keep a list of blocked threads.
+ *
+ * This means IOPorts have these valid states and transitions:
+ *
+                                ┌─────────┐
+                                │  Empty  │ head == tail == value == END_TSO_QUEUE
+                                ├─────────┤
+                                │         │
+                          write │         │ read
+                                v         v
+ value != END_TSO_QUEUE  ┌─────────┐    ┌─────────┐  value == END_TSO_QUEUE
+ head  == END_TSO_QUEUE  │   full  │    │ reading │  head  == queue with single reader
+ tail  == END_TSO_QUEUE  └─────────┘    └─────────┘  tail  == END_TSO_QUEUE
+                                │          │
+                          read  │          │ write
+                                │          │
+                                v          v
+                                ┌──────────┐ value != END_TSO_QUEUE
+                                │   Used   │ head  == END_TSO_QUEUE
+                                └──────────┘ tail  == ioport
+
+ *
+ * -------------------------------------------------------------------------- */
+
+
+stg_readIOPortzh ( P_ ioport /* :: IOPort a */ )
+{
+    W_ val, info, tso, q;
+
+    LOCK_CLOSURE(ioport, info);
+
+    /* If the Port is empty, put ourselves on the blocked readers
+     * list and wait until we're woken up.
+     */
+    if (StgMVar_value(ioport) == stg_END_TSO_QUEUE_closure) {
+
+        // There is or was already another reader, throw exception.
+        if (StgMVar_head(ioport) != stg_END_TSO_QUEUE_closure ||
+            StgMVar_tail(ioport) != stg_END_TSO_QUEUE_closure) {
+                unlockClosure(ioport, info);
+                jump stg_raiseIOzh(base_GHCziIOPort_doubleReadException_closure);
+        }
+
+        if (info == stg_MVAR_CLEAN_info) {
+            ccall dirty_MVAR(BaseReg "ptr", ioport "ptr", StgMVar_value(ioport));
+        }
+
+        ALLOC_PRIM_WITH_CUSTOM_FAILURE
+            (SIZEOF_StgMVarTSOQueue,
+             unlockClosure(ioport, stg_MVAR_DIRTY_info);
+             GC_PRIM_P(stg_readIOPortzh, ioport));
+
+        q = Hp - SIZEOF_StgMVarTSOQueue + WDS(1);
+
+        // link = stg_END_TSO_QUEUE_closure since we check that
+        // there is no other reader above.
+        StgMVarTSOQueue_link(q) = stg_END_TSO_QUEUE_closure;
+        StgMVarTSOQueue_tso(q)  = CurrentTSO;
+
+        SET_HDR(q, stg_MVAR_TSO_QUEUE_info, CCS_SYSTEM);
+        // See Note [Heap memory barriers]
+        prim_write_barrier;
+
+        StgMVar_head(ioport) = q;
+        StgTSO__link(CurrentTSO)       = q;
+        StgTSO_block_info(CurrentTSO)  = ioport;
+        StgTSO_why_blocked(CurrentTSO) = BlockedOnMVar::I16;
+
+        //Unlocks the closure as well
+        jump stg_block_readmvar(ioport);
+
+    }
+
+    //This way we can check of there has been a read already.
+    //Upon reading we set tail to indicate the port is now closed.
+    if (StgMVar_tail(ioport) == stg_END_TSO_QUEUE_closure) {
+        StgMVar_tail(ioport) = ioport;
+        StgMVar_head(ioport) = stg_END_TSO_QUEUE_closure;
+    } else {
+         //Or another thread has read already: Throw an exception.
+        unlockClosure(ioport, info);
+        jump stg_raiseIOzh(base_GHCziIOPort_doubleReadException_closure);
+    }
+
+    val = StgMVar_value(ioport);
+
+    unlockClosure(ioport, info);
+    return (val);
+}
+
+stg_writeIOPortzh ( P_ ioport, /* :: IOPort a */
+                    P_ val,  /* :: a */ )
+{
+    W_ info, tso, q;
+
+    LOCK_CLOSURE(ioport, info);
+
+    /* If there is already a value in the port, then raise an exception
+       as it's the second write.
+       Correct usages of IOPort should never have a second
+       write. */
+    if (StgMVar_value(ioport) != stg_END_TSO_QUEUE_closure) {
+        unlockClosure(ioport, info);
+        jump stg_raiseIOzh(base_GHCziIOPort_doubleReadException_closure);
+        return (0);
+    }
+
+    // We are going to mutate the closure, make sure its current pointers
+    // are marked.
+    if (info == stg_MVAR_CLEAN_info) {
+        ccall update_MVAR(BaseReg "ptr", ioport "ptr", StgMVar_value(ioport) "ptr");
+    }
+
+    q = StgMVar_head(ioport);
+loop:
+    if (q == stg_END_TSO_QUEUE_closure) {
+        /* No takes, the IOPort is now full. */
+        if (info == stg_MVAR_CLEAN_info) {
+            ccall dirty_MVAR(BaseReg "ptr", ioport "ptr", StgMVar_value(ioport) "ptr");
+        }
+        StgMVar_value(ioport) = val;
+
+        unlockClosure(ioport, stg_MVAR_DIRTY_info);
+        return (1);
+    }
+    //Possibly IND added by removeFromMVarBlockedQueue
+    if (StgHeader_info(q) == stg_IND_info ||
+        StgHeader_info(q) == stg_MSG_NULL_info) {
+        q = StgInd_indirectee(q);
+        goto loop;
+    }
+
+    // There is a readIOPort waiting: wake it up
+    tso = StgMVarTSOQueue_tso(q);
+
+    // Assert no read has happened yet.
+    ASSERT(StgMVar_tail(ioport) == stg_END_TSO_QUEUE_closure);
+    // And there is only one reader queued up.
+    ASSERT(StgMVarTSOQueue_link(q) == stg_END_TSO_QUEUE_closure);
+
+    // We perform the read here, so set tail/head accordingly.
+    StgMVar_head(ioport) = stg_END_TSO_QUEUE_closure;
+    StgMVar_tail(ioport) = ioport;
+
+    // In contrast to MVars we do not need to move on to the
+    // next element in the waiting list here, as there can only ever
+    // be one thread blocked on a port.
+
+    ASSERT(StgTSO_block_info(tso) == ioport);
+    // save why_blocked here, because waking up the thread destroys
+    // this information
+    W_ why_blocked;
+    why_blocked = TO_W_(StgTSO_why_blocked(tso));
+
+    // actually perform the takeMVar
+    W_ stack;
+    stack = StgTSO_stackobj(tso);
+    if (IS_STACK_CLEAN(stack)) {
+        ccall dirty_STACK(MyCapability() "ptr", stack "ptr");
+    }
+    PerformTake(stack, val);
+
+    // indicate that the operation has now completed.
+    StgTSO__link(tso) = stg_END_TSO_QUEUE_closure;
+
+    ccall tryWakeupThread(MyCapability() "ptr", tso);
+
+    // For MVars we loop here, waking up all readers.
+    // IOPorts however can only have on reader. So we are done
+    // at this point.
+
+    //Either there was no reader queued, or he must have been
+    //blocked on BlockedOnMVar
+    ASSERT(why_blocked == BlockedOnMVar);
+
+    unlockClosure(ioport, info);
+    return (1);
+}
+/* -----------------------------------------------------------------------------
+   IOPort primitives
+   -------------------------------------------------------------------------- */
+
+stg_newIOPortzh ()
+{
+    W_ ioport;
+
+    ALLOC_PRIM_ (SIZEOF_StgMVar, stg_newIOPortzh);
+
+    ioport = Hp - SIZEOF_StgMVar + WDS(1);
+    SET_HDR(ioport, stg_MVAR_DIRTY_info,CCCS);
+    // MVARs start dirty: generation 0 has no mutable list
+    StgMVar_head(ioport)  = stg_END_TSO_QUEUE_closure;
+    StgMVar_tail(ioport)  = stg_END_TSO_QUEUE_closure;
+    StgMVar_value(ioport) = stg_END_TSO_QUEUE_closure;
+
+    return (ioport);
 }
 
 /* -----------------------------------------------------------------------------
@@ -2030,7 +2407,7 @@ stg_mkApUpd0zh ( P_ bco )
     W_ ap;
 
     // This function is *only* used to wrap zero-arity BCOs in an
-    // updatable wrapper (see ByteCodeLink.hs).  An AP thunk is always
+    // updatable wrapper (see GHC.ByteCode.Linker).  An AP thunk is always
     // saturated and always points directly to a FUN or BCO.
     ASSERT(%INFO_TYPE(%GET_STD_INFO(bco)) == HALF_W_(BCO) &&
            StgBCO_arity(bco) == HALF_W_(0));
@@ -2052,6 +2429,7 @@ stg_mkApUpd0zh ( P_ bco )
 stg_unpackClosurezh ( P_ closure )
 {
     W_ info, ptrs, nptrs, p, ptrs_arr, dat_arr;
+    MAYBE_GC_P(stg_unpackClosurezh, closure);
     info  = %GET_STD_INFO(UNTAG(closure));
     prim_read_barrier;
 
@@ -2062,17 +2440,18 @@ stg_unpackClosurezh ( P_ closure )
     clos = UNTAG(closure);
 
     W_ len;
-    // The array returned is the raw data for the entire closure.
+    // The array returned, dat_arr, is the raw data for the entire closure.
     // The length is variable based upon the closure type, ptrs, and non-ptrs
     (len) = foreign "C" heap_view_closureSize(clos "ptr");
 
-    W_ ptrs_arr_sz, ptrs_arr_cards, dat_arr_sz;
+    W_ dat_arr_sz;
+
     dat_arr_sz = SIZEOF_StgArrBytes + WDS(len);
-
-    ALLOC_PRIM_P (dat_arr_sz, stg_unpackClosurezh, closure);
-
-    dat_arr = Hp - dat_arr_sz + WDS(1);
-
+    ("ptr" dat_arr) = ccall allocateMightFail(MyCapability() "ptr", BYTES_TO_WDS(dat_arr_sz));
+    if (dat_arr == NULL) (likely: False) {
+        jump stg_raisezh(base_GHCziIOziException_heapOverflow_closure);
+    }
+    TICK_ALLOC_PRIM(SIZEOF_StgArrBytes, WDS(len), 0);
 
     SET_HDR(dat_arr, stg_ARR_WORDS_info, CCCS);
     StgArrBytes_bytes(dat_arr) = WDS(len);
@@ -2086,10 +2465,26 @@ for:
 
     W_ ptrArray;
 
-    // Follow the pointers
+    // Collect pointers.
     ("ptr" ptrArray) = foreign "C" heap_view_closurePtrs(MyCapability() "ptr", clos "ptr");
 
     return (info, dat_arr, ptrArray);
+}
+
+stg_closureSizzezh (P_ clos)
+{
+    W_ len;
+    (len) = foreign "C" heap_view_closureSize(UNTAG(clos) "ptr");
+    return (len);
+}
+
+stg_whereFromzh (P_ clos)
+{
+    P_ ipe;
+    W_ info;
+    info = GET_INFO(UNTAG(clos));
+    (ipe) = foreign "C" lookupIPE(info "ptr");
+    return (ipe);
 }
 
 /* -----------------------------------------------------------------------------
@@ -2341,7 +2736,9 @@ INFO_TABLE_RET(stg_noDuplicate, RET_SMALL, W_ info_ptr)
 stg_noDuplicatezh /* no arg list: explicit stack layout */
 {
     // With a single capability there's no chance of work duplication.
-    if (CInt[n_capabilities] == 1 :: CInt) {
+    CInt n_caps;
+    n_caps = %relaxed CInt[n_capabilities];
+    if (n_caps == 1 :: CInt) {
         jump %ENTRY_CODE(Sp(0)) [];
     }
 
@@ -2448,7 +2845,7 @@ stg_traceEventzh ( W_ msg )
     // We should go through the macro HASKELLEVENT_USER_MSG_ENABLED from
     // RtsProbes.h, but that header file includes unistd.h, which doesn't
     // work in Cmm
-#if !defined(solaris2_TARGET_OS)
+#if !defined(solaris2_HOST_OS)
    (enabled) = ccall __dtrace_isenabled$HaskellEvent$user__msg$v1();
 #else
     // Solaris' DTrace can't handle the
@@ -2490,7 +2887,7 @@ stg_traceMarkerzh ( W_ msg )
 
     W_ enabled;
 
-#if !defined(solaris2_TARGET_OS)
+#if !defined(solaris2_HOST_OS)
     (enabled) = ccall __dtrace_isenabled$HaskellEvent$user__marker$v1();
 #else
     enabled = 1;
@@ -2517,9 +2914,29 @@ stg_setThreadAllocationCounterzh ( I64 counter )
     // Allocation in the current block will be subtracted by
     // getThreadAllocationCounter#, so we have to offset any existing
     // allocation here.  See also openNursery/closeNursery in
-    // compiler/codeGen/StgCmmForeign.hs.
+    // GHC.StgToCmm.Foreign.
     W_ offset;
     offset = Hp - bdescr_start(CurrentNursery);
     StgTSO_alloc_limit(CurrentTSO) = counter + TO_I64(offset);
     return ();
+}
+
+
+#define KEEP_ALIVE_FRAME_FIELDS(w_,p_,info_ptr,p1,p2,c)   \
+  w_ info_ptr,                                            \
+  PROF_HDR_FIELDS(w_,p1,p2)                               \
+  p_ c
+
+stg_keepAlivezh ( P_ c,      /* :: v */
+                  P_ io      /* :: IO p */ )
+{
+    STK_CHK_GEN();
+    jump stg_ap_v_fast
+        (KEEP_ALIVE_FRAME_FIELDS(,,stg_keepAlive_frame_info, CCCS, 0, c))(io);
+}
+
+INFO_TABLE_RET(stg_keepAlive_frame, RET_SMALL, KEEP_ALIVE_FRAME_FIELDS(W_,P_, info_ptr, p1, p2, c))
+    return (P_ ret)
+{
+    return (ret);
 }

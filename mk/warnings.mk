@@ -5,7 +5,7 @@ SRC_HC_OPTS     += -Wall
 # validate may unnecessarily fail when booting with an older compiler.
 # It would be better to only exclude certain warnings from becoming errors
 # (e.g. '-Werror -Wno-error=unused-imports -Wno-error=...'), but -Wno-error
-# isn't supported yet (https://ghc.haskell.org/trac/ghc/wiki/Design/Warnings).
+# isn't supported yet (https://gitlab.haskell.org/ghc/ghc/wikis/design/warnings).
 #
 # See Note [Stage number in build variables] in mk/config.mk.in.
 SRC_HC_OPTS_STAGE1 += $(WERROR)
@@ -15,17 +15,15 @@ SRC_HC_OPTS_STAGE2 += $(WERROR)
 # core libraries to build in this configuration (see #13636).
 GhcRtsHcOpts    += -Wcpp-undef
 GhcStage1HcOpts += -Wcpp-undef
-GhcStage2HcOpts += -Wcpp-undef
+GhcStage2HcOpts += -Wcpp-undef -Wincomplete-uni-patterns -Wincomplete-record-updates
 
-ifneq "$(GccIsClang)" "YES"
+ifneq "$(CcLlvmBackend)" "YES"
 
 # Debian doesn't turn -Werror=unused-but-set-variable on by default, so
 # we turn it on explicitly for consistency with other users
-ifeq "$(GccLT46)" "NO"
 # Never set the flag on Windows as the host gcc may be too old.
 ifneq "$(HostOS_CPP)" "mingw32"
 SRC_CC_WARNING_OPTS += -Werror=unused-but-set-variable
-endif
 endif
 
 # Suppress the warning about __sync_fetch_and_nand (#9678).
@@ -71,7 +69,7 @@ ifeq "$(HostOS_CPP)" "mingw32"
 libraries/time_dist-install_EXTRA_HC_OPTS += -Wno-unused-imports -Wno-identities
 endif
 
-# On Windows, the pattern for CallConv is already exaustive. Ignore the warning
+# On Windows, the pattern for CallConv is already exhaustive. Ignore the warning
 ifeq "$(HostOS_CPP)" "mingw32"
 libraries/ghci_dist-install_EXTRA_HC_OPTS += -Wno-overlapping-patterns
 endif
@@ -122,6 +120,9 @@ libraries/parsec_dist-install_EXTRA_HC_OPTS += -Wno-name-shadowing -Wno-unused-m
 libraries/parsec_dist-install_EXTRA_HC_OPTS += -Wno-unused-do-bind -Wno-missing-signatures
 libraries/parsec_dist-install_EXTRA_HC_OPTS += -Wno-unused-imports -Wno-type-defaults
 
+# text warns with integer-simple
+libraries/text_dist-install_EXTRA_HC_OPTS += -Wno-unused-imports
+
 # Turn of trustworthy-safe warning
 libraries/base_dist-install_EXTRA_HC_OPTS += -Wno-trustworthy-safe
 libraries/ghc-prim_dist-install_EXTRA_HC_OPTS += -Wno-trustworthy-safe
@@ -132,7 +133,7 @@ GhcLibExtraHcOpts += -Wno-deprecated-flags
 GhcBootLibExtraHcOpts += -fno-warn-deprecated-flags
 
 # Note [Order of warning flags]
-#
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # In distdir-way-opts, build flags are added in the following order (this
 # list is not exhaustive):
 #

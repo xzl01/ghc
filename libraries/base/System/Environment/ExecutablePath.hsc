@@ -16,38 +16,47 @@
 -- @since 4.6.0.0
 -----------------------------------------------------------------------------
 
-module System.Environment.ExecutablePath ( getExecutablePath ) where
+module System.Environment.ExecutablePath
+  ( getExecutablePath
+  , executablePath
+  ) where
 
 -- The imports are purposely kept completely disjoint to prevent edits
 -- to one OS implementation from breaking another.
 
 #if defined(darwin_HOST_OS)
+import Control.Exception (catch, throw)
 import Data.Word
 import Foreign.C
 import Foreign.Marshal.Alloc
 import Foreign.Ptr
 import Foreign.Storable
+import System.IO.Error (isDoesNotExistError)
 import System.Posix.Internals
 #elif defined(linux_HOST_OS)
+import Data.List (isSuffixOf)
 import Foreign.C
 import Foreign.Marshal.Array
 import System.Posix.Internals
-#elif defined(freebsd_HOST_OS)
+#elif defined(freebsd_HOST_OS) || defined(netbsd_HOST_OS)
+import Control.Exception (catch, throw)
 import Foreign.C
 import Foreign.Marshal.Alloc
 import Foreign.Marshal.Array
 import Foreign.Ptr
 import Foreign.Storable
+import System.IO.Error (isDoesNotExistError)
 import System.Posix.Internals
 #include <sys/types.h>
 #include <sys/sysctl.h>
 #elif defined(mingw32_HOST_OS)
 import Control.Exception
-import Data.List
+import Data.List (isPrefixOf)
 import Data.Word
 import Foreign.C
 import Foreign.Marshal.Array
 import Foreign.Ptr
+import GHC.Windows
 #include <windows.h>
 #include <stdint.h>
 #else
@@ -61,7 +70,9 @@ import System.Posix.Internals
 -- The exported function is defined outside any if-guard to make sure
 -- every OS implements it with the same type.
 
--- | Returns the absolute pathname of the current executable.
+-- | Returns the absolute pathname of the current executable,
+-- or @argv[0]@ if the operating system does not provide a reliable
+-- way query the current executable.
 --
 -- Note that for scripts and interactive sessions, this is the path to
 -- the interpreter (e.g. ghci.)
@@ -70,8 +81,30 @@ import System.Posix.Internals
 -- If an executable is launched through a symlink, 'getExecutablePath'
 -- returns the absolute path of the original executable.
 --
+-- If the executable has been deleted, behaviour is ill-defined and
+-- varies by operating system.  See 'executablePath' for a more
+-- reliable way to query the current executable.
+--
 -- @since 4.6.0.0
 getExecutablePath :: IO FilePath
+
+-- | Get an action to query the absolute pathname of the current executable.
+--
+-- If the operating system provides a reliable way to determine the current
+-- executable, return the query action, otherwise return @Nothing@.  The action
+-- is defined on FreeBSD, Linux, MacOS, NetBSD, and Windows.
+--
+-- Even where the query action is defined, there may be situations where no
+-- result is available, e.g. if the executable file was deleted while the
+-- program is running.  Therefore the result of the query action is a @Maybe
+-- FilePath@.
+--
+-- Note that for scripts and interactive sessions, the result is the path to
+-- the interpreter (e.g. ghci.)
+--
+-- @since 4.17.0.0
+executablePath :: Maybe (IO (Maybe FilePath))
+
 
 --------------------------------------------------------------------------------
 -- Mac OS X
@@ -118,6 +151,12 @@ realpath path =
 
 getExecutablePath = _NSGetExecutablePath >>= realpath
 
+-- realpath(3) fails with ENOENT file does not exist (e.g. was deleted)
+executablePath = Just (fmap Just getExecutablePath `catch` f)
+  where
+  f e | isDoesNotExistError e = pure Nothing
+      | otherwise             = throw e
+
 --------------------------------------------------------------------------------
 -- Linux
 
@@ -132,7 +171,7 @@ foreign import ccall unsafe "readlink"
 -- See readlink(2)
 readSymbolicLink :: FilePath -> IO FilePath
 readSymbolicLink file =
-    allocaArray0 4096 $ \buf -> do
+    allocaArray0 4096 $ \buf ->
         withFilePath file $ \s -> do
             len <- throwErrnoPathIfMinus1 "readSymbolicLink" file $
                    c_readlink s buf 4096
@@ -140,10 +179,18 @@ readSymbolicLink file =
 
 getExecutablePath = readSymbolicLink $ "/proc/self/exe"
 
---------------------------------------------------------------------------------
--- FreeBSD
+executablePath = Just (check <$> getExecutablePath) where
+  -- procfs(5): If the pathname has been unlinked, the symbolic link will
+  -- contain the string '(deleted)' appended to the original pathname.
+  --
+  -- See also https://gitlab.haskell.org/ghc/ghc/-/issues/10957
+  check s | "(deleted)" `isSuffixOf` s = Nothing
+          | otherwise = Just s
 
-#elif defined(freebsd_HOST_OS)
+--------------------------------------------------------------------------------
+-- FreeBSD / NetBSD
+
+#elif defined(freebsd_HOST_OS) || defined(netbsd_HOST_OS)
 
 foreign import ccall unsafe "sysctl"
   c_sysctl
@@ -172,11 +219,29 @@ getExecutablePath = do
   where
     barf = throwErrno "getExecutablePath"
     mib =
+#  if defined(freebsd_HOST_OS)
       [ (#const CTL_KERN)
       , (#const KERN_PROC)
       , (#const KERN_PROC_PATHNAME)
       , -1   -- current process
       ]
+#  elif defined(netbsd_HOST_OS)
+      [ (#const CTL_KERN)
+      , (#const KERN_PROC_ARGS)
+      , -1   -- current process
+      , (#const KERN_PROC_PATHNAME)
+      ]
+#  endif
+
+executablePath = Just (fmap Just getExecutablePath `catch` f)
+  where
+  -- The sysctl fails with errno ENOENT when executable has been deleted;
+  -- see https://gitlab.haskell.org/ghc/ghc/-/issues/12377#note_321346.
+  f e | isDoesNotExistError e = pure Nothing
+
+  -- As far as I know, ENOENT is the only kind of failure that should be
+  -- expected and handled.  Re-throw other errors.
+      | otherwise             = throw e
 
 
 --------------------------------------------------------------------------------
@@ -207,6 +272,10 @@ getExecutablePath = go 2048  -- plenty, PATH_MAX is 512 under Win32
                     else fail path
               | otherwise  -> go (size * 2)
 
+-- Windows prevents deletion of executable file while program is running.
+-- Therefore return @Just@ of the result.
+executablePath = Just (Just <$> getExecutablePath)
+
 -- | Returns the final path of the given path. If the given
 --   path is a symbolic link, the returned value is the
 --   path the (possibly chain of) symbolic link(s) points to.
@@ -218,7 +287,7 @@ getExecutablePath = go 2048  -- plenty, PATH_MAX is 512 under Win32
 getFinalPath :: FilePath -> IO FilePath
 getFinalPath path = withCWString path $ \s ->
   bracket (createFile s) c_closeHandle $ \h -> do
-    let invalid = h == wordPtrToPtr (#const (intptr_t)INVALID_HANDLE_VALUE)
+    let invalid = h == iNVALID_HANDLE_VALUE
     if invalid then pure path else go h bufSize
 
   where go h sz = allocaArray (fromIntegral sz) $ \outPath -> do
@@ -231,7 +300,7 @@ getFinalPath path = withCWString path $ \s ->
           | "\\\\?\\" `isPrefixOf` s = drop 4 s
           | otherwise                = s
 
-        -- see https://ghc.haskell.org/trac/ghc/ticket/14460
+        -- see https://gitlab.haskell.org/ghc/ghc/issues/14460
         rejectUNCPath s
           | "\\\\?\\UNC\\" `isPrefixOf` s = path
           | otherwise                     = s
@@ -293,6 +362,8 @@ getExecutablePath =
             else errorWithoutStackTrace $ "getExecutablePath: " ++ msg
   where msg = "no OS specific implementation and program name couldn't be " ++
               "found in argv"
+
+executablePath = Nothing
 
 --------------------------------------------------------------------------------
 

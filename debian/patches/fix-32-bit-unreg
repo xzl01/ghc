@@ -1,0 +1,38 @@
+commit 9194c9c066a31cbb7a49830e4b5e2454fd4af6ba
+Author: Cheng Shao <terrorjack@type.dance>
+Date:   Mon Jan 23 13:17:07 2023 +0000
+
+    CmmToC: fix CmmRegOff for 64-bit register on a 32-bit target
+    
+    We used to print the offset value to a platform word sized integer.
+    This is incorrect when the offset is negative (e.g. output of cmm
+    constant folding) and the register is 64-bit but on a 32-bit target,
+    and may lead to incorrect runtime result (e.g. #22607).
+    
+    The fix is simple: just treat it as a proper MO_Add, with the correct
+    width info inferred from the register itself.
+    
+    Metric Increase:
+        T12707
+        T13379
+        T4801
+        T5321FD
+        T5321Fun
+    
+    (cherry picked from commit d151546e59a50158f25c3df6728b00d3c27bb4b9)
+
+Index: b/compiler/GHC/CmmToC.hs
+===================================================================
+--- a/compiler/GHC/CmmToC.hs
++++ b/compiler/GHC/CmmToC.hs
+@@ -382,8 +382,8 @@ pprExpr platform e = case e of
+     CmmRegOff reg 0    -> pprCastReg reg
+ 
+     -- CmmRegOff is an alias of MO_Add
+-    CmmRegOff reg i -> pprCastReg reg <> char '+' <>
+-                       pprHexVal platform (fromIntegral i) (wordWidth platform)
++    CmmRegOff reg i    -> pprExpr platform $ CmmMachOp (MO_Add w) [CmmReg reg, CmmLit $ CmmInt (toInteger i) w]
++      where w = cmmRegWidth platform reg
+ 
+     CmmMachOp mop args -> pprMachOpApp platform mop args
+ 

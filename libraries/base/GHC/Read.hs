@@ -73,6 +73,7 @@ import GHC.Base
 import GHC.Arr
 import GHC.Word
 import GHC.List (filter)
+import GHC.Tuple (Solo (..))
 
 
 -- | @'readParen' 'True' p@ parses what @p@ parses, but surrounded with
@@ -383,7 +384,7 @@ readField fieldName readVal = do
 -- second argument is a parser for the field value.
 --
 -- Note that 'readField' does not suffice for this purpose due to
--- <https://ghc.haskell.org/trac/ghc/ticket/5041 Trac #5041>.
+-- <https://gitlab.haskell.org/ghc/ghc/issues/5041 #5041>.
 readFieldHash :: String -> ReadPrec a -> ReadPrec a
 readFieldHash fieldName readVal = do
         expectP (L.Ident fieldName)
@@ -409,18 +410,18 @@ readSymField fieldName readVal = do
 
 
 -- Note [Why readField]
---
+-- ~~~~~~~~~~~~~~~~~~~~
 -- Previously, the code for automatically deriving Read instance (in
--- typecheck/TcGenDeriv.hs) would generate inline code for parsing fields;
+-- typecheck/GHC.Tc.Deriv.Generate.hs) would generate inline code for parsing fields;
 -- this, however, turned out to produce massive amounts of intermediate code,
 -- and produced a considerable performance hit in the code generator.
--- Since Read instances are not generally supposed to be perfomance critical,
+-- Since Read instances are not generally supposed to be performance critical,
 -- the readField and readSymField functions have been factored out, and the
 -- code generator now just generates calls rather than manually inlining the
 -- parsers. For large record types (e.g. 500 fields), this produces a
 -- significant performance boost.
 --
--- See also Trac #14364.
+-- See also #14364.
 
 
 --------------------------------------------------------------
@@ -666,6 +667,9 @@ instance Read () where
 
   readListPrec = readListPrecDefault
   readList     = readListDefault
+
+-- | @since 4.15
+deriving instance Read a => Read (Solo a)
 
 -- | @since 2.01
 instance (Read a, Read b) => Read (a,b) where

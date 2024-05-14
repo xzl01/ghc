@@ -1,0 +1,76 @@
+From e7ff902a69a90b206521de09da430b5cca6d8699 Mon Sep 17 00:00:00 2001
+From: Marios Titas <redneb@gmx.com>
+Date: Sun, 2 Oct 2022 23:12:32 +0300
+Subject: [PATCH] Use capi for syscalls that break under musl's handling of
+ 64-bit time_t
+
+---
+
+Index: b/libraries/unix/System/Posix/DynamicLinker/Prim.hsc
+===================================================================
+--- a/libraries/unix/System/Posix/DynamicLinker/Prim.hsc
++++ b/libraries/unix/System/Posix/DynamicLinker/Prim.hsc
+@@ -1,3 +1,4 @@
++{-# LANGUAGE CApiFFI #-}
+ {-# LANGUAGE Trustworthy #-}
+ #if __GLASGOW_HASKELL__ >= 709
+ {-# OPTIONS_GHC -fno-warn-trustworthy-safe #-}
+@@ -81,10 +82,10 @@ data RTLDFlags
+   | RTLD_LOCAL
+     deriving (Show, Read)
+ 
+-foreign import ccall unsafe "dlopen" c_dlopen :: CString -> CInt -> IO (Ptr ())
+-foreign import ccall unsafe "dlsym"  c_dlsym  :: Ptr () -> CString -> IO (FunPtr a)
+-foreign import ccall unsafe "dlerror" c_dlerror :: IO CString
+-foreign import ccall unsafe "dlclose" c_dlclose :: (Ptr ()) -> IO CInt
++foreign import capi unsafe "dlfcn.h dlopen" c_dlopen :: CString -> CInt -> IO (Ptr ())
++foreign import capi unsafe "dlfcn.h dlsym"  c_dlsym  :: Ptr () -> CString -> IO (FunPtr a)
++foreign import capi unsafe "dlfcn.h dlerror" c_dlerror :: IO CString
++foreign import capi unsafe "dlfcn.h dlclose" c_dlclose :: (Ptr ()) -> IO CInt
+ 
+ packRTLDFlags :: [RTLDFlags] -> CInt
+ packRTLDFlags flags = foldl (\ s f -> (packRTLDFlag f) .|. s) 0 flags
+Index: b/libraries/unix/System/Posix/Files/Common.hsc
+===================================================================
+--- a/libraries/unix/System/Posix/Files/Common.hsc
++++ b/libraries/unix/System/Posix/Files/Common.hsc
+@@ -1,3 +1,4 @@
++{-# LANGUAGE CApiFFI #-}
+ {-# LANGUAGE Trustworthy #-}
+ 
+ -----------------------------------------------------------------------------
+@@ -420,12 +421,12 @@ toCTimeSpec t = CTimeSpec (CTime sec) (t
+ #endif
+ 
+ #ifdef HAVE_UTIMENSAT
+-foreign import ccall unsafe "utimensat"
++foreign import capi unsafe "sys/stat.h utimensat"
+     c_utimensat :: CInt -> CString -> Ptr CTimeSpec -> CInt -> IO CInt
+ #endif
+ 
+ #if HAVE_FUTIMENS
+-foreign import ccall unsafe "futimens"
++foreign import capi unsafe "sys/stat.h futimens"
+     c_futimens :: CInt -> Ptr CTimeSpec -> IO CInt
+ #endif
+ 
+@@ -448,16 +449,16 @@ toCTimeVal t = CTimeVal sec (truncate $
+     (sec, frac) = if (frac' < 0) then (sec' - 1, frac' + 1) else (sec', frac')
+     (sec', frac') = properFraction $ toRational t
+ 
+-foreign import ccall unsafe "utimes"
++foreign import capi unsafe "sys/time.h utimes"
+     c_utimes :: CString -> Ptr CTimeVal -> IO CInt
+ 
+ #ifdef HAVE_LUTIMES
+-foreign import ccall unsafe "lutimes"
++foreign import capi unsafe "sys/time.h lutimes"
+     c_lutimes :: CString -> Ptr CTimeVal -> IO CInt
+ #endif
+ 
+ #if HAVE_FUTIMES
+-foreign import ccall unsafe "futimes"
++foreign import capi unsafe "sys/time.h futimes"
+     c_futimes :: CInt -> Ptr CTimeVal -> IO CInt
+ #endif
+ 

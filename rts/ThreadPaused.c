@@ -6,7 +6,7 @@
  *
  * ---------------------------------------------------------------------------*/
 
-// #include "PosixSource.h"
+// #include "rts/PosixSource.h"
 #include "Rts.h"
 
 #include "ThreadPaused.h"
@@ -15,6 +15,7 @@
 #include "RaiseAsync.h"
 #include "Trace.h"
 #include "Threads.h"
+#include "sm/NonMovingMark.h"
 
 #include <string.h> // for memmove()
 
@@ -242,13 +243,16 @@ threadPaused(Capability *cap, StgTSO *tso)
             SET_INFO(frame, (StgInfoTable *)&stg_marked_upd_frame_info);
 
             bh = ((StgUpdateFrame *)frame)->updatee;
-            bh_info = bh->header.info;
+            bh_info = ACQUIRE_LOAD(&bh->header.info);
+            IF_NONMOVING_WRITE_BARRIER_ENABLED {
+                updateRemembSetPushClosure(cap, (StgClosure *) bh);
+            }
 
 #if defined(THREADED_RTS)
         retry:
 #endif
             // Note [suspend duplicate work]
-            //
+            // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
             // If the info table is a WHITEHOLE or a BLACKHOLE, then
             // another thread has claimed it (via the SET_INFO()
             // below), or is in the process of doing so.  In that case
@@ -283,7 +287,7 @@ threadPaused(Capability *cap, StgTSO *tso)
             // suspended by this mechanism. See Note [AP_STACKs must be eagerly
             // blackholed] for details.
             if (((bh_info == &stg_BLACKHOLE_info)
-                 && ((StgInd*)bh)->indirectee != (StgClosure*)tso)
+                 && (RELAXED_LOAD(&((StgInd*)bh)->indirectee) != (StgClosure*)tso))
                 || (bh_info == &stg_WHITEHOLE_info))
             {
                 debugTrace(DEBUG_squeeze,
@@ -310,10 +314,6 @@ threadPaused(Capability *cap, StgTSO *tso)
                 continue;
             }
 
-            // zero out the slop so that the sanity checker can tell
-            // where the next closure is.
-            OVERWRITING_CLOSURE(bh);
-
             // an EAGER_BLACKHOLE or CAF_BLACKHOLE gets turned into a
             // BLACKHOLE here.
 #if defined(THREADED_RTS)
@@ -327,17 +327,33 @@ threadPaused(Capability *cap, StgTSO *tso)
             if (cur_bh_info != bh_info) {
                 bh_info = cur_bh_info;
 #if defined(PROF_SPIN)
-                ++whitehole_threadPaused_spin;
+                NONATOMIC_ADD(&whitehole_threadPaused_spin, 1);
 #endif
                 busy_wait_nop();
                 goto retry;
             }
 #endif
 
+            IF_NONMOVING_WRITE_BARRIER_ENABLED {
+                if (ip_THUNK(INFO_PTR_TO_STRUCT(bh_info))) {
+                    // We are about to replace a thunk with a blackhole.
+                    // Add the free variables of the closure we are about to
+                    // overwrite to the update remembered set.
+                    // N.B. We caught the WHITEHOLE case above.
+                    updateRemembSetPushThunkEager(cap,
+                                                  THUNK_INFO_PTR_TO_STRUCT(bh_info),
+                                                  (StgThunk *) bh);
+                }
+            }
+
+            // zero out the slop so that the sanity checker can tell
+            // where the next closure is. N.B. We mustn't do this until we have
+            // pushed the free variables to the update remembered set above.
+            OVERWRITING_CLOSURE_SIZE(bh, closure_sizeW_(bh, INFO_PTR_TO_STRUCT(bh_info)));
+
             // The payload of the BLACKHOLE points to the TSO
-            ((StgInd *)bh)->indirectee = (StgClosure *)tso;
-            write_barrier();
-            SET_INFO(bh,&stg_BLACKHOLE_info);
+            RELAXED_STORE(&((StgInd *)bh)->indirectee, (StgClosure *)tso);
+            SET_INFO_RELEASE(bh,&stg_BLACKHOLE_info);
 
             // .. and we need a write barrier, since we just mutated the closure:
             recordClosureMutated(cap,bh);

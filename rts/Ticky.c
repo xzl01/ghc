@@ -7,15 +7,17 @@
  *-------------------------------------------------------------------------- */
 
 #define TICKY_C                 /* define those variables */
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
+
+#include "eventlog/EventLog.h"
 
 /* Catch-all top-level counter struct.  Allocations from CAFs will go
  * here.
  */
 StgEntCounter top_ct
         = { 0, 0, 0,
-            "TOP", "",
+            "TOP", "", "",NULL,
             0, 0, NULL };
 
 /* Data structure used in ``registering'' one of these counters. */
@@ -25,7 +27,7 @@ StgEntCounter *ticky_entry_ctrs = NULL; /* root of list of them */
 /* We want Haskell code compiled with -ticky to be linkable with any
  * version of the RTS, so we have to make sure all the symbols that
  * ticky-compiled code may refer to are defined by every RTS. (#3439)
- * Hence the #ifdef is here, rather than up above.
+ * Hence the #if defined(is) here, rather than up above.
  */
 #if defined(TICKY_TICKY)
 
@@ -46,6 +48,10 @@ static void printRegisteredCounterInfo (FILE *); /* fwd decl */
 void
 PrintTickyInfo(void)
 {
+  if (RtsFlags.TraceFlags.ticky) {
+      barf("Ticky eventlog output can't be used with +RTS -r<file>");
+  }
+
   unsigned long i;
 
   unsigned long tot_thk_enters = ENT_STATIC_THK_MANY_ctr + ENT_DYN_THK_MANY_ctr
@@ -81,6 +87,10 @@ PrintTickyInfo(void)
   unsigned long tot_new_updates   = UPD_NEW_IND_ctr + UPD_NEW_PERM_IND_ctr;
   unsigned long tot_old_updates   = UPD_OLD_IND_ctr + UPD_OLD_PERM_IND_ctr;
   unsigned long tot_gengc_updates = tot_new_updates + tot_old_updates;
+
+  // Number of times tag inference predicted tagged/untagged correctly
+  // allowing us to skip a tag check (when ticky is disabled)
+  unsigned long tot_tag_preds = TAG_UNTAGGED_pred + TAG_TAGGED_pred;
 
   FILE *tf = RtsFlags.TickyFlags.tickyFile;
 
@@ -190,6 +200,17 @@ PrintTickyInfo(void)
               PC(INTAVG(tot_old_updates,tot_gengc_updates)));
   }
 
+  if (tot_tag_preds != 0) {
+      fprintf(tf, "\nTOTAL TAG PREDICTIONS MADE: %9" FMT_Word64 " \n",
+              (StgWord64) tot_tag_preds);
+      fprintf(tf, "TAGGED PREDICTIONS HIT:     %9" FMT_Word64 " \n",
+              (StgWord64) TAG_TAGGED_pred);
+      fprintf(tf, "UNTAGGED PREDICTIONS HIT:   %9" FMT_Word64 " \n",
+              (StgWord64) (TAG_UNTAGGED_pred - TAG_UNTAGGED_miss));
+      fprintf(tf, "UNTAGGED PREDICTIONS MISS:  %9" FMT_Word64 " \n",
+              (StgWord64) TAG_UNTAGGED_miss);
+  }
+
   printRegisteredCounterInfo(tf);
 
   fprintf(tf,"\n**************************************************\n");
@@ -261,7 +282,7 @@ PrintTickyInfo(void)
  *
  * This of course refers to the -ticky version that uses PERM_INDs to
  * determine the number of closures entered 0/1/>1.  KSW 1999-04.  */
-  COND_PR_CTR(ENT_PERM_IND_ctr,RtsFlags.GcFlags.squeezeUpdFrames == false,"E!NT_PERM_IND_ctr requires +RTS -Z");
+  COND_PR_CTR(ENT_PERM_IND_ctr,RtsFlags.GcFlags.squeezeUpdFrames == false,"ENT_PERM_IND_ctr requires +RTS -Z");
 
   PR_CTR(ENT_AP_ctr);
   PR_CTR(ENT_PAP_ctr);
@@ -334,10 +355,10 @@ PrintTickyInfo(void)
 
   PR_CTR(UPD_NEW_IND_ctr);
   /* see comment on ENT_PERM_IND_ctr */
-  COND_PR_CTR(UPD_NEW_PERM_IND_ctr,RtsFlags.GcFlags.squeezeUpdFrames == false,"U!PD_NEW_PERM_IND_ctr requires +RTS -Z");
+  COND_PR_CTR(UPD_NEW_PERM_IND_ctr,RtsFlags.GcFlags.squeezeUpdFrames == false,"UPD_NEW_PERM_IND_ctr requires +RTS -Z");
   PR_CTR(UPD_OLD_IND_ctr);
   /* see comment on ENT_PERM_IND_ctr */
-  COND_PR_CTR(UPD_OLD_PERM_IND_ctr,RtsFlags.GcFlags.squeezeUpdFrames == false,"U!PD_OLD_PERM_IND_ctr requires +RTS -Z");
+  COND_PR_CTR(UPD_OLD_PERM_IND_ctr,RtsFlags.GcFlags.squeezeUpdFrames == false,"UPD_OLD_PERM_IND_ctr requires +RTS -Z");
 
   PR_CTR(GC_SEL_ABANDONED_ctr);
   PR_CTR(GC_SEL_MINOR_ctr);
@@ -353,16 +374,16 @@ printRegisteredCounterInfo (FILE *tf)
     StgEntCounter *p;
 
     if ( ticky_entry_ctrs != NULL ) {
-      fprintf(tf,"\nThe following table is explained by http://ghc.haskell.org/trac/ghc/wiki/Debugging/TickyTicky\nAll allocation numbers are in bytes.\n");
+      fprintf(tf,"\nThe following table is explained by https://gitlab.haskell.org/ghc/ghc/wikis/debugging/ticky-ticky\nAll allocation numbers are in bytes.\n");
       fprintf(tf,"\n**************************************************\n\n");
     }
-    fprintf(tf, "%11s%11s%11s  %-23s %s\n",
+    fprintf(tf, "%11s%12s%12s  %-63s %s\n",
             "Entries", "Alloc", "Alloc'd", "Non-void Arguments", "STG Name");
     fprintf(tf, "--------------------------------------------------------------------------------\n");
     /* Function name at the end so it doesn't mess up the tabulation */
 
     for (p = ticky_entry_ctrs; p != NULL; p = p->link) {
-        fprintf(tf, "%11" FMT_Int "%11" FMT_Int "%11" FMT_Int " %3lu %-20.20s %s",
+        fprintf(tf, "%11" FMT_Int "%12" FMT_Int "%12" FMT_Int " %3lu %-60.60s %s",
                 p->entry_count,
                 p->allocs,
                 p->allocd,
@@ -374,4 +395,19 @@ printRegisteredCounterInfo (FILE *tf)
 
     }
 }
+
+void emitTickyCounterDefs(void)
+{
+#if defined(TRACING)
+    postTickyCounterDefs(ticky_entry_ctrs);
+#endif
+}
+
+void emitTickyCounterSamples(void)
+{
+#if defined(TRACING)
+    postTickyCounterSamples(ticky_entry_ctrs);
+#endif
+}
+
 #endif /* TICKY_TICKY */

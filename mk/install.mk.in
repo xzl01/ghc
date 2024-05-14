@@ -12,7 +12,7 @@
 # 	- install.mk is auto-generated from install.mk.in by configure.
 #	  If you edit install.mk your changes will be spammed.
 #
-#	- Settings in this file may be overriden by giving replacement
+#	- Settings in this file may be overridden by giving replacement
 #	  definitions in build.mk.
 
 # Definition of installation directories, we don't use half of these, but since
@@ -40,7 +40,7 @@
 #
 # NOTE: The default e.g. ${docdir} above means that autoconf substitutes the
 # string "${docdir}", not the value of docdir! This is crucial for the GNU
-# coding standards. See Trac #1924.
+# coding standards. See #1924.
 
 define set_default
 # $1 = variable to set
@@ -103,7 +103,7 @@ endif
 
 ghclibexecdir = $(ghclibdir)
 topdir        = $(ghclibdir)
-ghcheaderdir  = $(ghclibdir)/include
+ghcheaderdir  = $(ghclibdir)/rts/include
 
 #-----------------------------------------------------------------------------
 # install configuration

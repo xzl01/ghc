@@ -3,7 +3,6 @@
 {-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE EmptyDataDeriving #-}
 {-# LANGUAGE Safe #-}
-{-# LANGUAGE StandaloneDeriving #-}
 
 -----------------------------------------------------------------------------
 -- |
@@ -30,6 +29,9 @@ import Data.Data
 import Data.Ix
 import GHC.Generics
 import Data.Semigroup (Semigroup(..), stimesIdempotent)
+
+-- $setup
+-- >>> import Prelude
 
 -- | Uninhabited data type
 --
@@ -78,6 +80,7 @@ absurd a = case a of {}
 
 -- | If 'Void' is uninhabited then any 'Functor' that holds only
 -- values of type 'Void' is holding no values.
+-- It is implemented in terms of @fmap absurd@.
 --
 -- @since 4.8.0.0
 vacuous :: Functor f => f Void -> f a

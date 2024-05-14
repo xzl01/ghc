@@ -7,7 +7,7 @@ module GHCi.ResolvedBCO
   ) where
 
 import Prelude -- See note [Why do we import Prelude here?]
-import SizedSeq
+import GHC.Data.SizedSeq
 import GHCi.RemoteTypes
 import GHCi.BreakArray
 
@@ -21,9 +21,9 @@ import GHCi.BinaryArray
 
 isLittleEndian :: Bool
 #if defined(WORDS_BIGENDIAN)
-isLittleEndian = True
-#else
 isLittleEndian = False
+#else
+isLittleEndian = True
 #endif
 
 -- -----------------------------------------------------------------------------

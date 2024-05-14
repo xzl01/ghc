@@ -7,10 +7,6 @@
 #include <stdint.h>
 #include <stdio.h>
 
-/* Some forward declares.  */
-struct Section;
-
-
 struct SectionFormatInfo {
     char* name;
     size_t alignment;
@@ -20,16 +16,23 @@ struct SectionFormatInfo {
     uint64_t virtualSize;
     uint64_t virtualAddr;
  };
+
+// A linked-list of Sections; used to represent the set of initializer/finalizer
+// list sections.
+struct SectionList {
+    Section *section;
+    int priority;
+    struct SectionList *next;
+};
+
 struct ObjectCodeFormatInfo {
-    size_t secBytesTotal;
-    size_t secBytesUsed;
-    char* image;
-    size_t trampoline;
-    Section* init;
-    Section* finit;
-    COFF_HEADER_INFO* ch_info;
+    struct SectionList* init;  // Freed by ocRunInit_PEi386
+    struct SectionList* fini;  // Freed by ocRunFini_PEi386
+    Section* pdata;
+    Section* xdata;
+    COFF_HEADER_INFO* ch_info; // Freed by ocResolve_PEi386
+    COFF_symbol* symbols;      // Freed by ocResolve_PEi386
     char* str_tab;
-    COFF_symbol* symbols;
  };
 
 #endif /* OBJFORMAT_PEi386.  */

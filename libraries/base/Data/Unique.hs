@@ -1,5 +1,4 @@
 {-# LANGUAGE Trustworthy #-}
-{-# LANGUAGE MagicHash #-}
 
 -----------------------------------------------------------------------------
 -- |
@@ -8,7 +7,7 @@
 -- License     :  BSD-style (see the file libraries/base/LICENSE)
 --
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  non-portable
 --
 -- An abstract interface to a unique symbol generator.
@@ -24,9 +23,11 @@ module Data.Unique (
 
 import System.IO.Unsafe (unsafePerformIO)
 
-import GHC.Base
 import GHC.Num
 import Data.IORef
+
+-- $setup
+-- >>> import Prelude
 
 -- | An abstract unique object.  Objects of type 'Unique' may be
 -- compared for equality and ordering and hashed into 'Int'.
@@ -77,4 +78,4 @@ newUnique = do
 -- same value, although in practice this is unlikely.  The 'Int'
 -- returned makes a good hash key.
 hashUnique :: Unique -> Int
-hashUnique (Unique i) = I# (hashInteger i)
+hashUnique (Unique i) = integerToInt i

@@ -6,7 +6,7 @@
  *
  * This file is written in a subset of C--, extended with various
  * features specific to GHC.  It is compiled by GHC directly.  For the
- * syntax of .cmm files, see the parser in ghc/compiler/cmm/CmmParse.y.
+ * syntax of .cmm files, see the parser in ghc/compiler/GHC/Cmm/Parser.y.
  *
  * ---------------------------------------------------------------------------*/
 
@@ -17,8 +17,8 @@
 #if defined(__PIC__)
 import pthread_mutex_unlock;
 #endif
-import EnterCriticalSection;
-import LeaveCriticalSection;
+import AcquireSRWLockExclusive;
+import ReleaseSRWLockExclusives;
 
 /* Stack/Heap Check Failure
  * ------------------------
@@ -100,13 +100,18 @@ stg_gc_noregs
             CLOSE_NURSERY();
             Capability_total_allocated(MyCapability()) =
               Capability_total_allocated(MyCapability()) +
-              BYTES_TO_WDS(bdescr_free(CurrentNursery) -
-                           bdescr_start(CurrentNursery));
+              %zx64(BYTES_TO_WDS(bdescr_free(CurrentNursery) -
+                                 bdescr_start(CurrentNursery)));
             CurrentNursery = bdescr_link(CurrentNursery);
             bdescr_free(CurrentNursery) = bdescr_start(CurrentNursery);
             OPEN_NURSERY();
-            if (Capability_context_switch(MyCapability()) != 0 :: CInt ||
-                Capability_interrupt(MyCapability())      != 0 :: CInt ||
+
+            CInt context_switch, interrupt;
+            context_switch = %relaxed Capability_context_switch(MyCapability());
+            interrupt = %relaxed Capability_interrupt(MyCapability());
+
+            if (context_switch != 0 :: CInt ||
+                interrupt != 0 :: CInt ||
                 (StgTSO_alloc_limit(CurrentTSO) `lt` (0::I64) &&
                  (TO_W_(StgTSO_flags(CurrentTSO)) & TSO_ALLOC_LIMIT) != 0)) {
                 ret = ThreadYielding;
@@ -518,12 +523,13 @@ stg_block_takemvar_finally
     W_ r1, r3;
     r1 = R1;
     r3 = R3;
-    unlockClosure(R3, stg_MVAR_DIRTY_info);
+    unlockClosure(r3, stg_MVAR_DIRTY_info);
     R1 = r1;
     R3 = r3;
     jump StgReturn [R1];
 }
 
+// Stack usage covered by RESERVED_STACK_WORDS
 stg_block_takemvar /* mvar passed in R1 */
 {
     Sp_adj(-2);
@@ -545,7 +551,7 @@ stg_block_readmvar_finally
     W_ r1, r3;
     r1 = R1;
     r3 = R3;
-    unlockClosure(R3, stg_MVAR_DIRTY_info);
+    unlockClosure(r3, stg_MVAR_DIRTY_info);
     R1 = r1;
     R3 = r3;
     jump StgReturn [R1];
@@ -573,7 +579,7 @@ stg_block_putmvar_finally
     W_ r1, r3;
     r1 = R1;
     r3 = R3;
-    unlockClosure(R3, stg_MVAR_DIRTY_info);
+    unlockClosure(r3, stg_MVAR_DIRTY_info);
     R1 = r1;
     R3 = r3;
     jump StgReturn [R1];

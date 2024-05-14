@@ -4,7 +4,7 @@
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Auxilary definitions for 'Semigroup'
+-- | Auxiliary definitions for 'Semigroup'
 --
 -- This module provides some @newtype@ wrappers and helpers which are
 -- reexported from the "Data.Semigroup" module or imported directly
@@ -22,6 +22,7 @@ module Data.Semigroup.Internal where
 
 import GHC.Base hiding (Any)
 import GHC.Enum
+import qualified GHC.List as List
 import GHC.Num
 import GHC.Read
 import GHC.Show
@@ -31,7 +32,7 @@ import GHC.Real
 -- | This is a valid definition of 'stimes' for an idempotent 'Semigroup'.
 --
 -- When @x <> x = x@, this definition should be preferred, because it
--- works in /O(1)/ rather than /O(log n)/.
+-- works in \(\mathcal{O}(1)\) rather than \(\mathcal{O}(\log n)\).
 stimesIdempotent :: Integral b => b -> a -> a
 stimesIdempotent n x
   | n <= 0 = errorWithoutStackTrace "stimesIdempotent: positive multiplier expected"
@@ -40,7 +41,7 @@ stimesIdempotent n x
 -- | This is a valid definition of 'stimes' for an idempotent 'Monoid'.
 --
 -- When @mappend x x = x@, this definition should be preferred, because it
--- works in /O(1)/ rather than /O(log n)/
+-- works in \(\mathcal{O}(1)\) rather than \(\mathcal{O}(\log n)\)
 stimesIdempotentMonoid :: (Integral b, Monoid a) => b -> a -> a
 stimesIdempotentMonoid n x = case compare n 0 of
   LT -> errorWithoutStackTrace "stimesIdempotentMonoid: negative multiplier"
@@ -230,6 +231,10 @@ instance Num a => Semigroup (Sum a) where
 -- | @since 2.01
 instance Num a => Monoid (Sum a) where
         mempty = Sum 0
+        -- By default, we would get a lazy right fold. This forces the use of a strict
+        -- left fold instead.
+        mconcat = List.foldl' (<>) mempty
+        {-# INLINE mconcat #-}
 
 -- | @since 4.8.0.0
 instance Functor Sum where
@@ -268,6 +273,10 @@ instance Num a => Semigroup (Product a) where
 -- | @since 2.01
 instance Num a => Monoid (Product a) where
         mempty = Product 1
+        -- By default, we would get a lazy right fold. This forces the use of a strict
+        -- left fold instead.
+        mconcat = List.foldl' (<>) mempty
+        {-# INLINE mconcat #-}
 
 -- | @since 4.8.0.0
 instance Functor Product where
@@ -284,6 +293,12 @@ instance Monad Product where
 
 
 -- | Monoid under '<|>'.
+--
+-- >>> getAlt (Alt (Just 12) <> Alt (Just 24))
+-- Just 12
+--
+-- >>> getAlt $ Alt Nothing <> Alt (Just 24)
+-- Just 24
 --
 -- @since 4.8.0.0
 newtype Alt f a = Alt {getAlt :: f a}

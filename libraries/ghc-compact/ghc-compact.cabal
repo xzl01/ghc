@@ -1,10 +1,11 @@
+cabal-version:  1.12
 name:           ghc-compact
 version:        0.1.0.0
 -- NOTE: Don't forget to update ./changelog.md
 license:        BSD3
 license-file:   LICENSE
 maintainer:     libraries@haskell.org
-bug-reports:    http://ghc.haskell.org/trac/ghc/newticket?component=libraries/ghc-compact
+bug-reports:    https://gitlab.haskell.org/ghc/ghc/issues/new
 synopsis:       In memory storage of deeply evaluated data structure
 category:       Data
 description:
@@ -19,8 +20,10 @@ description:
     Internally, the struct is stored a single contiguous block of memory,
     which allows efficient serialization and deserialization of structs
     for distributed computing.
+
+    This package provides a low-level API; see also the </package/compact
+    compact package> which provides a user-facing API.
 build-type:     Simple
-cabal-version:  >=1.10
 tested-with:    GHC==7.11
 
 source-repository head
@@ -36,9 +39,9 @@ library
     UnboxedTuples
     CPP
 
-  build-depends: ghc-prim   == 0.5.3.*,
-                 base       >= 4.9.0 && < 4.14,
-                 bytestring >= 0.10.6.0
+  build-depends: ghc-prim   >= 0.5.3 && < 0.10,
+                 base       >= 4.9.0 && < 4.18,
+                 bytestring >= 0.10.6.0 && <0.12
   ghc-options: -Wall
 
   exposed-modules: GHC.Compact

@@ -1,4 +1,3 @@
-{-# LANGUAGE DeriveGeneric       #-}
 {-# LANGUAGE TypeOperators       #-}
 {-# LANGUAGE TypeFamilies        #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -15,7 +14,7 @@
 -- License     :  BSD-style (see the LICENSE file in the distribution)
 --
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  not portable
 --
 -- Definition of representational equality ('Coercion').

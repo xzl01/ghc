@@ -1,3 +1,5 @@
+{-# LANGUAGE Safe #-}
+
 {-|
 
 = Quick Start
@@ -11,6 +13,9 @@ Use these types for the ways people refer to time and time differences:
 
 * 'Day' for something like June 27th 2017
 * 'DayOfWeek' for something like Tuesday
+* 'Data.Time.Calendar.Month.Month' for something like August 2021
+* 'Data.Time.Calendar.Quarter.QuarterOfYear' for something like Q2
+* 'Data.Time.Calendar.Quarter.Quarter' for something like Q2 of 2023
 * 'TimeOfDay' for something like 5pm
 * 'LocalTime' for a 'Day' with a 'TimeOfDay'
 * 'TimeZone' for a time zone offset (not actually the time zone itself) like -0700
@@ -29,14 +34,13 @@ These are less commonly needed:
 * 'UniversalTime' for time based on Earth rotation
 -}
 module Data.Time
-(
-    module Data.Time.Calendar,
-    module Data.Time.Clock,
-    module Data.Time.LocalTime,
-    module Data.Time.Format
-) where
+    ( module Data.Time.Calendar
+    , module Data.Time.Clock
+    , module Data.Time.LocalTime
+    , module Data.Time.Format
+    ) where
 
 import Data.Time.Calendar
 import Data.Time.Clock
-import Data.Time.LocalTime
 import Data.Time.Format
+import Data.Time.LocalTime

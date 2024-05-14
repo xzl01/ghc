@@ -1,18 +1,19 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE PatternGuards #-}
-#if __GLASGOW_HASKELL__
-{-# LANGUAGE MagicHash, DeriveDataTypeable, StandaloneDeriving #-}
+#ifdef __GLASGOW_HASKELL__
+{-# LANGUAGE DeriveLift #-}
+{-# LANGUAGE MagicHash #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeFamilies #-}
 #endif
 #if !defined(TESTING) && defined(__GLASGOW_HASKELL__)
 {-# LANGUAGE Trustworthy #-}
 #endif
-#if __GLASGOW_HASKELL__ >= 708
-{-# LANGUAGE TypeFamilies #-}
-#endif
 
 {-# OPTIONS_HADDOCK not-home #-}
+{-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
 
 #include "containers.h"
 
@@ -71,6 +72,7 @@
 -- constructors are ordered by frequency.
 -- On GHC 7.0, reordering constructors from Nil | Tip | Bin to Bin | Tip | Nil
 -- improves the benchmark by circa 10%.
+--
 
 module Data.IntMap.Internal (
     -- * Map type
@@ -130,6 +132,9 @@ module Data.IntMap.Internal (
     , intersection
     , intersectionWith
     , intersectionWithKey
+
+    -- ** Compose
+    , compose
 
     -- ** General combining function
     , SimpleWhenMissing
@@ -224,6 +229,10 @@ module Data.IntMap.Internal (
     , partition
     , partitionWithKey
 
+    , takeWhileAntitone
+    , dropWhileAntitone
+    , spanAntitone
+
     , mapMaybe
     , mapMaybeWithKey
     , mapEither
@@ -266,6 +275,7 @@ module Data.IntMap.Internal (
     , natFromInt
     , intFromNat
     , link
+    , linkWithMask
     , bin
     , binCheckLeft
     , binCheckRight
@@ -288,57 +298,39 @@ module Data.IntMap.Internal (
     , mapGentlyWhenMatched
     ) where
 
-#if MIN_VERSION_base(4,8,0)
 import Data.Functor.Identity (Identity (..))
-import Control.Applicative (liftA2)
-#else
-import Control.Applicative (Applicative(pure, (<*>)), (<$>), liftA2)
-import Data.Monoid (Monoid(..))
-import Data.Traversable (Traversable(traverse))
-import Data.Word (Word)
-#endif
-#if MIN_VERSION_base(4,9,0)
 import Data.Semigroup (Semigroup(stimes))
-#endif
-#if !(MIN_VERSION_base(4,11,0)) && MIN_VERSION_base(4,9,0)
+#if !(MIN_VERSION_base(4,11,0))
 import Data.Semigroup (Semigroup((<>)))
 #endif
-#if MIN_VERSION_base(4,9,0)
 import Data.Semigroup (stimesIdempotentMonoid)
 import Data.Functor.Classes
-#endif
 
 import Control.DeepSeq (NFData(rnf))
 import Data.Bits
 import qualified Data.Foldable as Foldable
-#if !MIN_VERSION_base(4,8,0)
-import Data.Foldable (Foldable())
-#endif
 import Data.Maybe (fromMaybe)
-import Data.Typeable
-import Prelude hiding (lookup, map, filter, foldr, foldl, null)
+import Utils.Containers.Internal.Prelude hiding
+  (lookup, map, filter, foldr, foldl, null)
+import Prelude ()
 
 import Data.IntSet.Internal (Key)
 import qualified Data.IntSet.Internal as IntSet
 import Utils.Containers.Internal.BitUtil
 import Utils.Containers.Internal.StrictPair
 
-#if __GLASGOW_HASKELL__
+#ifdef __GLASGOW_HASKELL__
+import Data.Coerce
 import Data.Data (Data(..), Constr, mkConstr, constrIndex, Fixity(Prefix),
-                  DataType, mkDataType)
+                  DataType, mkDataType, gcast1)
 import GHC.Exts (build)
-#if !MIN_VERSION_base(4,8,0)
-import Data.Functor ((<$))
-#endif
-#if __GLASGOW_HASKELL__ >= 708
 import qualified GHC.Exts as GHCExts
-#endif
 import Text.Read
+import Language.Haskell.TH.Syntax (Lift)
+-- See Note [ Template Haskell Dependencies ]
+import Language.Haskell.TH ()
 #endif
 import qualified Control.Category as Category
-#if __GLASGOW_HASKELL__ >= 709
-import Data.Coerce
-#endif
 
 
 -- A "Nat" is a natural machine word (an unsigned Int)
@@ -387,6 +379,9 @@ type Mask   = Int
 type IntSetPrefix = Int
 type IntSetBitMap = Word
 
+-- | @since 0.6.6
+deriving instance Lift a => Lift (IntMap a)
+
 bitmapOf :: Int -> IntSetBitMap
 bitmapOf x = shiftLL 1 (x .&. IntSet.suffixBitMask)
 {-# INLINE bitmapOf #-}
@@ -395,7 +390,7 @@ bitmapOf x = shiftLL 1 (x .&. IntSet.suffixBitMask)
   Operators
 --------------------------------------------------------------------}
 
--- | /O(min(n,W))/. Find the value at a key.
+-- | \(O(\min(n,W))\). Find the value at a key.
 -- Calls 'error' when the element can not be found.
 --
 -- > fromList [(5,'a'), (3,'b')] ! 1    Error: element not in the map
@@ -404,7 +399,7 @@ bitmapOf x = shiftLL 1 (x .&. IntSet.suffixBitMask)
 (!) :: IntMap a -> Key -> a
 (!) m k = find k m
 
--- | /O(min(n,W))/. Find the value at a key.
+-- | \(O(\min(n,W))\). Find the value at a key.
 -- Returns 'Nothing' when the element can not be found.
 --
 -- > fromList [(5,'a'), (3,'b')] !? 1 == Nothing
@@ -428,16 +423,12 @@ infixl 9 !?,\\{-This comment teaches CPP correct behaviour -}
 instance Monoid (IntMap a) where
     mempty  = empty
     mconcat = unions
-#if !(MIN_VERSION_base(4,9,0))
-    mappend = union
-#else
     mappend = (<>)
 
 -- | @since 0.5.7
 instance Semigroup (IntMap a) where
     (<>)    = union
     stimes  = stimesIdempotentMonoid
-#endif
 
 -- | Folds in order of increasing key.
 instance Foldable.Foldable IntMap where
@@ -463,7 +454,6 @@ instance Foldable.Foldable IntMap where
   {-# INLINE foldl' #-}
   foldr' = foldr'
   {-# INLINE foldr' #-}
-#if MIN_VERSION_base(4,8,0)
   length = size
   {-# INLINE length #-}
   null   = null
@@ -478,7 +468,9 @@ instance Foldable.Foldable IntMap where
   maximum = start
     where start Nil = error "Data.Foldable.maximum (for Data.IntMap): empty map"
           start (Tip _ y) = y
-          start (Bin _ _ l r) = go (start l) r
+          start (Bin _ m l r)
+            | m < 0     = go (start r) l
+            | otherwise = go (start l) r
 
           go !m Nil = m
           go m (Tip _ y) = max m y
@@ -487,7 +479,9 @@ instance Foldable.Foldable IntMap where
   minimum = start
     where start Nil = error "Data.Foldable.minimum (for Data.IntMap): empty map"
           start (Tip _ y) = y
-          start (Bin _ _ l r) = go (start l) r
+          start (Bin _ m l r)
+            | m < 0     = go (start r) l
+            | otherwise = go (start l) r
 
           go !m Nil = m
           go m (Tip _ y) = min m y
@@ -497,7 +491,6 @@ instance Foldable.Foldable IntMap where
   {-# INLINABLE sum #-}
   product = foldl' (*) 1
   {-# INLINABLE product #-}
-#endif
 
 -- | Traverses in order of increasing key.
 instance Traversable IntMap where
@@ -538,7 +531,7 @@ intMapDataType = mkDataType "Data.IntMap.Internal.IntMap" [fromListConstr]
 {--------------------------------------------------------------------
   Query
 --------------------------------------------------------------------}
--- | /O(1)/. Is the map empty?
+-- | \(O(1)\). Is the map empty?
 --
 -- > Data.IntMap.null (empty)           == True
 -- > Data.IntMap.null (singleton 1 'a') == False
@@ -548,7 +541,7 @@ null Nil = True
 null _   = False
 {-# INLINE null #-}
 
--- | /O(n)/. Number of elements in the map.
+-- | \(O(n)\). Number of elements in the map.
 --
 -- > size empty                                   == 0
 -- > size (singleton 1 'a')                       == 1
@@ -560,7 +553,7 @@ size = go 0
     go acc (Tip _ _) = 1 + acc
     go acc Nil = acc
 
--- | /O(min(n,W))/. Is the key a member of the map?
+-- | \(O(\min(n,W))\). Is the key a member of the map?
 --
 -- > member 5 (fromList [(5,'a'), (3,'b')]) == True
 -- > member 1 (fromList [(5,'a'), (3,'b')]) == False
@@ -575,7 +568,7 @@ member !k = go
     go (Tip kx _) = k == kx
     go Nil = False
 
--- | /O(min(n,W))/. Is the key not a member of the map?
+-- | \(O(\min(n,W))\). Is the key not a member of the map?
 --
 -- > notMember 5 (fromList [(5,'a'), (3,'b')]) == False
 -- > notMember 1 (fromList [(5,'a'), (3,'b')]) == True
@@ -583,34 +576,31 @@ member !k = go
 notMember :: Key -> IntMap a -> Bool
 notMember k m = not $ member k m
 
--- | /O(min(n,W))/. Lookup the value at a key in the map. See also 'Data.Map.lookup'.
+-- | \(O(\min(n,W))\). Lookup the value at a key in the map. See also 'Data.Map.lookup'.
 
--- See Note: Local 'go' functions and capturing]
+-- See Note: Local 'go' functions and capturing
 lookup :: Key -> IntMap a -> Maybe a
 lookup !k = go
   where
-    go (Bin p m l r) | nomatch k p m = Nothing
-                     | zero k m  = go l
-                     | otherwise = go r
+    go (Bin _p m l r) | zero k m  = go l
+                      | otherwise = go r
     go (Tip kx x) | k == kx   = Just x
                   | otherwise = Nothing
     go Nil = Nothing
-
 
 -- See Note: Local 'go' functions and capturing]
 find :: Key -> IntMap a -> a
 find !k = go
   where
-    go (Bin p m l r) | nomatch k p m = not_found
-                     | zero k m  = go l
-                     | otherwise = go r
+    go (Bin _p m l r) | zero k m  = go l
+                      | otherwise = go r
     go (Tip kx x) | k == kx   = x
                   | otherwise = not_found
     go Nil = not_found
 
     not_found = error ("IntMap.!: key " ++ show k ++ " is not an element of the map")
 
--- | /O(min(n,W))/. The expression @('findWithDefault' def k map)@
+-- | \(O(\min(n,W))\). The expression @('findWithDefault' def k map)@
 -- returns the value at key @k@ or returns @def@ when the key is not an
 -- element of the map.
 --
@@ -628,7 +618,7 @@ findWithDefault def !k = go
                   | otherwise = def
     go Nil = def
 
--- | /O(log n)/. Find largest key smaller than the given one and return the
+-- | \(O(\min(n,W))\). Find largest key smaller than the given one and return the
 -- corresponding (key, value) pair.
 --
 -- > lookupLT 3 (fromList [(3,'a'), (5,'b')]) == Nothing
@@ -649,7 +639,7 @@ lookupLT !k t = case t of
       | otherwise = Just (ky, y)
     go def Nil = unsafeFindMax def
 
--- | /O(log n)/. Find smallest key greater than the given one and return the
+-- | \(O(\min(n,W))\). Find smallest key greater than the given one and return the
 -- corresponding (key, value) pair.
 --
 -- > lookupGT 4 (fromList [(3,'a'), (5,'b')]) == Just (5, 'b')
@@ -670,7 +660,7 @@ lookupGT !k t = case t of
       | otherwise = Just (ky, y)
     go def Nil = unsafeFindMin def
 
--- | /O(log n)/. Find largest key smaller or equal to the given one and return
+-- | \(O(\min(n,W))\). Find largest key smaller or equal to the given one and return
 -- the corresponding (key, value) pair.
 --
 -- > lookupLE 2 (fromList [(3,'a'), (5,'b')]) == Nothing
@@ -692,7 +682,7 @@ lookupLE !k t = case t of
       | otherwise = Just (ky, y)
     go def Nil = unsafeFindMax def
 
--- | /O(log n)/. Find smallest key greater or equal to the given one and return
+-- | \(O(\min(n,W))\). Find smallest key greater or equal to the given one and return
 -- the corresponding (key, value) pair.
 --
 -- > lookupGE 3 (fromList [(3,'a'), (5,'b')]) == Just (3, 'a')
@@ -732,7 +722,7 @@ unsafeFindMax (Bin _ _ _ r) = unsafeFindMax r
 {--------------------------------------------------------------------
   Disjoint
 --------------------------------------------------------------------}
--- | /O(n+m)/. Check whether the key sets of two maps are disjoint
+-- | \(O(n+m)\). Check whether the key sets of two maps are disjoint
 -- (i.e. their 'intersection' is empty).
 --
 -- > disjoint (fromList [(2,'a')]) (fromList [(1,()), (3,())])   == True
@@ -761,9 +751,34 @@ disjoint t1@(Bin p1 m1 l1 r1) t2@(Bin p2 m2 l2 r2)
               | otherwise        = disjoint t1 r2
 
 {--------------------------------------------------------------------
+  Compose
+--------------------------------------------------------------------}
+-- | Relate the keys of one map to the values of
+-- the other, by using the values of the former as keys for lookups
+-- in the latter.
+--
+-- Complexity: \( O(n * \min(m,W)) \), where \(m\) is the size of the first argument
+--
+-- > compose (fromList [('a', "A"), ('b', "B")]) (fromList [(1,'a'),(2,'b'),(3,'z')]) = fromList [(1,"A"),(2,"B")]
+--
+-- @
+-- ('compose' bc ab '!?') = (bc '!?') <=< (ab '!?')
+-- @
+--
+-- __Note:__ Prior to v0.6.4, "Data.IntMap.Strict" exposed a version of
+-- 'compose' that forced the values of the output 'IntMap'. This version does
+-- not force these values.
+--
+-- @since 0.6.3.1
+compose :: IntMap c -> IntMap Int -> IntMap c
+compose bc !ab
+  | null bc = empty
+  | otherwise = mapMaybe (bc !?) ab
+
+{--------------------------------------------------------------------
   Construction
 --------------------------------------------------------------------}
--- | /O(1)/. The empty map.
+-- | \(O(1)\). The empty map.
 --
 -- > empty      == fromList []
 -- > size empty == 0
@@ -773,7 +788,7 @@ empty
   = Nil
 {-# INLINE empty #-}
 
--- | /O(1)/. A map of one element.
+-- | \(O(1)\). A map of one element.
 --
 -- > singleton 1 'a'        == fromList [(1, 'a')]
 -- > size (singleton 1 'a') == 1
@@ -786,7 +801,7 @@ singleton k x
 {--------------------------------------------------------------------
   Insert
 --------------------------------------------------------------------}
--- | /O(min(n,W))/. Insert a new key\/value pair in the map.
+-- | \(O(\min(n,W))\). Insert a new key\/value pair in the map.
 -- If the key is already present in the map, the associated value is
 -- replaced with the supplied value, i.e. 'insert' is equivalent to
 -- @'insertWith' 'const'@.
@@ -806,7 +821,7 @@ insert k x t@(Tip ky _)
 insert k x Nil = Tip k x
 
 -- right-biased insertion, used by 'union'
--- | /O(min(n,W))/. Insert with a combining function.
+-- | \(O(\min(n,W))\). Insert with a combining function.
 -- @'insertWith' f key value mp@
 -- will insert the pair (key, value) into @mp@ if key does
 -- not exist in the map. If the key does exist, the function will
@@ -820,7 +835,7 @@ insertWith :: (a -> a -> a) -> Key -> a -> IntMap a -> IntMap a
 insertWith f k x t
   = insertWithKey (\_ x' y' -> f x' y') k x t
 
--- | /O(min(n,W))/. Insert with a combining function.
+-- | \(O(\min(n,W))\). Insert with a combining function.
 -- @'insertWithKey' f key value mp@
 -- will insert the pair (key, value) into @mp@ if key does
 -- not exist in the map. If the key does exist, the function will
@@ -841,7 +856,7 @@ insertWithKey f k x t@(Tip ky y)
   | otherwise     = link k (Tip k x) ky t
 insertWithKey _ k x Nil = Tip k x
 
--- | /O(min(n,W))/. The expression (@'insertLookupWithKey' f k x map@)
+-- | \(O(\min(n,W))\). The expression (@'insertLookupWithKey' f k x map@)
 -- is a pair where the first element is equal to (@'lookup' k map@)
 -- and the second element equal to (@'insertWithKey' f k x map@).
 --
@@ -872,7 +887,7 @@ insertLookupWithKey _ k x Nil = (Nothing,Tip k x)
 {--------------------------------------------------------------------
   Deletion
 --------------------------------------------------------------------}
--- | /O(min(n,W))/. Delete a key and its value from the map. When the key is not
+-- | \(O(\min(n,W))\). Delete a key and its value from the map. When the key is not
 -- a member of the map, the original map is returned.
 --
 -- > delete 5 (fromList [(5,"a"), (3,"b")]) == singleton 3 "b"
@@ -889,7 +904,7 @@ delete k t@(Tip ky _)
   | otherwise     = t
 delete _k Nil = Nil
 
--- | /O(min(n,W))/. Adjust a value at a specific key. When the key is not
+-- | \(O(\min(n,W))\). Adjust a value at a specific key. When the key is not
 -- a member of the map, the original map is returned.
 --
 -- > adjust ("new " ++) 5 (fromList [(5,"a"), (3,"b")]) == fromList [(3, "b"), (5, "new a")]
@@ -900,7 +915,7 @@ adjust ::  (a -> a) -> Key -> IntMap a -> IntMap a
 adjust f k m
   = adjustWithKey (\_ x -> f x) k m
 
--- | /O(min(n,W))/. Adjust a value at a specific key. When the key is not
+-- | \(O(\min(n,W))\). Adjust a value at a specific key. When the key is not
 -- a member of the map, the original map is returned.
 --
 -- > let f key x = (show key) ++ ":new " ++ x
@@ -909,8 +924,7 @@ adjust f k m
 -- > adjustWithKey f 7 empty                         == empty
 
 adjustWithKey ::  (Key -> a -> a) -> Key -> IntMap a -> IntMap a
-adjustWithKey f !k t@(Bin p m l r)
-  | nomatch k p m = t
+adjustWithKey f !k (Bin p m l r)
   | zero k m      = Bin p m (adjustWithKey f k l) r
   | otherwise     = Bin p m l (adjustWithKey f k r)
 adjustWithKey f k t@(Tip ky y)
@@ -919,7 +933,7 @@ adjustWithKey f k t@(Tip ky y)
 adjustWithKey _ _ Nil = Nil
 
 
--- | /O(min(n,W))/. The expression (@'update' f k map@) updates the value @x@
+-- | \(O(\min(n,W))\). The expression (@'update' f k map@) updates the value @x@
 -- at @k@ (if it is in the map). If (@f x@) is 'Nothing', the element is
 -- deleted. If it is (@'Just' y@), the key @k@ is bound to the new value @y@.
 --
@@ -932,7 +946,7 @@ update ::  (a -> Maybe a) -> Key -> IntMap a -> IntMap a
 update f
   = updateWithKey (\_ x -> f x)
 
--- | /O(min(n,W))/. The expression (@'update' f k map@) updates the value @x@
+-- | \(O(\min(n,W))\). The expression (@'update' f k map@) updates the value @x@
 -- at @k@ (if it is in the map). If (@f k x@) is 'Nothing', the element is
 -- deleted. If it is (@'Just' y@), the key @k@ is bound to the new value @y@.
 --
@@ -942,8 +956,7 @@ update f
 -- > updateWithKey f 3 (fromList [(5,"a"), (3,"b")]) == singleton 5 "a"
 
 updateWithKey ::  (Key -> a -> Maybe a) -> Key -> IntMap a -> IntMap a
-updateWithKey f !k t@(Bin p m l r)
-  | nomatch k p m = t
+updateWithKey f !k (Bin p m l r)
   | zero k m      = binCheckLeft p m (updateWithKey f k l) r
   | otherwise     = binCheckRight p m l (updateWithKey f k r)
 updateWithKey f k t@(Tip ky y)
@@ -953,7 +966,7 @@ updateWithKey f k t@(Tip ky y)
   | otherwise     = t
 updateWithKey _ _ Nil = Nil
 
--- | /O(min(n,W))/. Lookup and update.
+-- | \(O(\min(n,W))\). Lookup and update.
 -- The function returns original value, if it is updated.
 -- This is different behavior than 'Data.Map.updateLookupWithKey'.
 -- Returns the original key value if the map entry is deleted.
@@ -964,8 +977,7 @@ updateWithKey _ _ Nil = Nil
 -- > updateLookupWithKey f 3 (fromList [(5,"a"), (3,"b")]) == (Just "b", singleton 5 "a")
 
 updateLookupWithKey ::  (Key -> a -> Maybe a) -> Key -> IntMap a -> (Maybe a,IntMap a)
-updateLookupWithKey f !k t@(Bin p m l r)
-  | nomatch k p m = (Nothing,t)
+updateLookupWithKey f !k (Bin p m l r)
   | zero k m      = let !(found,l') = updateLookupWithKey f k l
                     in (found,binCheckLeft p m l' r)
   | otherwise     = let !(found,r') = updateLookupWithKey f k r
@@ -979,7 +991,7 @@ updateLookupWithKey _ _ Nil = (Nothing,Nil)
 
 
 
--- | /O(min(n,W))/. The expression (@'alter' f k map@) alters the value @x@ at @k@, or absence thereof.
+-- | \(O(\min(n,W))\). The expression (@'alter' f k map@) alters the value @x@ at @k@, or absence thereof.
 -- 'alter' can be used to insert, delete, or update a value in an 'IntMap'.
 -- In short : @'lookup' k ('alter' f k m) = f ('lookup' k m)@.
 alter :: (Maybe a -> Maybe a) -> Key -> IntMap a -> IntMap a
@@ -1000,7 +1012,7 @@ alter f k Nil     = case f Nothing of
                       Just x -> Tip k x
                       Nothing -> Nil
 
--- | /O(log n)/. The expression (@'alterF' f k map@) alters the value @x@ at
+-- | \(O(\min(n,W))\). The expression (@'alterF' f k map@) alters the value @x@ at
 -- @k@, or absence thereof.  'alterF' can be used to inspect, insert, delete,
 -- or update a value in an 'IntMap'.  In short : @'lookup' k <$> 'alterF' f k m = f
 -- ('lookup' k m)@.
@@ -1060,7 +1072,7 @@ unionsWith :: Foldable f => (a->a->a) -> f (IntMap a) -> IntMap a
 unionsWith f ts
   = Foldable.foldl' (unionWith f) empty ts
 
--- | /O(n+m)/. The (left-biased) union of two maps.
+-- | \(O(n+m)\). The (left-biased) union of two maps.
 -- It prefers the first map when duplicate keys are encountered,
 -- i.e. (@'union' == 'unionWith' 'const'@).
 --
@@ -1070,7 +1082,7 @@ union :: IntMap a -> IntMap a -> IntMap a
 union m1 m2
   = mergeWithKey' Bin const id id m1 m2
 
--- | /O(n+m)/. The union with a combining function.
+-- | \(O(n+m)\). The union with a combining function.
 --
 -- > unionWith (++) (fromList [(5, "a"), (3, "b")]) (fromList [(5, "A"), (7, "C")]) == fromList [(3, "b"), (5, "aA"), (7, "C")]
 
@@ -1078,7 +1090,7 @@ unionWith :: (a -> a -> a) -> IntMap a -> IntMap a -> IntMap a
 unionWith f m1 m2
   = unionWithKey (\_ x y -> f x y) m1 m2
 
--- | /O(n+m)/. The union with a combining function.
+-- | \(O(n+m)\). The union with a combining function.
 --
 -- > let f key left_value right_value = (show key) ++ ":" ++ left_value ++ "|" ++ right_value
 -- > unionWithKey f (fromList [(5, "a"), (3, "b")]) (fromList [(5, "A"), (7, "C")]) == fromList [(3, "b"), (5, "5:a|A"), (7, "C")]
@@ -1090,7 +1102,7 @@ unionWithKey f m1 m2
 {--------------------------------------------------------------------
   Difference
 --------------------------------------------------------------------}
--- | /O(n+m)/. Difference between two maps (based on keys).
+-- | \(O(n+m)\). Difference between two maps (based on keys).
 --
 -- > difference (fromList [(5, "a"), (3, "b")]) (fromList [(5, "A"), (7, "C")]) == singleton 3 "b"
 
@@ -1098,7 +1110,7 @@ difference :: IntMap a -> IntMap b -> IntMap a
 difference m1 m2
   = mergeWithKey (\_ _ _ -> Nothing) id (const Nil) m1 m2
 
--- | /O(n+m)/. Difference with a combining function.
+-- | \(O(n+m)\). Difference with a combining function.
 --
 -- > let f al ar = if al == "b" then Just (al ++ ":" ++ ar) else Nothing
 -- > differenceWith f (fromList [(5, "a"), (3, "b")]) (fromList [(5, "A"), (3, "B"), (7, "C")])
@@ -1108,7 +1120,7 @@ differenceWith :: (a -> b -> Maybe a) -> IntMap a -> IntMap b -> IntMap a
 differenceWith f m1 m2
   = differenceWithKey (\_ x y -> f x y) m1 m2
 
--- | /O(n+m)/. Difference with a combining function. When two equal keys are
+-- | \(O(n+m)\). Difference with a combining function. When two equal keys are
 -- encountered, the combining function is applied to the key and both values.
 -- If it returns 'Nothing', the element is discarded (proper set difference).
 -- If it returns (@'Just' y@), the element is updated with a new value @y@.
@@ -1123,10 +1135,10 @@ differenceWithKey f m1 m2
 
 
 -- TODO(wrengr): re-verify that asymptotic bound
--- | /O(n+m)/. Remove all the keys in a given set from a map.
+-- | \(O(n+m)\). Remove all the keys in a given set from a map.
 --
 -- @
--- m \`withoutKeys\` s = 'filterWithKey' (\k _ -> k ``IntSet.notMember`` s) m
+-- m \`withoutKeys\` s = 'filterWithKey' (\\k _ -> k ``IntSet.notMember`` s) m
 -- @
 --
 -- @since 0.5.8
@@ -1191,7 +1203,7 @@ withoutBM _ Nil = Nil
 {--------------------------------------------------------------------
   Intersection
 --------------------------------------------------------------------}
--- | /O(n+m)/. The (left-biased) intersection of two maps (based on keys).
+-- | \(O(n+m)\). The (left-biased) intersection of two maps (based on keys).
 --
 -- > intersection (fromList [(5, "a"), (3, "b")]) (fromList [(5, "A"), (7, "C")]) == singleton 5 "a"
 
@@ -1201,10 +1213,10 @@ intersection m1 m2
 
 
 -- TODO(wrengr): re-verify that asymptotic bound
--- | /O(n+m)/. The restriction of a map to the keys in a set.
+-- | \(O(n+m)\). The restriction of a map to the keys in a set.
 --
 -- @
--- m \`restrictKeys\` s = 'filterWithKey' (\k _ -> k ``IntSet.member`` s) m
+-- m \`restrictKeys\` s = 'filterWithKey' (\\k _ -> k ``IntSet.member`` s) m
 -- @
 --
 -- @since 0.5.8
@@ -1238,7 +1250,7 @@ restrictKeys t1@(Tip k1 _) t2
 restrictKeys Nil _ = Nil
 
 
--- | /O(min(n,W))/. Restrict to the sub-map with all keys matching
+-- | \(O(\min(n,W))\). Restrict to the sub-map with all keys matching
 -- a key prefix.
 lookupPrefix :: IntSetPrefix -> IntMap a -> IntMap a
 lookupPrefix !kp t@(Bin p m l r)
@@ -1267,7 +1279,7 @@ restrictBM bm t@(Tip k _)
 restrictBM _ Nil = Nil
 
 
--- | /O(n+m)/. The intersection with a combining function.
+-- | \(O(n+m)\). The intersection with a combining function.
 --
 -- > intersectionWith (++) (fromList [(5, "a"), (3, "b")]) (fromList [(5, "A"), (7, "C")]) == singleton 5 "aA"
 
@@ -1275,7 +1287,7 @@ intersectionWith :: (a -> b -> c) -> IntMap a -> IntMap b -> IntMap c
 intersectionWith f m1 m2
   = intersectionWithKey (\_ x y -> f x y) m1 m2
 
--- | /O(n+m)/. The intersection with a combining function.
+-- | \(O(n+m)\). The intersection with a combining function.
 --
 -- > let f k al ar = (show k) ++ ":" ++ al ++ "|" ++ ar
 -- > intersectionWithKey f (fromList [(5, "a"), (3, "b")]) (fromList [(5, "A"), (7, "C")]) == singleton 5 "5:a|A"
@@ -1288,7 +1300,7 @@ intersectionWithKey f m1 m2
   MergeWithKey
 --------------------------------------------------------------------}
 
--- | /O(n+m)/. A high-performance universal combining function. Using
+-- | \(O(n+m)\). A high-performance universal combining function. Using
 -- 'mergeWithKey', all combining functions can be defined without any loss of
 -- efficiency (with exception of 'union', 'difference' and 'intersection',
 -- where sharing of some nodes is lost with 'mergeWithKey').
@@ -1449,9 +1461,6 @@ instance (Applicative f, Monad f) => Applicative (WhenMissing f x) where
 --
 -- @since 0.5.9
 instance (Applicative f, Monad f) => Monad (WhenMissing f x) where
-#if !MIN_VERSION_base(4,8,0)
-  return = pure
-#endif
   m >>= f =
     traverseMaybeMissing $ \k x -> do
       res1 <- missingKey m k x
@@ -1534,17 +1543,6 @@ contramapSecondWhenMatched f t =
 {-# INLINE contramapSecondWhenMatched #-}
 
 
-#if !MIN_VERSION_base(4,8,0)
-newtype Identity a = Identity {runIdentity :: a}
-
-instance Functor Identity where
-    fmap f (Identity x) = Identity (f x)
-
-instance Applicative Identity where
-    pure = Identity
-    Identity f <*> Identity x = Identity (f x)
-#endif
-
 -- | A tactic for dealing with keys present in one map but not the
 -- other in 'merge'.
 --
@@ -1623,9 +1621,6 @@ instance (Monad f, Applicative f) => Applicative (WhenMatched f x y) where
 --
 -- @since 0.5.9
 instance (Monad f, Applicative f) => Monad (WhenMatched f x y) where
-#if !MIN_VERSION_base(4,8,0)
-  return = pure
-#endif
   m >>= f =
     zipWithMaybeAMatched $ \k x y -> do
       res <- runWhenMatched m k x y
@@ -1820,13 +1815,14 @@ filterAMissing f = WhenMissing
 {-# INLINE filterAMissing #-}
 
 
--- | /O(n)/. Filter keys and values using an 'Applicative' predicate.
+-- | \(O(n)\). Filter keys and values using an 'Applicative' predicate.
 filterWithKeyA
   :: Applicative f => (Key -> a -> f Bool) -> IntMap a -> f (IntMap a)
 filterWithKeyA _ Nil           = pure Nil
 filterWithKeyA f t@(Tip k x)   = (\b -> if b then t else Nil) <$> f k x
-filterWithKeyA f (Bin p m l r) =
-    liftA2 (bin p m) (filterWithKeyA f l) (filterWithKeyA f r)
+filterWithKeyA f (Bin p m l r)
+  | m < 0     = liftA2 (flip (bin p m)) (filterWithKeyA f r) (filterWithKeyA f l)
+  | otherwise = liftA2 (bin p m) (filterWithKeyA f l) (filterWithKeyA f r)
 
 -- | This wasn't in Data.Bool until 4.7.0, so we define it here
 bool :: a -> a -> Bool -> a
@@ -1860,14 +1856,18 @@ traverseMaybeMissing f = WhenMissing
 {-# INLINE traverseMaybeMissing #-}
 
 
--- | /O(n)/. Traverse keys\/values and collect the 'Just' results.
+-- | \(O(n)\). Traverse keys\/values and collect the 'Just' results.
+--
+-- @since 0.6.4
 traverseMaybeWithKey
   :: Applicative f => (Key -> a -> f (Maybe b)) -> IntMap a -> f (IntMap b)
 traverseMaybeWithKey f = go
     where
     go Nil           = pure Nil
     go (Tip k x)     = maybe Nil (Tip k) <$> f k x
-    go (Bin p m l r) = liftA2 (bin p m) (go l) (go r)
+    go (Bin p m l r)
+      | m < 0     = liftA2 (flip (bin p m)) (go r) (go l)
+      | otherwise = liftA2 (bin p m) (go l) (go r)
 
 
 -- | Merge two maps.
@@ -2039,8 +2039,8 @@ mergeA
       where
         merge2 t2@(Bin p2 m2 l2 r2)
           | nomatch k1 p2 m2 = linkA k1 (subsingletonBy g1k k1 x1) p2 (g2t t2)
-          | zero k1 m2       = liftA2 (bin p2 m2) (merge2 l2) (g2t r2)
-          | otherwise        = liftA2 (bin p2 m2) (g2t l2) (merge2 r2)
+          | zero k1 m2       = binA p2 m2 (merge2 l2) (g2t r2)
+          | otherwise        = binA p2 m2 (g2t l2) (merge2 r2)
         merge2 (Tip k2 x2)   = mergeTips k1 x1 k2 x2
         merge2 Nil           = subsingletonBy g1k k1 x1
 
@@ -2048,23 +2048,23 @@ mergeA
       where
         merge1 t1@(Bin p1 m1 l1 r1)
           | nomatch k2 p1 m1 = linkA p1 (g1t t1) k2 (subsingletonBy g2k k2 x2)
-          | zero k2 m1       = liftA2 (bin p1 m1) (merge1 l1) (g1t r1)
-          | otherwise        = liftA2 (bin p1 m1) (g1t l1) (merge1 r1)
+          | zero k2 m1       = binA p1 m1 (merge1 l1) (g1t r1)
+          | otherwise        = binA p1 m1 (g1t l1) (merge1 r1)
         merge1 (Tip k1 x1)   = mergeTips k1 x1 k2 x2
         merge1 Nil           = subsingletonBy g2k k2 x2
 
     go t1@(Bin p1 m1 l1 r1) t2@(Bin p2 m2 l2 r2)
       | shorter m1 m2  = merge1
       | shorter m2 m1  = merge2
-      | p1 == p2       = liftA2 (bin p1 m1)   (go  l1 l2) (go r1 r2)
-      | otherwise      = liftA2 (link_ p1 p2) (g1t t1)    (g2t   t2)
+      | p1 == p2       = binA p1 m1 (go l1 l2) (go r1 r2)
+      | otherwise      = linkA p1 (g1t t1) p2 (g2t t2)
       where
-        merge1 | nomatch p2 p1 m1  = liftA2 (link_ p1 p2) (g1t t1)    (g2t t2)
-               | zero p2 m1        = liftA2 (bin p1 m1)   (go  l1 t2) (g1t r1)
-               | otherwise         = liftA2 (bin p1 m1)   (g1t l1)    (go  r1 t2)
-        merge2 | nomatch p1 p2 m2  = liftA2 (link_ p1 p2) (g1t t1)    (g2t    t2)
-               | zero p1 m2        = liftA2 (bin p2 m2)   (go  t1 l2) (g2t    r2)
-               | otherwise         = liftA2 (bin p2 m2)   (g2t    l2) (go  t1 r2)
+        merge1 | nomatch p2 p1 m1  = linkA p1 (g1t t1) p2 (g2t t2)
+               | zero p2 m1        = binA p1 m1 (go  l1 t2) (g1t r1)
+               | otherwise         = binA p1 m1 (g1t l1)    (go  r1 t2)
+        merge2 | nomatch p1 p2 m2  = linkA p1 (g1t t1) p2 (g2t t2)
+               | zero p1 m2        = binA p2 m2 (go  t1 l2) (g2t    r2)
+               | otherwise         = binA p2 m2 (g2t    l2) (go  t1 r2)
 
     subsingletonBy gk k x = maybe Nil (Tip k) <$> gk k x
     {-# INLINE subsingletonBy #-}
@@ -2084,11 +2084,6 @@ mergeA
     subdoubleton k1 k2 (Just y1) (Just y2) = link k1 (Tip k1 y1) k2 (Tip k2 y2)
     {-# INLINE subdoubleton #-}
 
-    link_ _  _  Nil t2  = t2
-    link_ _  _  t1  Nil = t1
-    link_ p1 p2 t1  t2  = link p1 t1 p2 t2
-    {-# INLINE link_ #-}
-
     -- | A variant of 'link_' which makes sure to execute side-effects
     -- in the right order.
     linkA
@@ -2097,12 +2092,26 @@ mergeA
         -> Prefix -> f (IntMap a)
         -> f (IntMap a)
     linkA p1 t1 p2 t2
-      | zero p1 m = liftA2 (bin p m) t1 t2
-      | otherwise = liftA2 (bin p m) t2 t1
+      | zero p1 m = binA p m t1 t2
+      | otherwise = binA p m t2 t1
       where
         m = branchMask p1 p2
         p = mask p1 m
     {-# INLINE linkA #-}
+
+    -- A variant of 'bin' that ensures that effects for negative keys are executed
+    -- first.
+    binA
+        :: Applicative f
+        => Prefix
+        -> Mask
+        -> f (IntMap a)
+        -> f (IntMap a)
+        -> f (IntMap a)
+    binA p m a b
+      | m < 0     = liftA2 (flip (bin p m)) b a
+      | otherwise = liftA2       (bin p m)  a b
+    {-# INLINE binA #-}
 {-# INLINE mergeA #-}
 
 
@@ -2110,7 +2119,7 @@ mergeA
   Min\/Max
 --------------------------------------------------------------------}
 
--- | /O(min(n,W))/. Update the value at the minimal key.
+-- | \(O(\min(n,W))\). Update the value at the minimal key.
 --
 -- > updateMinWithKey (\ k a -> Just ((show k) ++ ":" ++ a)) (fromList [(5,"a"), (3,"b")]) == fromList [(3,"3:b"), (5,"a")]
 -- > updateMinWithKey (\ _ _ -> Nothing)                     (fromList [(5,"a"), (3,"b")]) == singleton 5 "a"
@@ -2126,7 +2135,7 @@ updateMinWithKey f t =
                         Nothing -> Nil
     go _ Nil = error "updateMinWithKey Nil"
 
--- | /O(min(n,W))/. Update the value at the maximal key.
+-- | \(O(\min(n,W))\). Update the value at the maximal key.
 --
 -- > updateMaxWithKey (\ k a -> Just ((show k) ++ ":" ++ a)) (fromList [(5,"a"), (3,"b")]) == fromList [(3,"b"), (5,"5:a")]
 -- > updateMaxWithKey (\ _ _ -> Nothing)                     (fromList [(5,"a"), (3,"b")]) == singleton 3 "b"
@@ -2145,7 +2154,7 @@ updateMaxWithKey f t =
 
 data View a = View {-# UNPACK #-} !Key a !(IntMap a)
 
--- | /O(min(n,W))/. Retrieves the maximal (key,value) pair of the map, and
+-- | \(O(\min(n,W))\). Retrieves the maximal (key,value) pair of the map, and
 -- the map stripped of that element, or 'Nothing' if passed an empty map.
 --
 -- > maxViewWithKey (fromList [(5,"a"), (3,"b")]) == Just ((5,"a"), singleton 3 "b")
@@ -2173,7 +2182,7 @@ maxViewWithKeySure t =
 -- See note on NOINLINE at minViewWithKeySure
 {-# NOINLINE maxViewWithKeySure #-}
 
--- | /O(min(n,W))/. Retrieves the minimal (key,value) pair of the map, and
+-- | \(O(\min(n,W))\). Retrieves the minimal (key,value) pair of the map, and
 -- the map stripped of that element, or 'Nothing' if passed an empty map.
 --
 -- > minViewWithKey (fromList [(5,"a"), (3,"b")]) == Just ((3,"b"), singleton 5 "a")
@@ -2209,7 +2218,7 @@ minViewWithKeySure t =
 -- anyway, which should be good enough.
 {-# NOINLINE minViewWithKeySure #-}
 
--- | /O(min(n,W))/. Update the value at the maximal key.
+-- | \(O(\min(n,W))\). Update the value at the maximal key.
 --
 -- > updateMax (\ a -> Just ("X" ++ a)) (fromList [(5,"a"), (3,"b")]) == fromList [(3, "b"), (5, "Xa")]
 -- > updateMax (\ _ -> Nothing)         (fromList [(5,"a"), (3,"b")]) == singleton 3 "b"
@@ -2217,7 +2226,7 @@ minViewWithKeySure t =
 updateMax :: (a -> Maybe a) -> IntMap a -> IntMap a
 updateMax f = updateMaxWithKey (const f)
 
--- | /O(min(n,W))/. Update the value at the minimal key.
+-- | \(O(\min(n,W))\). Update the value at the minimal key.
 --
 -- > updateMin (\ a -> Just ("X" ++ a)) (fromList [(5,"a"), (3,"b")]) == fromList [(3, "Xb"), (5, "a")]
 -- > updateMin (\ _ -> Nothing)         (fromList [(5,"a"), (3,"b")]) == singleton 5 "a"
@@ -2225,29 +2234,29 @@ updateMax f = updateMaxWithKey (const f)
 updateMin :: (a -> Maybe a) -> IntMap a -> IntMap a
 updateMin f = updateMinWithKey (const f)
 
--- | /O(min(n,W))/. Retrieves the maximal key of the map, and the map
+-- | \(O(\min(n,W))\). Retrieves the maximal key of the map, and the map
 -- stripped of that element, or 'Nothing' if passed an empty map.
 maxView :: IntMap a -> Maybe (a, IntMap a)
 maxView t = fmap (\((_, x), t') -> (x, t')) (maxViewWithKey t)
 
--- | /O(min(n,W))/. Retrieves the minimal key of the map, and the map
+-- | \(O(\min(n,W))\). Retrieves the minimal key of the map, and the map
 -- stripped of that element, or 'Nothing' if passed an empty map.
 minView :: IntMap a -> Maybe (a, IntMap a)
 minView t = fmap (\((_, x), t') -> (x, t')) (minViewWithKey t)
 
--- | /O(min(n,W))/. Delete and find the maximal element.
+-- | \(O(\min(n,W))\). Delete and find the maximal element.
 -- This function throws an error if the map is empty. Use 'maxViewWithKey'
 -- if the map may be empty.
 deleteFindMax :: IntMap a -> ((Key, a), IntMap a)
 deleteFindMax = fromMaybe (error "deleteFindMax: empty map has no maximal element") . maxViewWithKey
 
--- | /O(min(n,W))/. Delete and find the minimal element.
+-- | \(O(\min(n,W))\). Delete and find the minimal element.
 -- This function throws an error if the map is empty. Use 'minViewWithKey'
 -- if the map may be empty.
 deleteFindMin :: IntMap a -> ((Key, a), IntMap a)
 deleteFindMin = fromMaybe (error "deleteFindMin: empty map has no minimal element") . minViewWithKey
 
--- | /O(min(n,W))/. The minimal key of the map. Returns 'Nothing' if the map is empty.
+-- | \(O(\min(n,W))\). The minimal key of the map. Returns 'Nothing' if the map is empty.
 lookupMin :: IntMap a -> Maybe (Key, a)
 lookupMin Nil = Nothing
 lookupMin (Tip k v) = Just (k,v)
@@ -2258,14 +2267,14 @@ lookupMin (Bin _ m l r)
           go (Bin _ _ l' _) = go l'
           go Nil            = Nothing
 
--- | /O(min(n,W))/. The minimal key of the map. Calls 'error' if the map is empty.
+-- | \(O(\min(n,W))\). The minimal key of the map. Calls 'error' if the map is empty.
 -- Use 'minViewWithKey' if the map may be empty.
 findMin :: IntMap a -> (Key, a)
 findMin t
   | Just r <- lookupMin t = r
   | otherwise = error "findMin: empty map has no minimal element"
 
--- | /O(min(n,W))/. The maximal key of the map. Returns 'Nothing' if the map is empty.
+-- | \(O(\min(n,W))\). The maximal key of the map. Returns 'Nothing' if the map is empty.
 lookupMax :: IntMap a -> Maybe (Key, a)
 lookupMax Nil = Nothing
 lookupMax (Tip k v) = Just (k,v)
@@ -2276,21 +2285,21 @@ lookupMax (Bin _ m l r)
           go (Bin _ _ _ r') = go r'
           go Nil            = Nothing
 
--- | /O(min(n,W))/. The maximal key of the map. Calls 'error' if the map is empty.
+-- | \(O(\min(n,W))\). The maximal key of the map. Calls 'error' if the map is empty.
 -- Use 'maxViewWithKey' if the map may be empty.
 findMax :: IntMap a -> (Key, a)
 findMax t
   | Just r <- lookupMax t = r
   | otherwise = error "findMax: empty map has no maximal element"
 
--- | /O(min(n,W))/. Delete the minimal key. Returns an empty map if the map is empty.
+-- | \(O(\min(n,W))\). Delete the minimal key. Returns an empty map if the map is empty.
 --
 -- Note that this is a change of behaviour for consistency with 'Data.Map.Map' &#8211;
 -- versions prior to 0.5 threw an error if the 'IntMap' was already empty.
 deleteMin :: IntMap a -> IntMap a
 deleteMin = maybe Nil snd . minView
 
--- | /O(min(n,W))/. Delete the maximal key. Returns an empty map if the map is empty.
+-- | \(O(\min(n,W))\). Delete the maximal key. Returns an empty map if the map is empty.
 --
 -- Note that this is a change of behaviour for consistency with 'Data.Map.Map' &#8211;
 -- versions prior to 0.5 threw an error if the 'IntMap' was already empty.
@@ -2301,15 +2310,15 @@ deleteMax = maybe Nil snd . maxView
 {--------------------------------------------------------------------
   Submap
 --------------------------------------------------------------------}
--- | /O(n+m)/. Is this a proper submap? (ie. a submap but not equal).
+-- | \(O(n+m)\). Is this a proper submap? (ie. a submap but not equal).
 -- Defined as (@'isProperSubmapOf' = 'isProperSubmapOfBy' (==)@).
 isProperSubmapOf :: Eq a => IntMap a -> IntMap a -> Bool
 isProperSubmapOf m1 m2
   = isProperSubmapOfBy (==) m1 m2
 
-{- | /O(n+m)/. Is this a proper submap? (ie. a submap but not equal).
+{- | \(O(n+m)\). Is this a proper submap? (ie. a submap but not equal).
  The expression (@'isProperSubmapOfBy' f m1 m2@) returns 'True' when
- @m1@ and @m2@ are not equal,
+ @keys m1@ and @keys m2@ are not equal,
  all keys in @m1@ are in @m2@, and when @f@ returns 'True' when
  applied to their respective values. For example, the following
  expressions are all 'True':
@@ -2356,13 +2365,13 @@ submapCmp predicate (Tip k x) t
 submapCmp _    Nil Nil = EQ
 submapCmp _    Nil _   = LT
 
--- | /O(n+m)/. Is this a submap?
+-- | \(O(n+m)\). Is this a submap?
 -- Defined as (@'isSubmapOf' = 'isSubmapOfBy' (==)@).
 isSubmapOf :: Eq a => IntMap a -> IntMap a -> Bool
 isSubmapOf m1 m2
   = isSubmapOfBy (==) m1 m2
 
-{- | /O(n+m)/.
+{- | \(O(n+m)\).
  The expression (@'isSubmapOfBy' f m1 m2@) returns 'True' if
  all keys in @m1@ are in @m2@, and when @f@ returns 'True' when
  applied to their respective values. For example, the following
@@ -2395,7 +2404,7 @@ isSubmapOfBy _         Nil _           = True
 {--------------------------------------------------------------------
   Mapping
 --------------------------------------------------------------------}
--- | /O(n)/. Map a function over all values in the map.
+-- | \(O(n)\). Map a function over all values in the map.
 --
 -- > map (++ "x") (fromList [(5,"a"), (3,"b")]) == fromList [(3, "bx"), (5, "ax")]
 
@@ -2410,16 +2419,11 @@ map f = go
 {-# NOINLINE [1] map #-}
 {-# RULES
 "map/map" forall f g xs . map f (map g xs) = map (f . g) xs
- #-}
-#endif
-#if __GLASGOW_HASKELL__ >= 709
--- Safe coercions were introduced in 7.8, but did not play well with RULES yet.
-{-# RULES
 "map/coerce" map coerce = coerce
  #-}
 #endif
 
--- | /O(n)/. Map a function over all values in the map.
+-- | \(O(n)\). Map a function over all values in the map.
 --
 -- > let f key x = (show key) ++ ":" ++ x
 -- > mapWithKey f (fromList [(5,"a"), (3,"b")]) == fromList [(3, "3:b"), (5, "5:a")]
@@ -2443,7 +2447,7 @@ mapWithKey f t
  #-}
 #endif
 
--- | /O(n)/.
+-- | \(O(n)\).
 -- @'traverseWithKey' f s == 'fromList' <$> 'traverse' (\(k, v) -> (,) k <$> f k v) ('toList' m)@
 -- That is, behaves exactly like a regular 'traverse' except that the traversing
 -- function also has access to the key associated with a value.
@@ -2456,11 +2460,11 @@ traverseWithKey f = go
     go Nil = pure Nil
     go (Tip k v) = Tip k <$> f k v
     go (Bin p m l r)
-      | m < 0     = liftA2 (Bin p m) (go r) (go l)
+      | m < 0     = liftA2 (flip (Bin p m)) (go r) (go l)
       | otherwise = liftA2 (Bin p m) (go l) (go r)
 {-# INLINE traverseWithKey #-}
 
--- | /O(n)/. The function @'mapAccum'@ threads an accumulating
+-- | \(O(n)\). The function @'mapAccum'@ threads an accumulating
 -- argument through the map in ascending order of keys.
 --
 -- > let f a b = (a ++ b, b ++ "X")
@@ -2469,7 +2473,7 @@ traverseWithKey f = go
 mapAccum :: (a -> b -> (a,c)) -> a -> IntMap b -> (a,IntMap c)
 mapAccum f = mapAccumWithKey (\a' _ x -> f a' x)
 
--- | /O(n)/. The function @'mapAccumWithKey'@ threads an accumulating
+-- | \(O(n)\). The function @'mapAccumWithKey'@ threads an accumulating
 -- argument through the map in ascending order of keys.
 --
 -- > let f a k b = (a ++ " " ++ (show k) ++ "-" ++ b, b ++ "X")
@@ -2479,29 +2483,41 @@ mapAccumWithKey :: (a -> Key -> b -> (a,c)) -> a -> IntMap b -> (a,IntMap c)
 mapAccumWithKey f a t
   = mapAccumL f a t
 
--- | /O(n)/. The function @'mapAccumL'@ threads an accumulating
+-- | \(O(n)\). The function @'mapAccumL'@ threads an accumulating
 -- argument through the map in ascending order of keys.
 mapAccumL :: (a -> Key -> b -> (a,c)) -> a -> IntMap b -> (a,IntMap c)
 mapAccumL f a t
   = case t of
-      Bin p m l r -> let (a1,l') = mapAccumL f a l
-                         (a2,r') = mapAccumL f a1 r
-                     in (a2,Bin p m l' r')
+      Bin p m l r
+        | m < 0 ->
+            let (a1,r') = mapAccumL f a r
+                (a2,l') = mapAccumL f a1 l
+            in (a2,Bin p m l' r')
+        | otherwise  ->
+            let (a1,l') = mapAccumL f a l
+                (a2,r') = mapAccumL f a1 r
+            in (a2,Bin p m l' r')
       Tip k x     -> let (a',x') = f a k x in (a',Tip k x')
       Nil         -> (a,Nil)
 
--- | /O(n)/. The function @'mapAccumR'@ threads an accumulating
+-- | \(O(n)\). The function @'mapAccumRWithKey'@ threads an accumulating
 -- argument through the map in descending order of keys.
 mapAccumRWithKey :: (a -> Key -> b -> (a,c)) -> a -> IntMap b -> (a,IntMap c)
 mapAccumRWithKey f a t
   = case t of
-      Bin p m l r -> let (a1,r') = mapAccumRWithKey f a r
-                         (a2,l') = mapAccumRWithKey f a1 l
-                     in (a2,Bin p m l' r')
+      Bin p m l r
+        | m < 0 ->
+            let (a1,l') = mapAccumRWithKey f a l
+                (a2,r') = mapAccumRWithKey f a1 r
+            in (a2,Bin p m l' r')
+        | otherwise  ->
+            let (a1,r') = mapAccumRWithKey f a r
+                (a2,l') = mapAccumRWithKey f a1 l
+            in (a2,Bin p m l' r')
       Tip k x     -> let (a',x') = f a k x in (a',Tip k x')
       Nil         -> (a,Nil)
 
--- | /O(n*min(n,W))/.
+-- | \(O(n \min(n,W))\).
 -- @'mapKeys' f s@ is the map obtained by applying @f@ to each key of @s@.
 --
 -- The size of the result may be smaller if @f@ maps two or more distinct
@@ -2515,7 +2531,7 @@ mapAccumRWithKey f a t
 mapKeys :: (Key->Key) -> IntMap a -> IntMap a
 mapKeys f = fromList . foldrWithKey (\k x xs -> (f k, x) : xs) []
 
--- | /O(n*min(n,W))/.
+-- | \(O(n \min(n,W))\).
 -- @'mapKeysWith' c f s@ is the map obtained by applying @f@ to each key of @s@.
 --
 -- The size of the result may be smaller if @f@ maps two or more distinct
@@ -2529,7 +2545,7 @@ mapKeysWith :: (a -> a -> a) -> (Key->Key) -> IntMap a -> IntMap a
 mapKeysWith c f
   = fromListWith c . foldrWithKey (\k x xs -> (f k, x) : xs) []
 
--- | /O(n*min(n,W))/.
+-- | \(O(n \min(n,W))\).
 -- @'mapKeysMonotonic' f s == 'mapKeys' f s@, but works only when @f@
 -- is strictly monotonic.
 -- That is, for any values @x@ and @y@, if @x@ < @y@ then @f x@ < @f y@.
@@ -2552,7 +2568,7 @@ mapKeysMonotonic f
 {--------------------------------------------------------------------
   Filter
 --------------------------------------------------------------------}
--- | /O(n)/. Filter all values that satisfy some predicate.
+-- | \(O(n)\). Filter all values that satisfy some predicate.
 --
 -- > filter (> "a") (fromList [(5,"a"), (3,"b")]) == singleton 3 "b"
 -- > filter (> "x") (fromList [(5,"a"), (3,"b")]) == empty
@@ -2562,7 +2578,7 @@ filter :: (a -> Bool) -> IntMap a -> IntMap a
 filter p m
   = filterWithKey (\_ x -> p x) m
 
--- | /O(n)/. Filter all keys\/values that satisfy some predicate.
+-- | \(O(n)\). Filter all keys\/values that satisfy some predicate.
 --
 -- > filterWithKey (\k _ -> k > 4) (fromList [(5,"a"), (3,"b")]) == singleton 5 "a"
 
@@ -2573,7 +2589,7 @@ filterWithKey predicate = go
     go t@(Tip k x)   = if predicate k x then t else Nil
     go (Bin p m l r) = bin p m (go l) (go r)
 
--- | /O(n)/. Partition the map according to some predicate. The first
+-- | \(O(n)\). Partition the map according to some predicate. The first
 -- map contains all elements that satisfy the predicate, the second all
 -- elements that fail the predicate. See also 'split'.
 --
@@ -2585,7 +2601,7 @@ partition :: (a -> Bool) -> IntMap a -> (IntMap a,IntMap a)
 partition p m
   = partitionWithKey (\_ x -> p x) m
 
--- | /O(n)/. Partition the map according to some predicate. The first
+-- | \(O(n)\). Partition the map according to some predicate. The first
 -- map contains all elements that satisfy the predicate, the second all
 -- elements that fail the predicate. See also 'split'.
 --
@@ -2607,7 +2623,102 @@ partitionWithKey predicate0 t0 = toPair $ go predicate0 t0
           | otherwise     -> (Nil :*: t)
         Nil -> (Nil :*: Nil)
 
--- | /O(n)/. Map values and collect the 'Just' results.
+-- | \(O(\min(n,W))\). Take while a predicate on the keys holds.
+-- The user is responsible for ensuring that for all @Int@s, @j \< k ==\> p j \>= p k@.
+-- See note at 'spanAntitone'.
+--
+-- @
+-- takeWhileAntitone p = 'fromDistinctAscList' . 'Data.List.takeWhile' (p . fst) . 'toList'
+-- takeWhileAntitone p = 'filterWithKey' (\\k _ -> p k)
+-- @
+--
+-- @since 0.6.7
+takeWhileAntitone :: (Key -> Bool) -> IntMap a -> IntMap a
+takeWhileAntitone predicate t =
+  case t of
+    Bin p m l r
+      | m < 0 ->
+        if predicate 0 -- handle negative numbers.
+        then bin p m (go predicate l) r
+        else go predicate r
+    _ -> go predicate t
+  where
+    go predicate' (Bin p m l r)
+      | predicate' $! p+m = bin p m l (go predicate' r)
+      | otherwise         = go predicate' l
+    go predicate' t'@(Tip ky _)
+      | predicate' ky = t'
+      | otherwise     = Nil
+    go _ Nil = Nil
+
+-- | \(O(\min(n,W))\). Drop while a predicate on the keys holds.
+-- The user is responsible for ensuring that for all @Int@s, @j \< k ==\> p j \>= p k@.
+-- See note at 'spanAntitone'.
+--
+-- @
+-- dropWhileAntitone p = 'fromDistinctAscList' . 'Data.List.dropWhile' (p . fst) . 'toList'
+-- dropWhileAntitone p = 'filterWithKey' (\\k _ -> not (p k))
+-- @
+--
+-- @since 0.6.7
+dropWhileAntitone :: (Key -> Bool) -> IntMap a -> IntMap a
+dropWhileAntitone predicate t =
+  case t of
+    Bin p m l r
+      | m < 0 ->
+        if predicate 0 -- handle negative numbers.
+        then go predicate l
+        else bin p m l (go predicate r)
+    _ -> go predicate t
+  where
+    go predicate' (Bin p m l r)
+      | predicate' $! p+m = go predicate' r
+      | otherwise         = bin p m (go predicate' l) r
+    go predicate' t'@(Tip ky _)
+      | predicate' ky = Nil
+      | otherwise     = t'
+    go _ Nil = Nil
+
+-- | \(O(\min(n,W))\). Divide a map at the point where a predicate on the keys stops holding.
+-- The user is responsible for ensuring that for all @Int@s, @j \< k ==\> p j \>= p k@.
+--
+-- @
+-- spanAntitone p xs = ('takeWhileAntitone' p xs, 'dropWhileAntitone' p xs)
+-- spanAntitone p xs = 'partitionWithKey' (\\k _ -> p k) xs
+-- @
+--
+-- Note: if @p@ is not actually antitone, then @spanAntitone@ will split the map
+-- at some /unspecified/ point.
+--
+-- @since 0.6.7
+spanAntitone :: (Key -> Bool) -> IntMap a -> (IntMap a, IntMap a)
+spanAntitone predicate t =
+  case t of
+    Bin p m l r
+      | m < 0 ->
+        if predicate 0 -- handle negative numbers.
+        then
+          case go predicate l of
+            (lt :*: gt) ->
+              let !lt' = bin p m lt r
+              in (lt', gt)
+        else
+          case go predicate r of
+            (lt :*: gt) ->
+              let !gt' = bin p m l gt
+              in (lt, gt')
+    _ -> case go predicate t of
+          (lt :*: gt) -> (lt, gt)
+  where
+    go predicate' (Bin p m l r)
+      | predicate' $! p+m = case go predicate' r of (lt :*: gt) -> bin p m l lt :*: gt
+      | otherwise         = case go predicate' l of (lt :*: gt) -> lt :*: bin p m gt r
+    go predicate' t'@(Tip ky _)
+      | predicate' ky = (t' :*: Nil)
+      | otherwise     = (Nil :*: t')
+    go _ Nil = (Nil :*: Nil)
+
+-- | \(O(n)\). Map values and collect the 'Just' results.
 --
 -- > let f x = if x == "a" then Just "new a" else Nothing
 -- > mapMaybe f (fromList [(5,"a"), (3,"b")]) == singleton 5 "new a"
@@ -2615,7 +2726,7 @@ partitionWithKey predicate0 t0 = toPair $ go predicate0 t0
 mapMaybe :: (a -> Maybe b) -> IntMap a -> IntMap b
 mapMaybe f = mapMaybeWithKey (\_ x -> f x)
 
--- | /O(n)/. Map keys\/values and collect the 'Just' results.
+-- | \(O(n)\). Map keys\/values and collect the 'Just' results.
 --
 -- > let f k _ = if k < 5 then Just ("key : " ++ (show k)) else Nothing
 -- > mapMaybeWithKey f (fromList [(5,"a"), (3,"b")]) == singleton 3 "key : 3"
@@ -2628,7 +2739,7 @@ mapMaybeWithKey f (Tip k x) = case f k x of
   Nothing -> Nil
 mapMaybeWithKey _ Nil = Nil
 
--- | /O(n)/. Map values and separate the 'Left' and 'Right' results.
+-- | \(O(n)\). Map values and separate the 'Left' and 'Right' results.
 --
 -- > let f a = if a < "c" then Left a else Right a
 -- > mapEither f (fromList [(5,"a"), (3,"b"), (1,"x"), (7,"z")])
@@ -2641,7 +2752,7 @@ mapEither :: (a -> Either b c) -> IntMap a -> (IntMap b, IntMap c)
 mapEither f m
   = mapEitherWithKey (\_ x -> f x) m
 
--- | /O(n)/. Map keys\/values and separate the 'Left' and 'Right' results.
+-- | \(O(n)\). Map keys\/values and separate the 'Left' and 'Right' results.
 --
 -- > let f k a = if k < 5 then Left (k * 2) else Right (a ++ a)
 -- > mapEitherWithKey f (fromList [(5,"a"), (3,"b"), (1,"x"), (7,"z")])
@@ -2663,7 +2774,7 @@ mapEitherWithKey f0 t0 = toPair $ go f0 t0
       Right z -> (Nil :*: Tip k z)
     go _ Nil = (Nil :*: Nil)
 
--- | /O(min(n,W))/. The expression (@'split' k map@) is a pair @(map1,map2)@
+-- | \(O(\min(n,W))\). The expression (@'split' k map@) is a pair @(map1,map2)@
 -- where all keys in @map1@ are lower than @k@ and all keys in
 -- @map2@ larger than @k@. Any key equal to @k@ is found in neither @map1@ nor @map2@.
 --
@@ -2676,26 +2787,26 @@ mapEitherWithKey f0 t0 = toPair $ go f0 t0
 split :: Key -> IntMap a -> (IntMap a, IntMap a)
 split k t =
   case t of
-    Bin _ m l r
+    Bin p m l r
       | m < 0 ->
         if k >= 0 -- handle negative numbers.
         then
           case go k l of
             (lt :*: gt) ->
-              let !lt' = union r lt
+              let !lt' = bin p m lt r
               in (lt', gt)
         else
           case go k r of
             (lt :*: gt) ->
-              let !gt' = union gt l
+              let !gt' = bin p m l gt
               in (lt, gt')
     _ -> case go k t of
           (lt :*: gt) -> (lt, gt)
   where
     go k' t'@(Bin p m l r)
       | nomatch k' p m = if k' > p then t' :*: Nil else Nil :*: t'
-      | zero k' m = case go k' l of (lt :*: gt) -> lt :*: union gt r
-      | otherwise = case go k' r of (lt :*: gt) -> union l lt :*: gt
+      | zero k' m = case go k' l of (lt :*: gt) -> lt :*: bin p m gt r
+      | otherwise = case go k' r of (lt :*: gt) -> bin p m l lt :*: gt
     go k' t'@(Tip ky _)
       | k' > ky   = (t' :*: Nil)
       | k' < ky   = (Nil :*: t')
@@ -2713,7 +2824,7 @@ mapGT :: (IntMap a -> IntMap a) -> SplitLookup a -> SplitLookup a
 mapGT f (SplitLookup lt fnd gt) = SplitLookup lt fnd (f gt)
 {-# INLINE mapGT #-}
 
--- | /O(min(n,W))/. Performs a 'split' but also returns whether the pivot
+-- | \(O(\min(n,W))\). Performs a 'split' but also returns whether the pivot
 -- key was found in the original map.
 --
 -- > splitLookup 2 (fromList [(5,"a"), (3,"b")]) == (empty, Nothing, fromList [(3,"b"), (5,"a")])
@@ -2726,11 +2837,11 @@ splitLookup :: Key -> IntMap a -> (IntMap a, Maybe a, IntMap a)
 splitLookup k t =
   case
     case t of
-      Bin _ m l r
+      Bin p m l r
         | m < 0 ->
           if k >= 0 -- handle negative numbers.
-          then mapLT (union r) (go k l)
-          else mapGT (`union` l) (go k r)
+          then mapLT (flip (bin p m) r) (go k l)
+          else mapGT (bin p m l) (go k r)
       _ -> go k t
   of SplitLookup lt fnd gt -> (lt, fnd, gt)
   where
@@ -2739,8 +2850,8 @@ splitLookup k t =
           if k' > p
           then SplitLookup t' Nothing Nil
           else SplitLookup Nil Nothing t'
-      | zero k' m = mapGT (`union` r) (go k' l)
-      | otherwise = mapLT (union l) (go k' r)
+      | zero k' m = mapGT (flip (bin p m) r) (go k' l)
+      | otherwise = mapLT (bin p m l) (go k' r)
     go k' t'@(Tip ky y)
       | k' > ky   = SplitLookup t'  Nothing  Nil
       | k' < ky   = SplitLookup Nil Nothing  t'
@@ -2750,7 +2861,7 @@ splitLookup k t =
 {--------------------------------------------------------------------
   Fold
 --------------------------------------------------------------------}
--- | /O(n)/. Fold the values in the map using the given right-associative
+-- | \(O(n)\). Fold the values in the map using the given right-associative
 -- binary operator, such that @'foldr' f z == 'Prelude.foldr' f z . 'elems'@.
 --
 -- For example,
@@ -2772,7 +2883,7 @@ foldr f z = \t ->      -- Use lambda t to be inlinable with two arguments only.
     go z' (Bin _ _ l r) = go (go z' r) l
 {-# INLINE foldr #-}
 
--- | /O(n)/. A strict version of 'foldr'. Each application of the operator is
+-- | \(O(n)\). A strict version of 'foldr'. Each application of the operator is
 -- evaluated before using the result in the next application. This
 -- function is strict in the starting value.
 foldr' :: (a -> b -> b) -> b -> IntMap a -> b
@@ -2788,7 +2899,7 @@ foldr' f z = \t ->      -- Use lambda t to be inlinable with two arguments only.
     go z' (Bin _ _ l r) = go (go z' r) l
 {-# INLINE foldr' #-}
 
--- | /O(n)/. Fold the values in the map using the given left-associative
+-- | \(O(n)\). Fold the values in the map using the given left-associative
 -- binary operator, such that @'foldl' f z == 'Prelude.foldl' f z . 'elems'@.
 --
 -- For example,
@@ -2810,7 +2921,7 @@ foldl f z = \t ->      -- Use lambda t to be inlinable with two arguments only.
     go z' (Bin _ _ l r) = go (go z' l) r
 {-# INLINE foldl #-}
 
--- | /O(n)/. A strict version of 'foldl'. Each application of the operator is
+-- | \(O(n)\). A strict version of 'foldl'. Each application of the operator is
 -- evaluated before using the result in the next application. This
 -- function is strict in the starting value.
 foldl' :: (a -> b -> a) -> a -> IntMap b -> a
@@ -2826,7 +2937,7 @@ foldl' f z = \t ->      -- Use lambda t to be inlinable with two arguments only.
     go z' (Bin _ _ l r) = go (go z' l) r
 {-# INLINE foldl' #-}
 
--- | /O(n)/. Fold the keys and values in the map using the given right-associative
+-- | \(O(n)\). Fold the keys and values in the map using the given right-associative
 -- binary operator, such that
 -- @'foldrWithKey' f z == 'Prelude.foldr' ('uncurry' f) z . 'toAscList'@.
 --
@@ -2849,7 +2960,7 @@ foldrWithKey f z = \t ->      -- Use lambda t to be inlinable with two arguments
     go z' (Bin _ _ l r) = go (go z' r) l
 {-# INLINE foldrWithKey #-}
 
--- | /O(n)/. A strict version of 'foldrWithKey'. Each application of the operator is
+-- | \(O(n)\). A strict version of 'foldrWithKey'. Each application of the operator is
 -- evaluated before using the result in the next application. This
 -- function is strict in the starting value.
 foldrWithKey' :: (Key -> a -> b -> b) -> b -> IntMap a -> b
@@ -2865,7 +2976,7 @@ foldrWithKey' f z = \t ->      -- Use lambda t to be inlinable with two argument
     go z' (Bin _ _ l r) = go (go z' r) l
 {-# INLINE foldrWithKey' #-}
 
--- | /O(n)/. Fold the keys and values in the map using the given left-associative
+-- | \(O(n)\). Fold the keys and values in the map using the given left-associative
 -- binary operator, such that
 -- @'foldlWithKey' f z == 'Prelude.foldl' (\\z' (kx, x) -> f z' kx x) z . 'toAscList'@.
 --
@@ -2888,7 +2999,7 @@ foldlWithKey f z = \t ->      -- Use lambda t to be inlinable with two arguments
     go z' (Bin _ _ l r) = go (go z' l) r
 {-# INLINE foldlWithKey #-}
 
--- | /O(n)/. A strict version of 'foldlWithKey'. Each application of the operator is
+-- | \(O(n)\). A strict version of 'foldlWithKey'. Each application of the operator is
 -- evaluated before using the result in the next application. This
 -- function is strict in the starting value.
 foldlWithKey' :: (a -> Key -> b -> a) -> a -> IntMap b -> a
@@ -2904,7 +3015,7 @@ foldlWithKey' f z = \t ->      -- Use lambda t to be inlinable with two argument
     go z' (Bin _ _ l r) = go (go z' l) r
 {-# INLINE foldlWithKey' #-}
 
--- | /O(n)/. Fold the keys and values in the map using the given monoid, such that
+-- | \(O(n)\). Fold the keys and values in the map using the given monoid, such that
 --
 -- @'foldMapWithKey' f = 'Prelude.fold' . 'mapWithKey' f@
 --
@@ -2924,7 +3035,7 @@ foldMapWithKey f = go
 {--------------------------------------------------------------------
   List variations
 --------------------------------------------------------------------}
--- | /O(n)/.
+-- | \(O(n)\).
 -- Return all elements of the map in the ascending order of their keys.
 -- Subject to list fusion.
 --
@@ -2934,7 +3045,7 @@ foldMapWithKey f = go
 elems :: IntMap a -> [a]
 elems = foldr (:) []
 
--- | /O(n)/. Return all keys of the map in ascending order. Subject to list
+-- | \(O(n)\). Return all keys of the map in ascending order. Subject to list
 -- fusion.
 --
 -- > keys (fromList [(5,"a"), (3,"b")]) == [3,5]
@@ -2943,7 +3054,7 @@ elems = foldr (:) []
 keys  :: IntMap a -> [Key]
 keys = foldrWithKey (\k _ ks -> k : ks) []
 
--- | /O(n)/. An alias for 'toAscList'. Returns all key\/value pairs in the
+-- | \(O(n)\). An alias for 'toAscList'. Returns all key\/value pairs in the
 -- map in ascending key order. Subject to list fusion.
 --
 -- > assocs (fromList [(5,"a"), (3,"b")]) == [(3,"b"), (5,"a")]
@@ -2952,7 +3063,7 @@ keys = foldrWithKey (\k _ ks -> k : ks) []
 assocs :: IntMap a -> [(Key,a)]
 assocs = toAscList
 
--- | /O(n*min(n,W))/. The set of all keys of the map.
+-- | \(O(n \min(n,W))\). The set of all keys of the map.
 --
 -- > keysSet (fromList [(5,"a"), (3,"b")]) == Data.IntSet.fromList [3,5]
 -- > keysSet empty == Data.IntSet.empty
@@ -2967,7 +3078,7 @@ keysSet (Bin p m l r)
         computeBm acc (Tip kx _) = acc .|. IntSet.bitmapOf kx
         computeBm _   Nil = error "Data.IntSet.keysSet: Nil"
 
--- | /O(n)/. Build a map from a set of keys and a function which for each key
+-- | \(O(n)\). Build a map from a set of keys and a function which for each key
 -- computes its value.
 --
 -- > fromSet (\k -> replicate k 'a') (Data.IntSet.fromList [3, 5]) == fromList [(5,"aaaaa"), (3,"aaa")]
@@ -3002,7 +3113,8 @@ fromSet f (IntSet.Tip kx bm) = buildTree f kx bm (IntSet.suffixBitMask + 1)
 {--------------------------------------------------------------------
   Lists
 --------------------------------------------------------------------}
-#if __GLASGOW_HASKELL__ >= 708
+
+#ifdef __GLASGOW_HASKELL__
 -- | @since 0.5.6.2
 instance GHCExts.IsList (IntMap a) where
   type Item (IntMap a) = (Key,a)
@@ -3010,7 +3122,7 @@ instance GHCExts.IsList (IntMap a) where
   toList   = toList
 #endif
 
--- | /O(n)/. Convert the map to a list of key\/value pairs. Subject to list
+-- | \(O(n)\). Convert the map to a list of key\/value pairs. Subject to list
 -- fusion.
 --
 -- > toList (fromList [(5,"a"), (3,"b")]) == [(3,"b"), (5,"a")]
@@ -3019,7 +3131,7 @@ instance GHCExts.IsList (IntMap a) where
 toList :: IntMap a -> [(Key,a)]
 toList = toAscList
 
--- | /O(n)/. Convert the map to a list of key\/value pairs where the
+-- | \(O(n)\). Convert the map to a list of key\/value pairs where the
 -- keys are in ascending order. Subject to list fusion.
 --
 -- > toAscList (fromList [(5,"a"), (3,"b")]) == [(3,"b"), (5,"a")]
@@ -3027,7 +3139,7 @@ toList = toAscList
 toAscList :: IntMap a -> [(Key,a)]
 toAscList = foldrWithKey (\k x xs -> (k,x):xs) []
 
--- | /O(n)/. Convert the map to a list of key\/value pairs where the keys
+-- | \(O(n)\). Convert the map to a list of key\/value pairs where the keys
 -- are in descending order. Subject to list fusion.
 --
 -- > toDescList (fromList [(5,"a"), (3,"b")]) == [(5,"a"), (3,"b")]
@@ -3071,7 +3183,7 @@ foldlFB = foldlWithKey
 #endif
 
 
--- | /O(n*min(n,W))/. Create a map from a list of key\/value pairs.
+-- | \(O(n \min(n,W))\). Create a map from a list of key\/value pairs.
 --
 -- > fromList [] == empty
 -- > fromList [(5,"a"), (3,"b"), (5, "c")] == fromList [(5,"c"), (3,"b")]
@@ -3083,7 +3195,7 @@ fromList xs
   where
     ins t (k,x)  = insert k x t
 
--- | /O(n*min(n,W))/. Create a map from a list of key\/value pairs with a combining function. See also 'fromAscListWith'.
+-- | \(O(n \min(n,W))\). Create a map from a list of key\/value pairs with a combining function. See also 'fromAscListWith'.
 --
 -- > fromListWith (++) [(5,"a"), (5,"b"), (3,"b"), (3,"a"), (5,"c")] == fromList [(3, "ab"), (5, "cba")]
 -- > fromListWith (++) [] == empty
@@ -3092,9 +3204,9 @@ fromListWith :: (a -> a -> a) -> [(Key,a)] -> IntMap a
 fromListWith f xs
   = fromListWithKey (\_ x y -> f x y) xs
 
--- | /O(n*min(n,W))/. Build a map from a list of key\/value pairs with a combining function. See also fromAscListWithKey'.
+-- | \(O(n \min(n,W))\). Build a map from a list of key\/value pairs with a combining function. See also fromAscListWithKey'.
 --
--- > let f key new_value old_value = (show key) ++ ":" ++ new_value ++ "|" ++ old_value
+-- > let f key new_value old_value = show key ++ ":" ++ new_value ++ "|" ++ old_value
 -- > fromListWithKey f [(5,"a"), (5,"b"), (3,"b"), (3,"a"), (5,"c")] == fromList [(3, "3:a|b"), (5, "5:c|5:b|a")]
 -- > fromListWithKey f [] == empty
 
@@ -3104,27 +3216,27 @@ fromListWithKey f xs
   where
     ins t (k,x) = insertWithKey f k x t
 
--- | /O(n)/. Build a map from a list of key\/value pairs where
+-- | \(O(n)\). Build a map from a list of key\/value pairs where
 -- the keys are in ascending order.
 --
 -- > fromAscList [(3,"b"), (5,"a")]          == fromList [(3, "b"), (5, "a")]
 -- > fromAscList [(3,"b"), (5,"a"), (5,"b")] == fromList [(3, "b"), (5, "b")]
 
 fromAscList :: [(Key,a)] -> IntMap a
-fromAscList xs
-  = fromAscListWithKey (\_ x _ -> x) xs
+fromAscList = fromMonoListWithKey Nondistinct (\_ x _ -> x)
+{-# NOINLINE fromAscList #-}
 
--- | /O(n)/. Build a map from a list of key\/value pairs where
+-- | \(O(n)\). Build a map from a list of key\/value pairs where
 -- the keys are in ascending order, with a combining function on equal keys.
 -- /The precondition (input list is ascending) is not checked./
 --
 -- > fromAscListWith (++) [(3,"b"), (5,"a"), (5,"b")] == fromList [(3, "b"), (5, "ba")]
 
 fromAscListWith :: (a -> a -> a) -> [(Key,a)] -> IntMap a
-fromAscListWith f xs
-  = fromAscListWithKey (\_ x y -> f x y) xs
+fromAscListWith f = fromMonoListWithKey Nondistinct (\_ x y -> f x y)
+{-# NOINLINE fromAscListWith #-}
 
--- | /O(n)/. Build a map from a list of key\/value pairs where
+-- | \(O(n)\). Build a map from a list of key\/value pairs where
 -- the keys are in ascending order, with a combining function on equal keys.
 -- /The precondition (input list is ascending) is not checked./
 --
@@ -3132,50 +3244,80 @@ fromAscListWith f xs
 -- > fromAscListWithKey f [(3,"b"), (5,"a"), (5,"b")] == fromList [(3, "b"), (5, "5:b|a")]
 
 fromAscListWithKey :: (Key -> a -> a -> a) -> [(Key,a)] -> IntMap a
-fromAscListWithKey _ []         = Nil
-fromAscListWithKey f (x0 : xs0) = fromDistinctAscList (combineEq x0 xs0)
-  where
-    -- [combineEq f xs] combines equal elements with function [f] in an ordered list [xs]
-    combineEq z [] = [z]
-    combineEq z@(kz,zz) (x@(kx,xx):xs)
-      | kx==kz    = let yy = f kx xx zz in combineEq (kx,yy) xs
-      | otherwise = z:combineEq x xs
+fromAscListWithKey f = fromMonoListWithKey Nondistinct f
+{-# NOINLINE fromAscListWithKey #-}
 
--- | /O(n)/. Build a map from a list of key\/value pairs where
+-- | \(O(n)\). Build a map from a list of key\/value pairs where
 -- the keys are in ascending order and all distinct.
 -- /The precondition (input list is strictly ascending) is not checked./
 --
 -- > fromDistinctAscList [(3,"b"), (5,"a")] == fromList [(3, "b"), (5, "a")]
 
-#if __GLASGOW_HASKELL__
-fromDistinctAscList :: forall a. [(Key,a)] -> IntMap a
-#else
-fromDistinctAscList ::            [(Key,a)] -> IntMap a
-#endif
-fromDistinctAscList []         = Nil
-fromDistinctAscList (z0 : zs0) = work z0 zs0 Nada
+fromDistinctAscList :: [(Key,a)] -> IntMap a
+fromDistinctAscList = fromMonoListWithKey Distinct (\_ x _ -> x)
+{-# NOINLINE fromDistinctAscList #-}
+
+-- | \(O(n)\). Build a map from a list of key\/value pairs with monotonic keys
+-- and a combining function.
+--
+-- The precise conditions under which this function works are subtle:
+-- For any branch mask, keys with the same prefix w.r.t. the branch
+-- mask must occur consecutively in the list.
+
+fromMonoListWithKey :: Distinct -> (Key -> a -> a -> a) -> [(Key,a)] -> IntMap a
+fromMonoListWithKey distinct f = go
   where
-    work (kx,vx) []            stk = finish kx (Tip kx vx) stk
-    work (kx,vx) (z@(kz,_):zs) stk = reduce z zs (branchMask kx kz) kx (Tip kx vx) stk
+    go []              = Nil
+    go ((kx,vx) : zs1) = addAll' kx vx zs1
 
-#if __GLASGOW_HASKELL__
-    reduce :: (Key,a) -> [(Key,a)] -> Mask -> Prefix -> IntMap a -> Stack a -> IntMap a
-#endif
-    reduce z zs _ px tx Nada = work z zs (Push px tx Nada)
-    reduce z zs m px tx stk@(Push py ty stk') =
-        let mxy = branchMask px py
-            pxy = mask px mxy
-        in  if shorter m mxy
-            then reduce z zs m pxy (Bin pxy mxy ty tx) stk'
-            else work z zs (Push px tx stk)
+    -- `addAll'` collects all keys equal to `kx` into a single value,
+    -- and then proceeds with `addAll`.
+    addAll' !kx vx []
+        = Tip kx vx
+    addAll' !kx vx ((ky,vy) : zs)
+        | Nondistinct <- distinct, kx == ky
+        = let v = f kx vy vx in addAll' ky v zs
+        -- inlined: | otherwise = addAll kx (Tip kx vx) (ky : zs)
+        | m <- branchMask kx ky
+        , Inserted ty zs' <- addMany' m ky vy zs
+        = addAll kx (linkWithMask m ky ty {-kx-} (Tip kx vx)) zs'
 
-    finish _  t  Nada = t
-    finish px tx (Push py ty stk) = finish p (link py ty px tx) stk
-        where m = branchMask px py
-              p = mask px m
+    -- for `addAll` and `addMany`, kx is /a/ key inside the tree `tx`
+    -- `addAll` consumes the rest of the list, adding to the tree `tx`
+    addAll !_kx !tx []
+        = tx
+    addAll !kx !tx ((ky,vy) : zs)
+        | m <- branchMask kx ky
+        , Inserted ty zs' <- addMany' m ky vy zs
+        = addAll kx (linkWithMask m ky ty {-kx-} tx) zs'
 
-data Stack a = Push {-# UNPACK #-} !Prefix !(IntMap a) !(Stack a) | Nada
+    -- `addMany'` is similar to `addAll'`, but proceeds with `addMany'`.
+    addMany' !_m !kx vx []
+        = Inserted (Tip kx vx) []
+    addMany' !m !kx vx zs0@((ky,vy) : zs)
+        | Nondistinct <- distinct, kx == ky
+        = let v = f kx vy vx in addMany' m ky v zs
+        -- inlined: | otherwise = addMany m kx (Tip kx vx) (ky : zs)
+        | mask kx m /= mask ky m
+        = Inserted (Tip kx vx) zs0
+        | mxy <- branchMask kx ky
+        , Inserted ty zs' <- addMany' mxy ky vy zs
+        = addMany m kx (linkWithMask mxy ky ty {-kx-} (Tip kx vx)) zs'
 
+    -- `addAll` adds to `tx` all keys whose prefix w.r.t. `m` agrees with `kx`.
+    addMany !_m !_kx tx []
+        = Inserted tx []
+    addMany !m !kx tx zs0@((ky,vy) : zs)
+        | mask kx m /= mask ky m
+        = Inserted tx zs0
+        | mxy <- branchMask kx ky
+        , Inserted ty zs' <- addMany' mxy ky vy zs
+        = addMany m kx (linkWithMask mxy ky ty {-kx-} tx) zs'
+{-# INLINE fromMonoListWithKey #-}
+
+data Inserted a = Inserted !(IntMap a) ![(Key,a)]
+
+data Distinct = Distinct | Nondistinct
 
 {--------------------------------------------------------------------
   Eq
@@ -3200,7 +3342,6 @@ nequal (Tip kx x) (Tip ky y)
 nequal Nil Nil = False
 nequal _   _   = True
 
-#if MIN_VERSION_base(4,9,0)
 -- | @since 0.5.9
 instance Eq1 IntMap where
   liftEq eq (Bin p1 m1 l1 r1) (Bin p2 m2 l2 r2)
@@ -3209,7 +3350,6 @@ instance Eq1 IntMap where
     = (kx == ky) && (eq x y)
   liftEq _eq Nil Nil = True
   liftEq _eq _   _   = False
-#endif
 
 {--------------------------------------------------------------------
   Ord
@@ -3218,12 +3358,10 @@ instance Eq1 IntMap where
 instance Ord a => Ord (IntMap a) where
     compare m1 m2 = compare (toList m1) (toList m2)
 
-#if MIN_VERSION_base(4,9,0)
 -- | @since 0.5.9
 instance Ord1 IntMap where
   liftCompare cmp m n =
     liftCompare (liftCompare cmp) (toList m) (toList n)
-#endif
 
 {--------------------------------------------------------------------
   Functor
@@ -3246,7 +3384,6 @@ instance Show a => Show (IntMap a) where
   showsPrec d m   = showParen (d > 10) $
     showString "fromList " . shows (toList m)
 
-#if MIN_VERSION_base(4,9,0)
 -- | @since 0.5.9
 instance Show1 IntMap where
     liftShowsPrec sp sl d m =
@@ -3254,7 +3391,6 @@ instance Show1 IntMap where
       where
         sp' = liftShowsPrec sp sl
         sl' = liftShowList sp sl
-#endif
 
 {--------------------------------------------------------------------
   Read
@@ -3274,7 +3410,6 @@ instance (Read e) => Read (IntMap e) where
     return (fromList xs,t)
 #endif
 
-#if MIN_VERSION_base(4,9,0)
 -- | @since 0.5.9
 instance Read1 IntMap where
     liftReadsPrec rp rl = readsData $
@@ -3282,13 +3417,6 @@ instance Read1 IntMap where
       where
         rp' = liftReadsPrec rp rl
         rl' = liftReadList rp rl
-#endif
-
-{--------------------------------------------------------------------
-  Typeable
---------------------------------------------------------------------}
-
-INSTANCE_TYPEABLE1(IntMap)
 
 {--------------------------------------------------------------------
   Helpers
@@ -3297,13 +3425,17 @@ INSTANCE_TYPEABLE1(IntMap)
   Link
 --------------------------------------------------------------------}
 link :: Prefix -> IntMap a -> Prefix -> IntMap a -> IntMap a
-link p1 t1 p2 t2
+link p1 t1 p2 t2 = linkWithMask (branchMask p1 p2) p1 t1 {-p2-} t2
+{-# INLINE link #-}
+
+-- `linkWithMask` is useful when the `branchMask` has already been computed
+linkWithMask :: Mask -> Prefix -> IntMap a -> IntMap a -> IntMap a
+linkWithMask m p1 t1 {-p2-} t2
   | zero p1 m = Bin p m t1 t2
   | otherwise = Bin p m t2 t1
   where
-    m = branchMask p1 p2
     p = mask p1 m
-{-# INLINE link #-}
+{-# INLINE linkWithMask #-}
 
 {--------------------------------------------------------------------
   @bin@ assures that we never have empty trees within a tree.
@@ -3387,7 +3519,7 @@ branchMask p1 p2
   Utilities
 --------------------------------------------------------------------}
 
--- | /O(1)/.  Decompose a map into pieces based on the structure
+-- | \(O(1)\).  Decompose a map into pieces based on the structure
 -- of the underlying tree. This function is useful for consuming a
 -- map in parallel.
 --
@@ -3420,14 +3552,14 @@ splitRoot orig =
   Debugging
 --------------------------------------------------------------------}
 
--- | /O(n)/. Show the tree that implements the map. The tree is shown
+-- | \(O(n \min(n,W))\). Show the tree that implements the map. The tree is shown
 -- in a compressed, hanging format.
 showTree :: Show a => IntMap a -> String
 showTree s
   = showTreeWith True False s
 
 
-{- | /O(n)/. The expression (@'showTreeWith' hang wide map@) shows
+{- | \(O(n \min(n,W))\). The expression (@'showTreeWith' hang wide map@) shows
  the tree that implements the map. If @hang@ is
  'True', a /hanging/ tree is shown otherwise a rotated tree is shown. If
  @wide@ is 'True', an extra wide version is shown.
@@ -3476,7 +3608,7 @@ showsBars :: [String] -> ShowS
 showsBars bars
   = case bars of
       [] -> id
-      _  -> showString (concat (reverse (tail bars))) . showString node
+      _ : tl -> showString (concat (reverse tl)) . showString node
 
 node :: String
 node = "+--"

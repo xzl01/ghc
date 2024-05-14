@@ -1,12 +1,12 @@
 cabal-version:  3.0
 name:           base
-version:        4.13.0.0
+version:        4.17.2.0
 -- NOTE: Don't forget to update ./changelog.md
 
 license:        BSD-3-Clause
 license-file:   LICENSE
 maintainer:     libraries@haskell.org
-bug-reports:    http://ghc.haskell.org/trac/ghc/newticket?component=libraries/base
+bug-reports:    https://gitlab.haskell.org/ghc/ghc/issues/new
 synopsis:       Basic libraries
 category:       Prelude
 build-type:     Configure
@@ -27,8 +27,6 @@ extra-source-files:
     aclocal.m4
     base.buildinfo.in
     changelog.md
-    config.guess
-    config.sub
     configure
     configure.ac
     include/CTypes.h
@@ -37,22 +35,13 @@ extra-source-files:
     include/ieee-flpt.h
     include/md5.h
     include/fs.h
+    include/winio_structs.h
     install-sh
 
 source-repository head
     type:     git
     location: https://gitlab.haskell.org/ghc/ghc.git
     subdir:   libraries/base
-
-Flag integer-simple
-    Description: Use integer-simple
-    Manual: True
-    Default: False
-
-Flag integer-gmp
-    Description: Use integer-gmp
-    Manual: True
-    Default: False
 
 Library
     default-language: Haskell2010
@@ -95,17 +84,10 @@ Library
         UnliftedFFITypes
         Unsafe
 
-    build-depends: rts == 1.0, ghc-prim ^>= 0.5.1.0
-
-    -- sanity-check to ensure exactly one flag is set
-    if !((flag(integer-gmp) && !flag(integer-simple)) || (!flag(integer-gmp) && flag(integer-simple)))
-        build-depends: invalid-cabal-flag-settings<0
-
-    if flag(integer-simple)
-        build-depends: integer-simple ^>= 0.1.1
-
-    if flag(integer-gmp)
-        build-depends: integer-gmp ^>= 1.0.1
+    build-depends:
+        rts == 1.0.*,
+        ghc-prim >= 0.5.1.0 && < 0.10,
+        ghc-bignum >= 1.0 && < 2.0
 
     exposed-modules:
         Control.Applicative
@@ -131,6 +113,7 @@ Library
         Control.Monad.ST.Strict
         Control.Monad.ST.Unsafe
         Control.Monad.Zip
+        Data.Array.Byte
         Data.Bifoldable
         Data.Bifunctor
         Data.Bitraversable
@@ -175,6 +158,7 @@ Library
         Data.Type.Bool
         Data.Type.Coercion
         Data.Type.Equality
+        Data.Type.Ord
         Data.Typeable
         Data.Unique
         Data.Version
@@ -203,7 +187,9 @@ Library
         Foreign.StablePtr
         Foreign.Storable
         GHC.Arr
+        GHC.ArrayArray
         GHC.Base
+        GHC.Bits
         GHC.ByteOrder
         GHC.Char
         GHC.Clock
@@ -217,6 +203,7 @@ Library
         GHC.Enum
         GHC.Environment
         GHC.Err
+        GHC.Event.TimeOut
         GHC.Exception
         GHC.Exception.Type
         GHC.ExecutionStack
@@ -255,9 +242,15 @@ Library
         GHC.IO.Handle.Types
         GHC.IO.IOMode
         GHC.IO.Unsafe
+        GHC.IO.StdHandles
+        GHC.IO.SubSystem
         GHC.IOArray
         GHC.IORef
         GHC.Int
+        GHC.Integer
+        GHC.Integer.Logarithms
+        GHC.IsList
+        GHC.Ix
         GHC.List
         GHC.Maybe
         GHC.MVar
@@ -274,6 +267,7 @@ Library
         GHC.ResponseFile
         GHC.RTS.Flags
         GHC.ST
+        GHC.Stack.CloneStack
         GHC.StaticPtr
         GHC.STRef
         GHC.Show
@@ -285,8 +279,11 @@ Library
         GHC.Stats
         GHC.Storable
         GHC.TopHandler
+        GHC.TypeError
         GHC.TypeLits
+        GHC.TypeLits.Internal
         GHC.TypeNats
+        GHC.TypeNats.Internal
         GHC.Unicode
         GHC.Weak
         GHC.Word
@@ -318,6 +315,13 @@ Library
         Type.Reflection
         Type.Reflection.Unsafe
         Unsafe.Coerce
+        -- TODO: remove
+        GHC.IOPort
+
+    reexported-modules:
+          GHC.Num.Integer
+        , GHC.Num.Natural
+        , GHC.Num.BigNat
 
     other-modules:
         Control.Monad.ST.Imp
@@ -327,7 +331,21 @@ Library
         Data.Semigroup.Internal
         Data.Typeable.Internal
         Foreign.ForeignPtr.Imp
+        GHC.IO.Handle.Lock.Common
+        GHC.IO.Handle.Lock.Flock
+        GHC.IO.Handle.Lock.LinuxOFD
+        GHC.IO.Handle.Lock.NoOp
+        GHC.IO.Handle.Lock.Windows
         GHC.StaticPtr.Internal
+        GHC.Event.Arr
+        GHC.Event.Array
+        GHC.Event.Internal
+        GHC.Event.Internal.Types
+        GHC.Event.IntTable
+        GHC.Event.IntVar
+        GHC.Event.PSQ
+        GHC.Event.Unique
+        -- GHC.IOPort -- TODO: hide again after debug
         System.Environment.ExecutablePath
         System.CPUTime.Utils
 
@@ -336,8 +354,6 @@ Library
         cbits/PrelIOUtils.c
         cbits/SetEnv.c
         cbits/WCsubst.c
-        cbits/Win32Utils.c
-        cbits/consUtils.c
         cbits/iconv.c
         cbits/inputReady.c
         cbits/md5.c
@@ -347,6 +363,7 @@ Library
 
     cmm-sources:
         cbits/CastFloatWord.cmm
+        cbits/StackCloningDecoding.cmm
 
     include-dirs: include
     includes:
@@ -360,42 +377,75 @@ Library
     if os(windows)
         -- Windows requires some extra libraries for linking because the RTS
         -- is no longer re-exporting them.
-        -- msvcrt: standard C library. The RTS will automatically include this,
-        --         but is added for completeness.
-        -- mingwex: provides C99 compatibility. libm is a stub on MingW.
+        -- mingwex: provides GNU POSIX extensions that aren't provided by ucrt.
         -- mingw32: Unfortunately required because of a resource leak between
         --          mingwex and mingw32. the __math_err symbol is defined in
         --          mingw32 which is required by mingwex.
-        extra-libraries: wsock32, user32, shell32, msvcrt, mingw32, mingwex
+        -- shlwapi: provides PathFileExistsW
+        -- ws2_32: provides access to socket types and functions
+        -- ole32: provides UUID functionality.
+        -- rpcrt4: provides RPC UUID creation.
+        -- ntdll: provides access to functions to inspect window handles
+        -- kernel32: provides GetConsoleCP
+        -- advapi32: provides advanced kernel functions
+        extra-libraries:
+            wsock32, user32, shell32, mingw32, kernel32, advapi32,
+            mingwex, ws2_32, shlwapi, ole32, rpcrt4, ntdll
+        -- Minimum supported Windows version.
+        -- These numbers can be found at:
+        --  https://msdn.microsoft.com/en-us/library/windows/desktop/aa383745(v=vs.85).aspx
+        -- If we're compiling on windows, enforce that we only support Windows 7+
+        -- Adding this here means it doesn't have to be done in individual .c files
+        -- and also centralizes the versioning.
+        cpp-options: -D_WIN32_WINNT=0x06010000
+        cc-options: -D_WIN32_WINNT=0x06010000
         exposed-modules:
             GHC.IO.Encoding.CodePage.API
             GHC.IO.Encoding.CodePage.Table
             GHC.Conc.Windows
+            GHC.Conc.WinIO
+            GHC.Conc.POSIX
+            GHC.Conc.POSIX.Const
             GHC.Windows
+            GHC.Event.Windows
+            GHC.Event.Windows.Clock
+            GHC.Event.Windows.ConsoleEvent
+            GHC.Event.Windows.FFI
+            GHC.Event.Windows.ManagedThreadPool
+            GHC.Event.Windows.Thread
+            GHC.IO.Handle.Windows
+            GHC.IO.Windows.Handle
+            GHC.IO.Windows.Encoding
+            GHC.IO.Windows.Paths
         other-modules:
             System.CPUTime.Windows
+        c-sources:
+            cbits/Win32Utils.c
+            cbits/consUtils.c
+            cbits/IOutils.c
+
     else
         exposed-modules:
             GHC.Event
         other-modules:
-            GHC.Event.Arr
-            GHC.Event.Array
             GHC.Event.Control
             GHC.Event.EPoll
-            GHC.Event.IntTable
-            GHC.Event.Internal
             GHC.Event.KQueue
             GHC.Event.Manager
-            GHC.Event.PSQ
             GHC.Event.Poll
             GHC.Event.Thread
             GHC.Event.TimerManager
-            GHC.Event.Unique
 
             System.CPUTime.Posix.ClockGetTime
             System.CPUTime.Posix.Times
             System.CPUTime.Posix.RUsage
             System.CPUTime.Unsupported
+
+    -- The Ports framework always passes this flag when building software that
+    -- uses iconv to make iconv from Ports compatible with iconv from the base system
+    -- See /usr/ports/Mk/Uses/iconv.mk
+    if os(freebsd)
+        cc-options: -DLIBICONV_PLUG
 
     -- We need to set the unit id to base (without a version number)
     -- as it's magic.

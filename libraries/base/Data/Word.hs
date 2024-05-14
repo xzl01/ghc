@@ -8,7 +8,7 @@
 -- License     :  BSD-style (see the file libraries/base/LICENSE)
 --
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  portable
 --
 -- Unsigned integer types.
@@ -25,6 +25,9 @@ module Data.Word
         -- * byte swapping
         byteSwap16, byteSwap32, byteSwap64,
 
+        -- * bit reversal
+
+        bitReverse8, bitReverse16, bitReverse32, bitReverse64
         -- * Notes
 
         -- $notes

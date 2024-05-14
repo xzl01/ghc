@@ -24,7 +24,8 @@ case "$1" in
     remove|upgrade|deconfigure|failed-upgrade)
         update-alternatives --remove runhaskell $execdir/runghc
         update-alternatives --remove haskell-compiler $execdir/ghc
-	rm -f $vardir/package.conf.d/package.cache
+        rm -f $vardir/package.conf.d/package.cache \
+            $vardir/package.conf.d/package.cache.lock
     ;;
     *)
         echo "prerm called with unknown argument \`$1'" >&2

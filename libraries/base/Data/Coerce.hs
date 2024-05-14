@@ -14,16 +14,19 @@
 -- Safe coercions between data types.
 --
 -- More in-depth information can be found on the
--- <https://ghc.haskell.org/trac/ghc/wiki/Roles Roles wiki page>
+-- <https://gitlab.haskell.org/ghc/ghc/wikis/roles Roles wiki page>
 --
 -- @since 4.7.0.0
 -----------------------------------------------------------------------------
 
 module Data.Coerce
         ( -- * Safe coercions
-          coerce, Coercible,
+          -- @since 4.7.0.0
+          coerce, Coercible
         ) where
 import GHC.Prim (coerce)
 import GHC.Types (Coercible)
 
-import GHC.Base () -- for build ordering; see Notes in GHC.Base for more info
+-- The import of GHC.Base is for build ordering; see Notes in GHC.Base for
+-- more info.
+import GHC.Base ()

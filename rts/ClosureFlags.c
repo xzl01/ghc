@@ -6,7 +6,7 @@
  *
  * ---------------------------------------------------------------------------*/
 
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
 
 StgWord16 closure_flags[] = {
@@ -17,6 +17,8 @@ StgWord16 closure_flags[] = {
  *  right thing to do, since we never get indirections pointing
  *  to thunks.)
  */
+
+/* See InfoTables.h for the meaning of these flags */
 
 /*                            0    1    2    4   5    6   7     8 */
 /*                          HNF  BTM   NS  THU MUT  UPT SRT   IND */

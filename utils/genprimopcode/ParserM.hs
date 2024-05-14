@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 module ParserM (
     -- Parser Monad
     ParserM(..), AlexInput, run_parser,
@@ -20,12 +19,8 @@ module ParserM (
 
 import Control.Applicative
 
-#if __GLASGOW_HASKELL__ >= 806
 import Prelude hiding (fail)
 import Control.Monad.Fail (MonadFail (..))
-#else
-import Prelude
-#endif
 
 import Control.Monad (ap, liftM)
 import Data.Word (Word8)
@@ -38,8 +33,8 @@ instance Functor ParserM where
   fmap = liftM
 
 instance Applicative ParserM where
-  pure  = return
-  (<*>) = ap
+  pure  a = ParserM $ \i s -> Right (i, s, a)
+  (<*>)   = ap
 
 instance Monad ParserM where
     ParserM m >>= k = ParserM $ \i s -> case m i s of
@@ -48,11 +43,8 @@ instance Monad ParserM where
                                                     ParserM y -> y i' s'
                                             Left err ->
                                                 Left err
-    return a = ParserM $ \i s -> Right (i, s, a)
 
-#if __GLASGOW_HASKELL__ >= 806
 instance MonadFail ParserM where
-#endif
     fail err = ParserM $ \_ _ -> Left err
 
 run_parser :: ParserM a -> (String -> Either String a)
@@ -101,8 +93,6 @@ data Token = TEOF
            | TDefaults
            | TTrue
            | TFalse
-           | TDyadic
-           | TMonadic
            | TCompare
            | TGenPrimOp
            | TThatsAllFolks

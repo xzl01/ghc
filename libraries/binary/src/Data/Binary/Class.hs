@@ -9,6 +9,10 @@
 {-# LANGUAGE PolyKinds #-}
 #endif
 
+#if MIN_VERSION_base(4,16,0)
+#define HAS_TYPELITS_CHAR
+#endif
+
 #if MIN_VERSION_base(4,8,0)
 #define HAS_NATURAL
 #define HAS_VOID
@@ -105,6 +109,10 @@ import Numeric.Natural
 #endif
 
 import qualified Data.Fixed as Fixed
+
+#if __GLASGOW_HASKELL__ >= 901
+import GHC.Exts (Levity(Lifted,Unlifted))
+#endif
 
 --
 -- This isn't available in older Hugs or older GHC
@@ -812,10 +820,12 @@ instance Binary a => Binary (Semigroup.Last a) where
   get = fmap Semigroup.Last get
   put = put . Semigroup.getLast
 
+#if __GLASGOW_HASKELL__ < 901
 -- | @since 0.8.4.0
 instance Binary a => Binary (Semigroup.Option a) where
   get = fmap Semigroup.Option get
   put = put . Semigroup.getOption
+#endif
 
 -- | @since 0.8.4.0
 instance Binary m => Binary (Semigroup.WrappedMonoid m) where
@@ -879,8 +889,13 @@ instance Binary RuntimeRep where
     put (VecRep a b)    = putWord8 0 >> put a >> put b
     put (TupleRep reps) = putWord8 1 >> put reps
     put (SumRep reps)   = putWord8 2 >> put reps
+#if __GLASGOW_HASKELL__ >= 901
+    put (BoxedRep Lifted)   = putWord8 3
+    put (BoxedRep Unlifted) = putWord8 4
+#else
     put LiftedRep       = putWord8 3
     put UnliftedRep     = putWord8 4
+#endif
     put IntRep          = putWord8 5
     put WordRep         = putWord8 6
     put Int64Rep        = putWord8 7
@@ -893,6 +908,10 @@ instance Binary RuntimeRep where
     put Word8Rep        = putWord8 13
     put Int16Rep        = putWord8 14
     put Word16Rep       = putWord8 15
+#if __GLASGOW_HASKELL__ >= 809
+    put Int32Rep        = putWord8 16
+    put Word32Rep       = putWord8 17
+#endif
 #endif
 
     get = do
@@ -901,8 +920,13 @@ instance Binary RuntimeRep where
           0  -> VecRep <$> get <*> get
           1  -> TupleRep <$> get
           2  -> SumRep <$> get
+#if __GLASGOW_HASKELL__ >= 901
+          3  -> pure (BoxedRep Lifted)
+          4  -> pure (BoxedRep Unlifted)
+#else
           3  -> pure LiftedRep
           4  -> pure UnliftedRep
+#endif
           5  -> pure IntRep
           6  -> pure WordRep
           7  -> pure Int64Rep
@@ -915,6 +939,10 @@ instance Binary RuntimeRep where
           13 -> pure Word8Rep
           14 -> pure Int16Rep
           15 -> pure Word16Rep
+#if __GLASGOW_HASKELL__ >= 809
+          16 -> pure Int32Rep
+          17 -> pure Word32Rep
+#endif
 #endif
           _  -> fail "GHCi.TH.Binary.putRuntimeRep: invalid tag"
 
@@ -952,17 +980,20 @@ instance Binary KindRep where
 instance Binary TypeLitSort where
     put TypeLitSymbol = putWord8 0
     put TypeLitNat = putWord8 1
+#ifdef HAS_TYPELITS_CHAR
+    put TypeLitChar = putWord8 2
+#endif
     get = do
         tag <- getWord8
         case tag of
           0 -> pure TypeLitSymbol
           1 -> pure TypeLitNat
+#ifdef HAS_TYPELITS_CHAR
+          2 -> pure TypeLitChar
+#endif
           _ -> fail "GHCi.TH.Binary.putTypeLitSort: invalid tag"
 
 putTypeRep :: TypeRep a -> Put
--- Special handling for TYPE, (->), and RuntimeRep due to recursive kind
--- relations.
--- See Note [Mutually recursive representations of primitive types]
 putTypeRep rep  -- Handle Type specially since it's so common
   | Just HRefl <- rep `eqTypeRep` (typeRep :: TypeRep Type)
   = put (0 :: Word8)
@@ -974,11 +1005,17 @@ putTypeRep (App f x) = do
     put (2 :: Word8)
     putTypeRep f
     putTypeRep x
+#if __GLASGOW_HASKELL__ < 903
+-- N.B. This pattern never matches,
+-- even on versions of GHC older than 9.3:
+-- a `Fun` typerep will match with the `App` pattern.
+-- This match is kept solely for pattern-match warnings,
+-- which are incorrect on GHC prior to 9.3.
 putTypeRep (Fun arg res) = do
     put (3 :: Word8)
     putTypeRep arg
     putTypeRep res
-putTypeRep _ = error "GHCi.TH.Binary.putTypeRep: Impossible"
+#endif
 
 getSomeTypeRep :: Get SomeTypeRep
 getSomeTypeRep = do
@@ -1006,14 +1043,6 @@ getSomeTypeRep = do
                        [ "Applied type: " ++ show f
                        , "To argument:  " ++ show x
                        ]
-        3 -> do SomeTypeRep arg <- getSomeTypeRep
-                SomeTypeRep res <- getSomeTypeRep
-                case typeRepKind arg `eqTypeRep` (typeRep :: TypeRep Type) of
-                  Just HRefl ->
-                      case typeRepKind res `eqTypeRep` (typeRep :: TypeRep Type) of
-                        Just HRefl -> return $ SomeTypeRep $ Fun arg res
-                        Nothing -> failure "Kind mismatch" []
-                  Nothing -> failure "Kind mismatch" []
         _ -> failure "Invalid SomeTypeRep" []
   where
     failure description info =
@@ -1037,4 +1066,3 @@ instance Binary SomeTypeRep where
     put (SomeTypeRep rep) = putTypeRep rep
     get = getSomeTypeRep
 #endif
-

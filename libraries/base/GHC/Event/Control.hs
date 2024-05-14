@@ -28,7 +28,6 @@ module GHC.Event.Control
 
 #include "EventConfig.h"
 
-import Foreign.ForeignPtr (ForeignPtr)
 import GHC.Base
 import GHC.IORef
 import GHC.Conc.Signal (Signal)
@@ -37,7 +36,7 @@ import GHC.Show (Show)
 import GHC.Word (Word8)
 import Foreign.C.Error (throwErrnoIfMinus1_, throwErrno, getErrno)
 import Foreign.C.Types (CInt(..), CSize(..))
-import Foreign.ForeignPtr (mallocForeignPtrBytes, withForeignPtr)
+import Foreign.ForeignPtr (ForeignPtr, mallocForeignPtrBytes, withForeignPtr)
 import Foreign.Marshal (alloca, allocaBytes)
 import Foreign.Marshal.Array (allocaArray)
 import Foreign.Ptr (castPtr)
@@ -124,6 +123,10 @@ newControl shouldRegister = allocaArray 2 $ \fds -> do
 -- the RTS, then *BEFORE* the wakeup file is closed, we must call
 -- c_setIOManagerWakeupFd (-1), so that the RTS does not try to use the wakeup
 -- file after it has been closed.
+--
+-- Note, however, that even if we do the above, this function is still racy
+-- since we do not synchronize between here and ioManagerWakeup.
+-- ioManagerWakeup ignores failures that arise from this case.
 closeControl :: Control -> IO ()
 closeControl w = do
   _ <- atomicSwapIORef (controlIsDead w) True

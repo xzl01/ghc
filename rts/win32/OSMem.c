@@ -37,28 +37,11 @@ static alloc_rec* allocs = NULL;
 /* free_blocks are kept in ascending order, and adjacent blocks are merged */
 static block_rec* free_blocks = NULL;
 
-/* Mingw-w64 does not currently have this in their header. So we have to import it.*/
-typedef LPVOID(WINAPI *VirtualAllocExNumaProc)(HANDLE, LPVOID, SIZE_T, DWORD, DWORD, DWORD);
-
-/* Cache NUMA API call. */
-VirtualAllocExNumaProc VirtualAllocExNuma;
-
 void
 osMemInit(void)
 {
     allocs = NULL;
     free_blocks = NULL;
-
-    /* Resolve and cache VirtualAllocExNuma. */
-    if (osNumaAvailable() && RtsFlags.GcFlags.numa)
-    {
-        VirtualAllocExNuma = (VirtualAllocExNumaProc)GetProcAddress(GetModuleHandleW(L"kernel32"), "VirtualAllocExNuma");
-        if (!VirtualAllocExNuma)
-        {
-            sysErrorBelch(
-                "osBindMBlocksToNode: VirtualAllocExNuma does not exist. How did you get this far?");
-        }
-    }
 }
 
 static
@@ -67,8 +50,11 @@ allocNew(uint32_t n) {
     alloc_rec* rec;
     rec = (alloc_rec*)stgMallocBytes(sizeof(alloc_rec),"getMBlocks: allocNew");
     rec->size = ((W_)n+1)*MBLOCK_SIZE;
+    // N.B. We use MEM_TOP_DOWN here to ensure that we leave the bottom of the
+    // address space available for the linker and libraries, which in general
+    // want to live in low memory. See #18991.
     rec->base =
-        VirtualAlloc(NULL, rec->size, MEM_RESERVE, PAGE_READWRITE);
+        VirtualAlloc(NULL, rec->size, MEM_RESERVE | MEM_TOP_DOWN, PAGE_READWRITE);
     if(rec->base==0) {
         stgFree((void*)rec);
         rec=0;
@@ -459,7 +445,7 @@ void *osReserveHeapMemory (void *startAddress, W_ *len)
     void *start;
 
     heap_base = VirtualAlloc(startAddress, *len + MBLOCK_SIZE,
-                              MEM_RESERVE, PAGE_READWRITE);
+                              MEM_RESERVE | MEM_TOP_DOWN, PAGE_READWRITE);
     if (heap_base == NULL) {
         if (GetLastError() == ERROR_NOT_ENOUGH_MEMORY) {
             errorBelch("out of memory");
@@ -488,8 +474,8 @@ void osCommitMemory (void *at, W_ size)
     void *temp;
     temp = VirtualAlloc(at, size, MEM_COMMIT, PAGE_READWRITE);
     if (temp == NULL) {
-        sysErrorBelch("osCommitMemory: VirtualAlloc MEM_COMMIT failed");
-        stg_exit(EXIT_FAILURE);
+        sysErrorBelch("osCommitMemory: VirtualAlloc MEM_COMMIT failed to commit %" FMT_Word " bytes of memory  (error code: %lu)", size, GetLastError());
+        stg_exit(EXIT_HEAPOVERFLOW);
     }
 }
 
@@ -561,6 +547,7 @@ void osBindMBlocksToNode(
         void* temp;
         if (RtsFlags.GcFlags.numa) {
             /* Note [base memory]
+               ~~~~~~~~~~~~~~~~~~
                I would like to use addr here to specify the base
                memory of allocation. The problem is that the address
                we are requesting is too high. I can't figure out if it's

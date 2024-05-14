@@ -10,7 +10,7 @@
 
 #define _GNU_SOURCE
 
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
 #include "RtsUtils.h"
 
@@ -36,7 +36,6 @@
 /*
   Note [Compact Normal Forms]
   ~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
   A compact normal form (CNF) is a region of memory containing one or more
   Haskell data structures.  The goals are:
 
@@ -227,9 +226,8 @@ compactAllocateBlockInternal(Capability            *cap,
         break;
 
     default:
-#if defined(DEBUG)
         ASSERT(!"code should not be reached");
-#else
+#if !defined(DEBUG)
         RTS_UNREACHABLE;
 #endif
     }
@@ -245,6 +243,7 @@ compactAllocateBlockInternal(Capability            *cap,
     initBdescr(head, g, g);
     head->flags = BF_COMPACT;
     for (block = head + 1, n_blocks --; n_blocks > 0; block++, n_blocks--) {
+        initBdescr(block, g, g);
         block->link = head;
         block->blocks = 0;
         block->flags = BF_COMPACT;
@@ -276,11 +275,15 @@ compactFree(StgCompactNFData *str)
     for ( ; block; block = next) {
         next = block->next;
         bd = Bdescr((StgPtr)block);
-        ASSERT((bd->flags & BF_EVACUATED) == 0);
+        ASSERT(RtsFlags.GcFlags.useNonmoving || ((bd->flags & BF_EVACUATED) == 0));
+            // When using the non-moving collector we leave compact object
+            // evacuated to the oldset gen as BF_EVACUATED to avoid evacuating
+            // objects in the non-moving heap.
         freeGroup(bd);
     }
 }
 
+#if defined(DEBUG)
 void
 compactMarkKnown(StgCompactNFData *str)
 {
@@ -319,7 +322,6 @@ countCompactBlocks(bdescr *outer)
     return count;
 }
 
-#if defined(DEBUG)
 // Like countCompactBlocks, but adjusts the size so each mblock is assumed to
 // only contain BLOCKS_PER_MBLOCK blocks.  Used in memInventory().
 StgWord
@@ -378,6 +380,7 @@ compactNew (Capability *cap, StgWord size)
     self->nursery = block;
     self->last = block;
     self->hash = NULL;
+    self->link = NULL;
 
     block->owner = self;
 
@@ -484,17 +487,6 @@ allocateForCompact (Capability *cap,
 
     bd = Bdescr((P_)str->nursery);
     bd->free = str->hp;
-
-    // We know it doesn't fit in the nursery
-    // if it is a large object, allocate a new block
-    if (sizeW > LARGE_OBJECT_THRESHOLD/sizeof(W_)) {
-        next_size = BLOCK_ROUND_UP(sizeW*sizeof(W_) + sizeof(StgCompactNFDataBlock));
-        block = compactAppendBlock(cap, str, next_size);
-        bd = Bdescr((P_)block);
-        to = bd->free;
-        bd->free += sizeW;
-        return to;
-    }
 
     // move the nursery past full blocks
     if (block_is_full (str->nursery)) {

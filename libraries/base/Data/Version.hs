@@ -9,7 +9,7 @@
 -- License     :  BSD-style (see the file libraries/base/LICENSE)
 --
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  non-portable (local universal quantification in ReadP)
 --
 -- A general library for representation and manipulation of versions.
@@ -42,7 +42,7 @@ import Data.Bool        ( (&&) )
 import Data.Char        ( isDigit, isAlphaNum )
 import Data.Eq
 import Data.Int         ( Int )
-import Data.List
+import Data.List        ( map, sort, concat, concatMap, intersperse, (++) )
 import Data.Ord
 import Data.String      ( String )
 import GHC.Generics

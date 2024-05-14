@@ -4,9 +4,9 @@ module System.Console.Haskeline.Backend.Win32.Echo (hWithoutInputEcho) where
 
 import Control.Exception (throw)
 import Control.Monad (void)
-import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Catch (MonadMask, bracket)
+import Control.Monad.IO.Class (MonadIO(..))
 
-import System.Console.Haskeline.MonadException (MonadException, bracket)
 import System.Exit (ExitCode(..))
 import System.IO (Handle, hGetContents, hGetEcho, hSetEcho)
 import System.Process (StdStream(..), createProcess, shell,
@@ -21,6 +21,10 @@ import Foreign.C.Types
 import Foreign.StablePtr (StablePtr, freeStablePtr, newStablePtr)
 
 import GHC.IO.FD (FD(..))
+#if defined(__IO_MANAGER_WINIO__)
+import GHC.IO.Handle.Windows (handleToHANDLE)
+import GHC.IO.SubSystem ((<!>))
+#endif
 import GHC.IO.Handle.Types (Handle(..), Handle__(..))
 
 import System.Win32.Types (HANDLE)
@@ -67,7 +71,7 @@ hSetInputEchoSTTY input = void . hSttyRaw input
 --            ('liftIO' . 'hSetInputEchoState' input)
 --            (const action)
 -- @
-hBracketInputEcho :: MonadException m => Handle -> m a -> m a
+hBracketInputEcho :: (MonadIO m, MonadMask m) => Handle -> m a -> m a
 hBracketInputEcho input action =
   bracket (liftIO $ hGetInputEchoState input)
           (liftIO . hSetInputEchoState input)
@@ -76,7 +80,7 @@ hBracketInputEcho input action =
 -- | Perform a computation with the handle's input echoing disabled. Before
 -- running the computation, the handle's input 'EchoState' is saved, and the
 -- saved 'EchoState' is restored after the computation finishes.
-hWithoutInputEcho :: MonadException m => Handle -> m a -> m a
+hWithoutInputEcho :: (MonadIO m, MonadMask m) => Handle -> m a -> m a
 hWithoutInputEcho input action = do
   echo_off <- liftIO $ hEchoOff input
   hBracketInputEcho input
@@ -145,7 +149,26 @@ foreign import ccall unsafe "_get_osfhandle"
 
 -- Originally authored by Max Bolingbroke in the ansi-terminal library
 withHandleToHANDLE :: Handle -> (HANDLE -> IO a) -> IO a
-withHandleToHANDLE haskell_handle action =
+#if defined(__IO_MANAGER_WINIO__)
+withHandleToHANDLE = withHandleToHANDLEPosix <!> withHandleToHANDLENative
+#else
+withHandleToHANDLE = withHandleToHANDLEPosix
+#endif
+
+#if defined(__IO_MANAGER_WINIO__)
+withHandleToHANDLENative :: Handle -> (HANDLE -> IO a) -> IO a
+withHandleToHANDLENative haskell_handle action =
+    -- Create a stable pointer to the Handle. This prevents the garbage collector
+    -- getting to it while we are doing horrible manipulations with it, and hence
+    -- stops it being finalized (and closed).
+    withStablePtr haskell_handle $ const $ do
+        windows_handle <- handleToHANDLE haskell_handle
+        -- Do what the user originally wanted
+        action windows_handle
+#endif
+
+withHandleToHANDLEPosix :: Handle -> (HANDLE -> IO a) -> IO a
+withHandleToHANDLEPosix haskell_handle action =
     -- Create a stable pointer to the Handle. This prevents the garbage collector
     -- getting to it while we are doing horrible manipulations with it, and hence
     -- stops it being finalized (and closed).
@@ -162,7 +185,6 @@ withHandleToHANDLE haskell_handle action =
 
         -- Finally, turn that (C-land) FD into a HANDLE using msvcrt
         windows_handle <- c_get_osfhandle fd
-
         -- Do what the user originally wanted
         action windows_handle
 

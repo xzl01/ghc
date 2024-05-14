@@ -10,10 +10,10 @@ module System.Console.Haskeline.Backend.WCWidth(
 
 import System.Console.Haskeline.LineState
 
-import Data.List
+import Data.List (foldl')
 import Foreign.C.Types
 
-foreign import ccall unsafe haskeline_mk_wcwidth :: CWchar -> CInt
+foreign import ccall unsafe haskeline_mk_wcwidth :: CInt -> CInt
 
 wcwidth :: Char -> Int
 wcwidth c = case haskeline_mk_wcwidth $ toEnum $ fromEnum c of

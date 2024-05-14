@@ -1,7 +1,7 @@
+{-# LANGUAGE MagicHash #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE Trustworthy #-}
-{-# LANGUAGE NoImplicitPrelude, MagicHash, UnboxedTuples #-}
-{-# LANGUAGE BangPatterns #-}
-
+{-# LANGUAGE UnboxedTuples #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Data.IORef
@@ -9,7 +9,7 @@
 -- License     :  BSD-style (see the file libraries/base/LICENSE)
 -- 
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  portable
 --
 -- Mutable references in the IO monad.
@@ -17,7 +17,7 @@
 -----------------------------------------------------------------------------
 
 module Data.IORef
-  ( 
+  (
         -- * IORefs
         IORef,                -- abstract, instance of: Eq, Typeable
         newIORef,
@@ -49,7 +49,7 @@ mkWeakIORef r@(IORef (STRef r#)) (IO finalizer) = IO $ \s ->
 -- |Mutate the contents of an 'IORef'.
 --
 -- Be warned that 'modifyIORef' does not apply the function strictly.  This
--- means if the program calls 'modifyIORef' many times, but seldomly uses the
+-- means if the program calls 'modifyIORef' many times, but seldom uses the
 -- value, thunks will pile up in memory resulting in a space leak.  This is a
 -- common mistake made when using an IORef as a counter.  For example, the
 -- following will likely produce a stack overflow:

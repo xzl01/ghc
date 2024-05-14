@@ -1,6 +1,10 @@
 {-# LANGUAGE MagicHash, NoImplicitPrelude, TypeFamilies, UnboxedTuples,
              MultiParamTypeClasses, RoleAnnotations, CPP, TypeOperators,
-             PolyKinds #-}
+             PolyKinds, NegativeLiterals, DataKinds, ScopedTypeVariables,
+             TypeApplications, StandaloneKindSignatures,
+             FlexibleInstances, UndecidableInstances #-}
+-- NegativeLiterals: see Note [Fixity of (->)]
+{-# OPTIONS_HADDOCK print-explicit-runtime-reps #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  GHC.Types
@@ -24,28 +28,64 @@ module GHC.Types (
         --    Lists:          []( [], (:) )
         --    Type equality:  (~)( Eq# )
 
+        -- * Built-in types
         Bool(..), Char(..), Int(..), Word(..),
         Float(..), Double(..),
         Ordering(..), IO(..),
         isTrue#,
         SPEC(..),
-        Nat, Symbol,
+        Symbol,
         Any,
-        type (~~), Coercible,
-        TYPE, RuntimeRep(..), Type, Constraint,
+
+        -- * Type equality
+        type (~), type (~~), Coercible,
+
+        -- * Representation polymorphism
+        TYPE, Levity(..), RuntimeRep(..),
+        LiftedRep, UnliftedRep,
+        Type, UnliftedType, Constraint,
           -- The historical type * should ideally be written as
           -- `type *`, without the parentheses. But that's a true
           -- pain to parse, and for little gain.
+        ZeroBitRep, ZeroBitType,
         VecCount(..), VecElem(..),
+        Void#,
+
+        -- * Multiplicity types
+        Multiplicity(..), MultMul,
 
         -- * Runtime type representation
         Module(..), TrName(..), TyCon(..), TypeLitSort(..),
-        KindRep(..), KindBndr
+        KindRep(..), KindBndr,
     ) where
 
 import GHC.Prim
 
 infixr 5 :
+
+
+{- *********************************************************************
+*                                                                      *
+                  Functions
+*                                                                      *
+********************************************************************* -}
+
+infixr -1 ->
+{-
+Note [Fixity of (->)]
+~~~~~~~~~~~~~~~~~~~~~
+This declaration is important for :info (->) command (issue #10145)
+1) The parser parses -> as if it had lower fixity than 0,
+   so we conventionally use -1 (issue #15235).
+2) Fixities outside the 0-9 range are exceptionally allowed
+   for (->) (see checkPrecP in RdrHsSyn)
+3) The negative fixity -1 must be parsed as a single token,
+   hence this module requires NegativeLiterals.
+-}
+
+-- | The regular function type
+type (->) = FUN 'Many
+-- See Note [Linear types] in Multiplicity
 
 {- *********************************************************************
 *                                                                      *
@@ -56,17 +96,41 @@ infixr 5 :
 -- | The kind of constraints, like @Show a@
 data Constraint
 
--- | The kind of types with values. For example @Int :: Type@.
-type Type = TYPE 'LiftedRep
+-- | The runtime representation of lifted types.
+type LiftedRep = 'BoxedRep 'Lifted
+
+-- | The runtime representation of unlifted types.
+type UnliftedRep = 'BoxedRep 'Unlifted
+
+-- | The runtime representation of a zero-width tuple,
+--   represented by no bits at all
+type ZeroBitRep = 'TupleRep '[]
+
+-------------------------
+-- | The kind of types with lifted values. For example @Int :: Type@.
+type Type = TYPE LiftedRep
+
+-- | The kind of boxed, unlifted values, for example @Array#@ or a user-defined
+-- unlifted data type, using @-XUnliftedDataTypes@.
+type UnliftedType = TYPE UnliftedRep
+
+-- | The kind of the empty unboxed tuple type (# #)
+type ZeroBitType = TYPE ZeroBitRep
+
+-------------------------
+data Multiplicity = Many | One
+
+type family MultMul (a :: Multiplicity) (b :: Multiplicity) :: Multiplicity where
+  MultMul 'One x = x
+  MultMul x 'One = x
+  MultMul 'Many x = 'Many
+  MultMul x 'Many = 'Many
 
 {- *********************************************************************
 *                                                                      *
-                  Nat and Symbol
+                  Symbol
 *                                                                      *
 ********************************************************************* -}
-
--- | (Kind) This is the kind of type-level natural numbers.
-data Nat
 
 -- | (Kind) This is the kind of type-level symbols.
 -- Declared here because class IP needs it
@@ -84,7 +148,7 @@ data Symbol
 -- to @x@.
 --
 type family Any :: k where { }
--- See Note [Any types] in TysWiredIn. Also, for a bit of history on Any see
+-- See Note [Any types] in GHC.Builtin.Types. Also, for a bit of history on Any see
 -- #10886. Note that this must be a *closed* type family: we need to ensure
 -- that this can't reduce to a `data` type for the results discussed in
 -- Note [Any types].
@@ -185,27 +249,18 @@ or the 'Prelude.>>' and 'Prelude.>>=' operations from the 'Prelude.Monad'
 class.
 -}
 newtype IO a = IO (State# RealWorld -> (# State# RealWorld, a #))
-type role IO representational
-
-{- The 'type role' role annotation for IO is redundant but is included
-because this role is significant in the normalisation of FFI
-types. Specifically, if this role were to become nominal (which would
-be very strange, indeed!), changes elsewhere in GHC would be
-necessary. See [FFI type roles] in TcForeign.  -}
 
 
 {- *********************************************************************
 *                                                                      *
                     (~) and Coercible
 
-   NB: (~) is built-in syntax, and hence not explicitly exported
 *                                                                      *
 ********************************************************************* -}
 
 {-
 Note [Kind-changing of (~) and Coercible]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
 (~) and Coercible are tricky to define. To the user, they must appear as
 constraints, but we cannot define them as such in Haskell. But we also cannot
 just define them only in GHC.Prim (like (->)), because we need a real module
@@ -214,7 +269,7 @@ for them, e.g. to compile the constructor's info table.
 Furthermore the type of MkCoercible cannot be written in Haskell
 (no syntax for ~#R).
 
-So we define them as regular data types in GHC.Types, and do magic in TysWiredIn,
+So we define them as regular data types in GHC.Types, and do magic in GHC.Builtin.Types,
 inside GHC, to change the kind and type.
 -}
 
@@ -226,14 +281,21 @@ inside GHC, to change the kind and type.
 -- about the difference between heterogeneous equality @~~@ and
 -- homogeneous equality @~@, this is printed as @~@ unless
 -- @-fprint-equality-relations@ is set.
+--
+-- In @0.7.0@, the fixity was set to @infix 4@ to match the fixity of 'Data.Type.Equality.:~~:'.
 class a ~~ b
-  -- See also Note [The equality types story] in TysPrim
+
+  -- See also Note [The equality types story] in GHC.Builtin.Types.Prim
 
 -- | Lifted, homogeneous equality. By lifted, we mean that it
 -- can be bogus (deferred type error). By homogeneous, the two
 -- types @a@ and @b@ must have the same kinds.
+
+-- In @0.7.0@, the fixity was set to @infix 4@ to match the fixity of 'Data.Type.Equality.:~:'.
 class a ~ b
-  -- See also Note [The equality types story] in TysPrim
+
+infix 4 ~, ~~
+  -- See also Note [The equality types story] in GHC.Builtin.Types.Prim
 
 -- | @Coercible@ is a two-parameter class that has instances for types @a@ and @b@ if
 --      the compiler can infer that they have the same representation. This class
@@ -281,9 +343,9 @@ class a ~ b
 --      <http://research.microsoft.com/en-us/um/people/simonpj/papers/ext-f/coercible.pdf Safe Coercions>
 --      by Joachim Breitner, Richard A. Eisenberg, Simon Peyton Jones and Stephanie Weirich.
 --
---      @since 4.7.0.0
-class Coercible a b
-  -- See also Note [The equality types story] in TysPrim
+-- @since 0.4.0
+class Coercible (a :: k) (b :: k)
+  -- See also Note [The equality types story] in GHC.Builtin.Types.Prim
 
 {- *********************************************************************
 *                                                                      *
@@ -376,6 +438,8 @@ data SPEC = SPEC | SPEC2
 *                                                                      *
 ********************************************************************* -}
 
+-- | Whether a boxed type is lifted or unlifted.
+data Levity = Lifted | Unlifted
 
 -- | GHC maintains a property that the kind of all inhabited types
 -- (as distinct from type constructors or type-level data) tells us
@@ -391,21 +455,25 @@ data SPEC = SPEC | SPEC2
 data RuntimeRep = VecRep VecCount VecElem   -- ^ a SIMD vector type
                 | TupleRep [RuntimeRep]     -- ^ An unboxed tuple of the given reps
                 | SumRep [RuntimeRep]       -- ^ An unboxed sum of the given reps
-                | LiftedRep       -- ^ lifted; represented by a pointer
-                | UnliftedRep     -- ^ unlifted; represented by a pointer
+                | BoxedRep Levity -- ^ boxed; represented by a pointer
                 | IntRep          -- ^ signed, word-sized value
                 | Int8Rep         -- ^ signed,  8-bit value
                 | Int16Rep        -- ^ signed, 16-bit value
-                | Int64Rep        -- ^ signed, 64-bit value (on 32-bit only)
+                | Int32Rep        -- ^ signed, 32-bit value
+                | Int64Rep        -- ^ signed, 64-bit value
                 | WordRep         -- ^ unsigned, word-sized value
                 | Word8Rep        -- ^ unsigned,  8-bit value
                 | Word16Rep       -- ^ unsigned, 16-bit value
-                | Word64Rep       -- ^ unsigned, 64-bit value (on 32-bit only)
+                | Word32Rep       -- ^ unsigned, 32-bit value
+                | Word64Rep       -- ^ unsigned, 64-bit value
                 | AddrRep         -- ^ A pointer, but /not/ to a Haskell value
                 | FloatRep        -- ^ a 32-bit floating point number
                 | DoubleRep       -- ^ a 64-bit floating point number
 
--- See also Note [Wiring in RuntimeRep] in TysWiredIn
+-- RuntimeRep is intimately tied to TyCon.RuntimeRep (in GHC proper). See
+-- Note [RuntimeRep and PrimRep] in RepType.
+-- See also Note [Wiring in RuntimeRep] in GHC.Builtin.Types
+-- See also Note [TYPE and RuntimeRep] in GHC.Builtin.Type.Prim
 
 -- | Length of a SIMD vector type
 data VecCount = Vec2
@@ -428,6 +496,9 @@ data VecElem = Int8ElemRep
              | FloatElemRep
              | DoubleElemRep
 -- Enum, Bounded instances in GHC.Enum
+
+{-# DEPRECATED Void# "Void# is now an alias for the unboxed tuple (# #)." #-}
+type Void# = (# #)
 
 {- *********************************************************************
 *                                                                      *
@@ -455,26 +526,20 @@ can't conveniently come up with an Addr#.
 #include "MachDeps.h"
 
 data Module = Module
-                TrName   -- Package name
-                TrName   -- Module name
+                TrName   -- ^ Package name
+                TrName   -- ^ Module name
 
 data TrName
-  = TrNameS Addr#  -- Static
-  | TrNameD [Char] -- Dynamic
+  = TrNameS Addr#  -- ^ Static
+  | TrNameD [Char] -- ^ Dynamic
 
 -- | A de Bruijn index for a binder within a 'KindRep'.
 type KindBndr = Int
 
-#if WORD_SIZE_IN_BITS < 64
-#define WORD64_TY Word64#
-#else
-#define WORD64_TY Word#
-#endif
-
 -- | The representation produced by GHC for conjuring up the kind of a
 -- 'Data.Typeable.TypeRep'.
 
--- See Note [Representing TyCon kinds: KindRep] in TcTypeable.
+-- See Note [Representing TyCon kinds: KindRep] in GHC.Tc.Instance.Typeable.
 data KindRep = KindRepTyConApp TyCon [KindRep]
              | KindRepVar !KindBndr
              | KindRepApp KindRep KindRep
@@ -485,10 +550,12 @@ data KindRep = KindRepTyConApp TyCon [KindRep]
 
 data TypeLitSort = TypeLitSymbol
                  | TypeLitNat
+                 | TypeLitChar
 
 -- Show instance for TyCon found in GHC.Show
-data TyCon = TyCon WORD64_TY WORD64_TY   -- Fingerprint
-                   Module                -- Module in which this is defined
-                   TrName                -- Type constructor name
-                   Int#                  -- How many kind variables do we accept?
-                   KindRep               -- A representation of the type's kind
+data TyCon = TyCon Word64#    -- ^ Fingerprint (high)
+                   Word64#    -- ^ Fingerprint (low)
+                   Module     -- ^ Module in which this is defined
+                   TrName     -- ^ Type constructor name
+                   Int#       -- ^ How many kind variables do we accept?
+                   KindRep    -- ^ A representation of the type's kind

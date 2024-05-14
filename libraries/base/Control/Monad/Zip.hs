@@ -9,7 +9,7 @@
 --                (c) University Tuebingen 2011
 -- License     :  BSD-style (see the file libraries/base/LICENSE)
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  portable
 --
 -- Monadic zipping (used for monad comprehensions)
@@ -25,6 +25,7 @@ import Data.Ord ( Down(..) )
 import Data.Proxy
 import qualified Data.List.NonEmpty as NE
 import GHC.Generics
+import GHC.Tuple (Solo (..))
 
 -- | Instances should satisfy the laws:
 --
@@ -52,7 +53,7 @@ class Monad m => MonadZip m where
     munzip mab = (liftM fst mab, liftM snd mab)
     -- munzip is a member of the class because sometimes
     -- you can implement it more efficiently than the
-    -- above default code.  See Trac #4370 comment by giorgidze
+    -- above default code.  See #4370 comment by giorgidze
 
 -- | @since 4.3.1.0
 instance MonadZip [] where
@@ -70,6 +71,11 @@ instance MonadZip NE.NonEmpty where
 instance MonadZip Identity where
     mzipWith                 = liftM2
     munzip (Identity (a, b)) = (Identity a, Identity b)
+
+-- | @since 4.15.0.0
+instance MonadZip Solo where
+    mzipWith = liftM2
+    munzip (Solo (a, b)) = (Solo a, Solo b)
 
 -- | @since 4.8.0.0
 instance MonadZip Dual where

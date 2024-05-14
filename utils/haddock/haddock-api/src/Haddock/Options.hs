@@ -15,6 +15,7 @@
 module Haddock.Options (
   parseHaddockOpts,
   Flag(..),
+  Visibility(..),
   getUsage,
   optTitle,
   outputDir,
@@ -24,6 +25,8 @@ module Haddock.Options (
   optSourceCssFile,
   sourceUrls,
   wikiUrls,
+  baseUrl,
+  optParCount,
   optDumpInterfaceFile,
   optShowInterfaceFile,
   optLaTeXStyle,
@@ -36,18 +39,19 @@ module Haddock.Options (
   readIfaceArgs,
   optPackageName,
   optPackageVersion,
-  modulePackageInfo
+  modulePackageInfo,
+  ignoredSymbols
 ) where
 
 
 import qualified Data.Char as Char
 import           Data.Version
 import           Control.Applicative
-import           FastString
-import           GHC ( DynFlags, Module, moduleUnitId )
+import           GHC.Data.FastString
+import           GHC ( Module, moduleUnit )
+import           GHC.Unit.State
 import           Haddock.Types
 import           Haddock.Utils
-import           Packages
 import           System.Console.GetOpt
 import qualified Text.ParserCombinators.ReadP as RP
 
@@ -70,6 +74,7 @@ data Flag
   | Flag_SourceEntityURL  String
   | Flag_SourceLEntityURL String
   | Flag_WikiBaseURL   String
+  | Flag_BaseURL       String
   | Flag_WikiModuleURL String
   | Flag_WikiEntityURL String
   | Flag_LaTeX
@@ -108,6 +113,8 @@ data Flag
   | Flag_PackageVersion String
   | Flag_Reexport String
   | Flag_SinceQualification String
+  | Flag_IgnoreLinkSymbol String
+  | Flag_ParCount (Maybe Int)
   deriving (Eq, Show)
 
 
@@ -153,6 +160,8 @@ options backwardsCompat =
       "URL for a source code link for each entity.\nUsed if name links are unavailable, eg. for TH splices.",
     Option []  ["comments-base"]   (ReqArg Flag_WikiBaseURL "URL")
       "URL for a comments link on the contents\nand index pages",
+    Option [] ["base-url"] (ReqArg Flag_BaseURL "URL")
+      "Base URL for static assets (eg. css, javascript, json files etc.).\nWhen given statis assets will not be copied.",
     Option []  ["comments-module"]  (ReqArg Flag_WikiModuleURL "URL")
       "URL for a comments link for each module\n(using the %{MODULE} var)",
     Option []  ["comments-entity"]  (ReqArg Flag_WikiEntityURL "URL")
@@ -219,7 +228,11 @@ options backwardsCompat =
     Option [] ["package-version"] (ReqArg Flag_PackageVersion "VERSION")
       "version of the package being documented in usual x.y.z.w format",
     Option []  ["since-qual"] (ReqArg Flag_SinceQualification "QUAL")
-      "package qualification of @since, one of\n'always' (default) or 'only-external'"
+      "package qualification of @since, one of\n'always' (default) or 'only-external'",
+    Option [] ["ignore-link-symbol"] (ReqArg Flag_IgnoreLinkSymbol "SYMBOL")
+      "name of a symbol which does not trigger a warning in case of link issue",
+    Option ['j'] [] (OptArg (\count -> Flag_ParCount (fmap read count)) "n")
+      "load modules in parallel"
   ]
 
 
@@ -293,6 +306,9 @@ wikiUrls flags =
   ,optLast [str | Flag_WikiEntityURL str <- flags])
 
 
+baseUrl :: [Flag] -> Maybe String
+baseUrl flags = optLast [str | Flag_BaseURL str <- flags]
+
 optDumpInterfaceFile :: [Flag] -> Maybe FilePath
 optDumpInterfaceFile flags = optLast [ str | Flag_DumpInterface str <- flags ]
 
@@ -302,10 +318,11 @@ optShowInterfaceFile flags = optLast [ str | Flag_ShowInterface str <- flags ]
 optLaTeXStyle :: [Flag] -> Maybe String
 optLaTeXStyle flags = optLast [ str | Flag_LaTeXStyle str <- flags ]
 
-
 optMathjax :: [Flag] -> Maybe String
 optMathjax flags = optLast [ str | Flag_Mathjax str <- flags ]
 
+optParCount :: [Flag] -> Maybe (Maybe Int)
+optParCount flags = optLast [ n | Flag_ParCount n <- flags ]
 
 qualification :: [Flag] -> Either String QualOption
 qualification flags =
@@ -336,6 +353,8 @@ verbosity flags =
       Left e -> throwE e
       Right v -> v
 
+ignoredSymbols :: [Flag] -> [String]
+ignoredSymbols flags = [ symbol | Flag_IgnoreLinkSymbol symbol <- flags ]
 
 ghcFlags :: [Flag] -> [String]
 ghcFlags flags = [ option | Flag_OptGhc option <- flags ]
@@ -343,18 +362,31 @@ ghcFlags flags = [ option | Flag_OptGhc option <- flags ]
 reexportFlags :: [Flag] -> [String]
 reexportFlags flags = [ option | Flag_Reexport option <- flags ]
 
+data Visibility = Visible | Hidden
+  deriving (Eq, Show)
 
-readIfaceArgs :: [Flag] -> [(DocPaths, FilePath)]
+readIfaceArgs :: [Flag] -> [(DocPaths, Visibility, FilePath)]
 readIfaceArgs flags = [ parseIfaceOption s | Flag_ReadInterface s <- flags ]
   where
-    parseIfaceOption :: String -> (DocPaths, FilePath)
+    parseIfaceOption :: String -> (DocPaths, Visibility, FilePath)
     parseIfaceOption str =
       case break (==',') str of
         (fpath, ',':rest) ->
           case break (==',') rest of
-            (src, ',':file) -> ((fpath, Just src), file)
-            (file, _) -> ((fpath, Nothing), file)
-        (file, _) -> (("", Nothing), file)
+            (src, ',':rest') ->
+              let src' = case src of
+                    "" -> Nothing
+                    _  -> Just src
+              in
+              case break (==',') rest' of
+                (visibility, ',':file) | visibility == "hidden" ->
+                  ((fpath, src'), Hidden, file)
+                                       | otherwise ->
+                  ((fpath, src'), Visible, file)
+                (file, _) ->
+                  ((fpath, src'), Visible, file)
+            (file, _) -> ((fpath, Nothing), Visible, file)
+        (file, _) -> (("", Nothing), Visible, file)
 
 
 -- | Like 'listToMaybe' but returns the last element instead of the first.
@@ -369,16 +401,16 @@ optLast xs = Just (last xs)
 --
 -- The @--package-name@ and @--package-version@ Haddock flags allow the user to
 -- specify this information manually and it is returned here if present.
-modulePackageInfo :: DynFlags
+modulePackageInfo :: UnitState
                   -> [Flag] -- ^ Haddock flags are checked as they may contain
                             -- the package name or version provided by the user
                             -- which we prioritise
                   -> Maybe Module
                   -> (Maybe PackageName, Maybe Data.Version.Version)
-modulePackageInfo _dflags _flags Nothing = (Nothing, Nothing)
-modulePackageInfo dflags flags (Just modu) =
-  ( optPackageName flags    <|> fmap packageName pkgDb
-  , optPackageVersion flags <|> fmap packageVersion pkgDb
+modulePackageInfo _unit_state _flags Nothing = (Nothing, Nothing)
+modulePackageInfo unit_state flags (Just modu) =
+  ( optPackageName flags    <|> fmap unitPackageName pkgDb
+  , optPackageVersion flags <|> fmap unitPackageVersion pkgDb
   )
   where
-    pkgDb = lookupPackage dflags (moduleUnitId modu)
+    pkgDb = lookupUnit unit_state (moduleUnit modu)

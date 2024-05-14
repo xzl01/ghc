@@ -1,9 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main (main) where
 
-import Control.Lens     hiding ((.=))
-import Data.Aeson       (FromJSON (..), Value, eitherDecode, object, withObject, (.:), (.=))
-import Data.Foldable    (for_)
+import Control.Lens     (imap)
+import Data.Aeson       (FromJSON (..), eitherDecode, withObject, (.:))
 import Data.List        (sortOn)
 import Data.Semigroup   ((<>))
 import Data.Text        (Text)
@@ -12,10 +11,8 @@ import Data.Traversable (for)
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.Set             as Set
 import qualified Data.Text            as T
-import qualified Data.Text.Lazy       as TL
-import qualified Data.Text.Lazy.IO    as TL
 import qualified Options.Applicative  as O
-import qualified Text.Microstache     as M
+import qualified Zinza                as Z
 
 import GenUtils
 
@@ -34,7 +31,10 @@ main = generate =<< O.execParser opts where
     licensesAll = PerV
         <$> licenses "3.0"
         <*> licenses "3.2"
-        <*> licenses "3.5"
+        <*> licenses "3.6"
+        <*> licenses "3.9"
+        <*> licenses "3.10"
+        <*> licenses "3.16"
 
     template = O.strArgument $ mconcat
         [ O.metavar "SPDX.LicenseExceptionId.template.hs"
@@ -54,46 +54,38 @@ main = generate =<< O.execParser opts where
 generate :: Opts -> IO ()
 generate (Opts tmplFile fns out) = do
     lss <- for fns $ \fn -> either fail pure . eitherDecode =<< LBS.readFile fn
-    template <- M.compileMustacheFile tmplFile
-    let (ws, rendered) = generate' lss template
-    for_ ws $ putStrLn . M.displayMustacheWarning
-    TL.writeFile out (header <> "\n" <> rendered)
+    template <- Z.parseAndCompileTemplateIO tmplFile
+    output <- generate' lss template
+    writeFile out (header <> "\n" <> output)
     putStrLn $ "Generated file " ++ out
 
 generate'
     :: PerV LicenseList
-    -> M.Template
-    -> ([M.MustacheWarning], TL.Text)
-generate' lss template = M.renderMustacheW template $ object
-    [ "licenseIds" .= licenseIds
-    , "licenses"   .= licenseValues
-    , "licenseList_all" .= mkLicenseList (== allVers)
-    , "licenseList_3_0" .= mkLicenseList
-        (\vers -> vers /= allVers && Set.member SPDXLicenseListVersion_3_0 vers)
-    , "licenseList_3_2" .= mkLicenseList
-        (\vers -> vers /= allVers && Set.member SPDXLicenseListVersion_3_2 vers)
-    , "licenseList_3_6" .= mkLicenseList
-        (\vers -> vers /= allVers && Set.member SPDXLicenseListVersion_3_6 vers)
-    ]
+    -> (Input -> IO String)
+    -> IO String
+generate' lss template = template $ Input
+    { inputLicenseIds       = licenseIds
+    , inputLicenses         = licenseValues
+    , inputLicenseList_all  = mkLicenseList (== allVers)
+    , inputLicenseList_perv = tabulate $ \ver -> mkLicenseList
+        (\vers -> vers /= allVers && Set.member ver vers)
+    }
   where
-    PerV (LL ls_3_0) (LL ls_3_2) (LL ls_3_6) = lss
-
     constructorNames :: [(Text, License, Set.Set SPDXLicenseListVersion)]
     constructorNames
         = map (\(l, tags) -> (toConstructorName $ licenseId l, l, tags))
-        $ combine licenseId $ \ver -> case ver of
-            SPDXLicenseListVersion_3_6 -> filterDeprecated ls_3_6
-            SPDXLicenseListVersion_3_2 -> filterDeprecated ls_3_2
-            SPDXLicenseListVersion_3_0 -> filterDeprecated ls_3_0
+        $ combine licenseId $ \ver -> filterDeprecated $ unLL $ index ver lss
 
     filterDeprecated = filter (not . licenseDeprecated)
 
-    licenseValues :: [Value]
-    licenseValues = flip map constructorNames $ \(c, l, _) -> object
-        [ "licenseCon"    .= c
-        , "licenseId"     .= textShow (licenseId l)
-        , "licenseName"   .= textShow (licenseName l)
-        ]
+    licenseValues :: [InputLicense]
+    licenseValues = flip map constructorNames $ \(c, l, _) -> InputLicense
+        { ilConstructor   = c
+        , ilId            = textShow (licenseId l)
+        , ilName          = textShow (licenseName l)
+        , ilIsOsiApproved = False -- not used in exceptions
+        , ilIsFsfLibre    = False -- not used in exceptions
+        }
 
     licenseIds :: Text
     licenseIds = T.intercalate "\n" $ flip imap constructorNames $ \i (c, l, vers) ->
@@ -107,10 +99,9 @@ generate' lss template = M.renderMustacheW template $ object
     mkLicenseList p = mkList [ n | (n, _, vers) <- constructorNames, p vers ]
 
 -------------------------------------------------------------------------------
--- Licenses
+-- JSON inputs
 -------------------------------------------------------------------------------
 
--- TODO: move to common module, confusing naming. This is LicenseException!
 data License = License
     { licenseId          :: !Text
     , licenseName        :: !Text
@@ -127,7 +118,7 @@ instance FromJSON License where
         fixSpace '\n' = ' '
         fixSpace c =   c
 
-newtype LicenseList = LL [License]
+newtype LicenseList = LL { unLL :: [License] }
   deriving (Show)
 
 instance FromJSON LicenseList where

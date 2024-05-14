@@ -88,6 +88,17 @@ So, for example, ``ghc -c Foo.hs``
     runtime or space *worse* if you're unlucky. They are normally turned
     on or off individually.
 
+.. ghc-flag:: -O⟨n⟩
+    :shortdesc: Any -On where n > 2 is the same as -O2.
+    :type: dynamic
+    :reverse: -O0
+    :category: optimization-levels
+
+    .. index::
+       single: optimise; aggressively
+
+    Any -On where n > 2 is the same as -O2.
+
 We don't use a ``-O*`` flag for day-to-day work. We use ``-O`` to get
 respectable speed; e.g., when we want to measure something. When we want
 to go for broke, we tend to use ``-O2`` (and we go for lots of coffee
@@ -109,6 +120,17 @@ These flags turn on and off individual optimisations. Flags marked as
 on by default are enabled by ``-O``, and as such you shouldn't
 need to set any of them explicitly. A flag ``-fwombat`` can be negated
 by saying ``-fno-wombat``.
+
+.. ghc-flag:: -fcore-constant-folding
+    :shortdesc: Enable constant folding in Core. Implied by :ghc-flag:`-O`.
+    :type: dynamic
+    :reverse: -fno-core-constant-folding
+    :category:
+
+    :default: on
+
+    Enables Core-level constant folding, i.e. propagation of values
+    that can be computed at compile time.
 
 .. ghc-flag:: -fcase-merge
     :shortdesc: Enable case-merging. Implied by :ghc-flag:`-O`.
@@ -203,6 +225,30 @@ by saying ``-fno-wombat``.
     to their usage sites. It also inlines simple expressions like
     literals or registers.
 
+.. ghc-flag:: -fcmm-static-pred
+    :shortdesc: Enable static control flow prediction. Implied by :ghc-flag:`-O`.
+    :type: dynamic
+    :reverse: -fno-cmm-static-pred
+    :category:
+
+    :default: off but enabled with :ghc-flag:`-O`.
+
+    This enables static control flow prediction on the final Cmm
+    code. If enabled GHC will apply certain heuristics to identify
+    loops and hot code paths. This information is then used by the
+    register allocation and code layout passes.
+
+.. ghc-flag:: -fcmm-control-flow
+    :shortdesc: Enable control flow optimisation in the Cmm backend. Implied by :ghc-flag:`-O`.
+    :type: dynamic
+    :reverse: -fno-cmm-control-flow
+    :category:
+
+    :default: on
+
+    Enables some control flow optimisations in the Cmm code
+    generator, merging basic blocks and avoiding jumps right after jumps.
+
 .. ghc-flag:: -fasm-shortcutting
     :shortdesc: Enable shortcutting on assembly. Implied by :ghc-flag:`-O2`.
     :type: dynamic
@@ -216,8 +262,10 @@ by saying ``-fno-wombat``.
     of a unconditionally jump, we replace all jumps to A by jumps to the successor
     of A.
 
-    This is mostly done during Cmm passes. However this can miss corner cases. So at -O2
-    we run the pass again at the asm stage to catch these.
+    This is mostly done during Cmm passes. However this can miss corner cases.
+    So at ``-O2`` this flag runs the pass again at the assembly stage to catch
+    these. Note that due to platform limitations (:ghc-ticket:`21972`) this flag
+    does nothing on macOS.
 
 .. ghc-flag:: -fblock-layout-cfg
     :shortdesc: Use the new cfg based block layout algorithm.
@@ -273,14 +321,64 @@ by saying ``-fno-wombat``.
     block layout behaves the same as in 8.6 and earlier.
 
 .. ghc-flag:: -fcpr-anal
-    :shortdesc: Turn on CPR analysis in the demand analyser. Implied by :ghc-flag:`-O`.
+    :shortdesc: Turn on Constructed Product Result analysis. Implied by :ghc-flag:`-O`.
     :type: dynamic
     :reverse: -fno-cpr-anal
     :category:
 
     :default: on
 
-    Turn on CPR analysis in the demand analyser.
+    Turn on CPR analysis, which enables the worker/wrapper transformation (cf.
+    :ghc-flag:`-fworker-wrapper`) to unbox the result of a function, such as ::
+
+         sum :: [Int] -> Int
+         sum []     = 0
+         sum (x:xs) = x + sum xs
+
+    CPR analysis will see that each code path produces a *constructed product*
+    such as ``I# 0#`` in the first branch (where ``GHC.Exts.I#`` is the data
+    constructor of ``Int``, boxing up the the primitive integer literal ``0#``
+    of type ``Int#``) and optimise to ::
+
+         sum xs = I# ($wsum xs)
+         $wsum []        = 0#
+         $wsum (I# x:xs) = x# +# $wsum xs
+
+    and then ``sum`` can inline to potentially cancel away the ``I#`` box.
+
+    Here's an example of the function that *does not* return a constructed product: ::
+
+         f :: [Int] -> (Int -> Int) -> Int
+         f []     g = g 0
+         f (x:xs) g = x + f xs g
+
+    The expression ``g 0`` is not a constructed product, because we don't know
+    anything about ``g``.
+
+    CPR analysis also works *nestedly*, for example ::
+
+        sumIO :: [Int] -> IO Int
+        sumIO []     = return 0
+        sumIO (x:xs) = do
+          r <- sumIO xs
+          return $! x + r
+
+    Note the use of ``$!``: Without it, GHC would be unable to see that evaluation
+    of ``r`` and ``x`` terminates (and rapidly, at that). An alternative would be to
+    evaluate both with a bang pattern or a ``seq``, but the ``return $! <res>``
+    idiom should work more reliably and needs less thinking. The above example
+    will be optimised to ::
+
+        sumIO :: [Int] -> IO Int
+        sumIO xs = IO $ \s -> case $wsum xs s of
+          (# s', r #) -> (# s', I# r #)
+        $wsumIO :: [Int] -> (# RealWorld#, Int# #)
+        $wsumIO []        s = (# s, 0# #)
+        $wsumIO (I# x:xs) s = case $wsumIO xs of
+          (# s', r #) -> (# s', x +# r#)
+
+    And the latter can inline ``sumIO`` and cancel away the ``I#`` constructor.
+    Unboxing the result of a ``State`` action should work similarly.
 
 .. ghc-flag:: -fcse
     :shortdesc: Enable common sub-expression elimination. Implied by :ghc-flag:`-O`.
@@ -305,7 +403,7 @@ by saying ``-fno-wombat``.
 
     Enables the common-sub-expression elimination optimisation on the STG
     intermediate language, where it is able to common up some subexpressions
-    that differ in their types, but not their represetation.
+    that differ in their types, but not their representation.
 
 .. ghc-flag:: -fdicts-cheap
     :shortdesc: Make dictionary-valued expressions seem cheap to the optimiser.
@@ -319,7 +417,7 @@ by saying ``-fno-wombat``.
     seem cheap to the optimiser.
 
 .. ghc-flag:: -fdicts-strict
-    :shortdesc: Make dictionaries strict
+    :shortdesc: Make dictionaries strict. Implied by :ghc-flag:`-O2`.
     :type: dynamic
     :reverse: -fno-dicts-strict
     :category:
@@ -328,9 +426,17 @@ by saying ``-fno-wombat``.
 
     Make dictionaries strict.
 
+    This enables WW to fire on dictionary constraints which usually results
+    in better runtime. In niche cases it can lead to significant compile time
+    regressions because of changed inlining behaviour. Rarely this can also affect
+    runtime negatively.
+
+    If enabling this flag leads to regressions try increasing the unfolding
+    threshold using :ghc-flag:`-funfolding-use-threshold=⟨n⟩` by a modest amount (~30)
+    as this is likely a result of a known limitation described in `#18421`.
+
 .. ghc-flag:: -fdmd-tx-dict-sel
-    :shortdesc: Use a special demand transformer for dictionary selectors.
-        Always enabled by default.
+    :shortdesc: *(deprecated)* Use a special demand transformer for dictionary selectors.
     :type: dynamic
     :reverse: -fno-dmd-tx-dict-sel
     :category:
@@ -338,6 +444,7 @@ by saying ``-fno-wombat``.
     :default: on
 
     Use a special demand transformer for dictionary selectors.
+    Behaviour is unconditionally enabled starting with 9.2
 
 .. ghc-flag:: -fdo-eta-reduction
     :shortdesc: Enable eta-reduction. Implied by :ghc-flag:`-O`.
@@ -370,9 +477,9 @@ by saying ``-fno-wombat``.
     Usually GHC black-holes a thunk only when it switches threads. This
     flag makes it do so as soon as the thunk is entered. See `Haskell on
     a shared-memory
-    multiprocessor <http://community.haskell.org/~simonmar/papers/multiproc.pdf>`__.
+    multiprocessor <https://simonmar.github.io/bib/papers/multiproc.pdf>`__.
 
-    See :ref:`parallel-compile-options` for a dicussion on its use.
+    See :ref:`parallel-compile-options` for a discussion on its use.
 
 .. ghc-flag:: -fexcess-precision
     :shortdesc: Enable excess intermediate precision
@@ -415,7 +522,7 @@ by saying ``-fno-wombat``.
 
     Float let-bindings inwards, nearer their binding
     site. See `Let-floating: moving bindings to give faster programs
-    (ICFP'96) <http://research.microsoft.com/en-us/um/people/simonpj/papers/float.ps.gz>`__.
+    (ICFP'96) <https://www.microsoft.com/en-us/research/publication/let-floating-moving-bindings-to-give-faster-programs/>`__.
 
     This optimisation moves let bindings closer to their use site. The
     benefit here is that this may avoid unnecessary allocation if the
@@ -443,32 +550,40 @@ by saying ``-fno-wombat``.
     let-floating), which floats let-bindings outside enclosing lambdas,
     in the hope they will be thereby be computed less often. See
     `Let-floating: moving bindings to give faster programs
-    (ICFP'96) <http://research.microsoft.com/en-us/um/people/simonpj/papers/float.ps.gz>`__.
+    (ICFP'96) <https://research.microsoft.com/en-us/um/people/simonpj/papers/float.ps.gz>`__.
     Full laziness increases sharing, which can lead to increased memory
     residency.
 
     .. note::
-       GHC doesn't implement complete full-laziness. When
-       optimisation in on, and ``-fno-full-laziness`` is not given, some
-       transformations that increase sharing are performed, such as
-       extracting repeated computations from a loop. These are the same
-       transformations that a fully lazy implementation would do, the
-       difference is that GHC doesn't consistently apply full-laziness, so
-       don't rely on it.
+        GHC doesn't implement complete full laziness. Although GHC's
+        full-laziness optimisation does enable some transformations
+        which would be performed by a fully lazy implementation (such as
+        extracting repeated computations from loops), these
+        transformations are not applied consistently, so don't rely on
+        them.
 
 .. ghc-flag:: -ffun-to-thunk
-    :shortdesc: Allow worker-wrapper to convert a function closure into a thunk
-        if the function does not use any of its arguments. Off by default.
+    :shortdesc: *(deprecated)* superseded by -ffull-laziness.
     :type: dynamic
     :reverse: -fno-fun-to-thunk
     :category:
 
     :default: off
 
-    Worker-wrapper removes unused arguments, but usually we do not
+    Worker/wrapper removes unused arguments, but usually we do not
     remove them all, lest it turn a function closure into a thunk,
     thereby perhaps creating a space leak and/or disrupting inlining.
     This flag allows worker/wrapper to remove *all* value lambdas.
+
+    This flag was ineffective in the presence of :ghc-flag:`-ffull-laziness`,
+    which would flout a thunk out of a constant worker function *even though*
+    :ghc-flag:`-ffun-to-thunk` was off.
+
+    Hence use of this flag is deprecated since GHC 9.4.1 and we rather suggest
+    to pass ``-fno-full-laziness`` instead. That implies there's no way for
+    worker/wrapper to turn a function into a thunk in the presence of
+    ``-fno-full-laziness``. If that is inconvenient for you, please leave a
+    comment `on the issue tracker (#21204) <https://gitlab.haskell.org/ghc/ghc/-/issues/21204>`__.
 
 .. ghc-flag:: -fignore-asserts
     :shortdesc: Ignore assertions in the source. Implied by :ghc-flag:`-O`.
@@ -509,7 +624,7 @@ by saying ``-fno-wombat``.
     that were not visible earlier; and optimisations like
     :ghc-flag:`-fspec-constr` can create functions with unused arguments which
     are eliminated by late demand analysis. Improvements are modest, but
-    so is the cost. See notes on the :ghc-wiki:`Trac wiki page <LateDmd>`.
+    so is the cost. See notes on the :ghc-wiki:`wiki page <late-dmd>`.
 
 .. ghc-flag:: -fliberate-case
     :shortdesc: Turn on the liberate-case transformation. Implied by :ghc-flag:`-O2`.
@@ -549,16 +664,15 @@ by saying ``-fno-wombat``.
     function calls.
 
 .. ghc-flag:: -fllvm-pass-vectors-in-regs
-    :shortdesc: Pass vector value in vector registers for function calls
+    :shortdesc: *(deprecated)* Does nothing
     :type: dynamic
-    :reverse: -fno-llvm-pass-vectors-in-regs
     :category:
 
     :default: on
 
-    Instructs GHC to use the platform's native vector registers to pass vector
-    arguments during function calls. As with all vector support, this requires
-    :ghc-flag:`-fllvm`.
+    This flag has no effect since GHC 8.8 - its behavior is always on.
+    It used to instruct GHC to use the platform's native vector registers
+    to pass vector arguments during function calls.
 
 .. ghc-flag:: -fmax-inline-alloc-size=⟨n⟩
     :shortdesc: *default: 128.* Set the maximum size of inline array allocations
@@ -598,7 +712,7 @@ by saying ``-fno-wombat``.
     :shortdesc: *default: 6.* Set the maximum number of bindings to display in
         type error messages.
     :type: dynamic
-    :reverse: -fno-max-relevant-bindings
+    :reverse: -fno-max-relevant-binds
     :category: verbosity
 
     :default: 6
@@ -606,9 +720,9 @@ by saying ``-fno-wombat``.
     The type checker sometimes displays a fragment of the type
     environment in error messages, but only up to some maximum number,
     set by this flag. Turning it off with
-    ``-fno-max-relevant-bindings`` gives an unlimited number.
+    ``-fno-max-relevant-binds`` gives an unlimited number.
     Syntactically top-level bindings are also usually excluded (since
-    they may be numerous), but ``-fno-max-relevant-bindings`` includes
+    they may be numerous), but ``-fno-max-relevant-binds`` includes
     them too.
 
 .. ghc-flag:: -fmax-uncovered-patterns=⟨n⟩
@@ -632,14 +746,15 @@ by saying ``-fno-wombat``.
     Sets the maximal number of iterations for the simplifier.
 
 .. ghc-flag:: -fmax-worker-args=⟨n⟩
-    :shortdesc: *default: 10.* If a worker has that many arguments, none will
-        be unpacked anymore.
+    :shortdesc: *default: 10.* Maximum number of value arguments for a worker.
     :type: dynamic
     :category:
 
     :default: 10
 
-    If a worker has that many arguments, none will be unpacked anymore.
+    A function will not be split into worker and wrapper if the number of
+    value arguments of the resulting worker exceeds both that of the original
+    function and this setting.
 
 .. ghc-flag:: -fno-opt-coercion
     :shortdesc: Turn off the coercion optimiser
@@ -696,7 +811,7 @@ by saying ``-fno-wombat``.
     :reverse: -fno-omit-yields
     :category:
 
-    :default: yield points enabled
+    :default: on (yields are *not* inserted)
 
     Tells GHC to omit heap checks when no allocation is
     being performed. While this improves binary sizes by about 5%, it
@@ -723,7 +838,7 @@ by saying ``-fno-wombat``.
 
 .. ghc-flag:: -fregs-graph
     :shortdesc: Use the graph colouring register allocator for register
-        allocation in the native code generator. Implied by :ghc-flag:`-O2`.
+        allocation in the native code generator.
     :type: dynamic
     :reverse: -fno-regs-graph
     :category:
@@ -735,9 +850,6 @@ by saying ``-fno-wombat``.
     generator. By default, GHC uses a simpler, faster linear register allocator.
     The downside being that the linear register allocator usually generates
     worse code.
-
-    Note that the graph colouring allocator is a bit experimental and may fail
-    when faced with code with high register pressure :ghc-ticket:`8657`.
 
 .. ghc-flag:: -fregs-iterative
     :shortdesc: Use the iterative coalescing graph colouring register allocator
@@ -786,6 +898,20 @@ by saying ``-fno-wombat``.
     has done; you can use ``-fddump-simpl-stats`` to generate a much
     more detailed list. Usually that identifies the loop quite
     accurately, because some numbers are very large.
+
+.. ghc-flag:: -fdmd-unbox-width=⟨n⟩
+    :shortdesc: *default: 3.* Boxity analysis pretends that returned records
+                              with this many fields can be unboxed.
+    :type: dynamic
+    :category:
+
+    :default: 3
+
+    Boxity analysis optimistically pretends that a function returning a record
+    with at most ``-fdmd-unbox-width`` fields has only call sites that don't
+    need the box of the returned record. That may in turn allow more argument
+    unboxing to happen. Set to 0 to be completely conservative (which guarantees
+    that no reboxing will happen due to this mechanism).
 
 .. ghc-flag:: -fspec-constr
     :shortdesc: Turn on the SpecConstr transformation. Implied by :ghc-flag:`-O2`.
@@ -955,6 +1081,50 @@ by saying ``-fno-wombat``.
     which returns a constrained type. For example, a type class where one
     of the methods implements a traversal.
 
+.. ghc-flag:: -finline-generics
+    :shortdesc: Annotate methods of derived Generic and Generic1 instances with
+        INLINE[1] pragmas based on heuristics. Implied by :ghc-flag:`-O`.
+    :type: dynamic
+    :reverse: -fno-inline-generics
+    :category:
+
+    :default: on
+    :since: 9.2.1
+
+    .. index::
+       single: inlining, controlling
+       single: unfolding, controlling
+
+    Annotate methods of derived Generic and Generic1 instances with INLINE[1]
+    pragmas based on heuristics dependent on the size of the data type in
+    question. Improves performance of generics-based algorithms as GHC is able
+    to optimize away intermediate representation more often.
+
+.. ghc-flag:: -finline-generics-aggressively
+    :shortdesc: Annotate methods of all derived Generic and Generic1 instances
+        with INLINE[1] pragmas.
+    :type: dynamic
+    :reverse: -fno-inline-generics-aggressively
+    :category:
+
+    :default: off
+    :since: 9.2.1
+
+    .. index::
+       single: inlining, controlling
+       single: unfolding, controlling
+
+    Annotate methods of all derived Generic and Generic1 instances with
+    INLINE[1] pragmas.
+
+    This flag should only be used in modules deriving Generic instances that
+    weren't considered appropriate for INLINE[1] annotations by heuristics of
+    :ghc-flag:`-finline-generics`, yet you know that doing so would be
+    beneficial.
+
+    When enabled globally it will most likely lead to worse compile times and
+    code size blowup without runtime performance gains.
+
 .. ghc-flag:: -fsolve-constant-dicts
     :shortdesc: When solving constraints, try to eagerly solve
         super classes using available dictionaries.
@@ -1034,7 +1204,7 @@ by saying ``-fno-wombat``.
     :shortdesc: Create top-level non-recursive functions with at most <n>
         parameters while performing late lambda lifting.
     :type: dynamic
-    :reverse: -fno-stg-lift-lams-non-rec-args-any
+    :reverse: -fstg-lift-lams-non-rec-args-any
     :category:
 
     :default: 5
@@ -1047,7 +1217,7 @@ by saying ``-fno-wombat``.
     :shortdesc: Create top-level recursive functions with at most <n>
         parameters while performing late lambda lifting.
     :type: dynamic
-    :reverse: -fno-stg-lift-lams-rec-args-any
+    :reverse: -fstg-lift-lams-rec-args-any
     :category:
 
     :default: 5
@@ -1057,7 +1227,7 @@ by saying ``-fno-wombat``.
     available parameter registers on x86_64.
 
 .. ghc-flag:: -fstrictness
-    :shortdesc: Turn on strictness analysis.
+    :shortdesc: Turn on demand analysis.
         Implied by :ghc-flag:`-O`. Implies :ghc-flag:`-fworker-wrapper`
     :type: dynamic
     :reverse: -fno-strictness
@@ -1065,23 +1235,156 @@ by saying ``-fno-wombat``.
 
     :default: on
 
-    Switch on the strictness analyser. The implementation is described in the
-    paper `Theory and Practice of Demand Analysis in Haskell
-    <https://www.microsoft.com/en-us/research/wp-content/uploads/2017/03/demand-jfp-draft.pdf>`__.
+    Turn on demand analysis.
 
-    The strictness analyser figures out when arguments and variables in
-    a function can be treated 'strictly' (that is they are always
-    evaluated in the function at some point). This allow GHC to apply
-    certain optimisations such as unboxing that otherwise don't apply as
-    they change the semantics of the program when applied to lazy
-    arguments.
+    A *Demand* describes an evaluation context of an expression.  *Demand
+    analysis* tries to find out what demands a function puts on its arguments
+    when called: If an argument is scrutinised on every code path, the function
+    is strict in that argument and GHC is free to use the more efficient
+    call-by-value calling convention, as well as pass parameters unboxed.
+
+    Apart from *strictness analysis*, demand analysis also performs *usage
+    analysis*: Where *strict* translates to "evaluated at least once", usage
+    analysis asks whether arguments and bindings are "evaluated at most once"
+    or not at all ("evaluated at most zero times"), e.g. *absent*. For the
+    former, GHC may use call-by-name instead of call-by-need, effectively
+    turning thunks into non-memoised functions. For the latter, no code needs
+    to be generated at all: An absent argument can simply be replaced by a
+    dummy value at the call site or omitted altogether.
+
+    The worker/wrapper transformation (:ghc-flag:`-fworker-wrapper`) is
+    responsible for exploiting unboxing opportunities and replacing absent
+    arguments by dummies. For arguments that can't be unboxed, opportunities
+    for call-by-value and call-by-name are exploited in CorePrep when
+    translating to STG.
+
+    It's not only interesting to look at how often a binding is *evaluated*,
+    but also how often a function *is called*. If a function is called at most
+    once, we may freely eta-expand it, even if doing so destroys shared work
+    if the function was called multiple times. This information translates
+    into ``OneShotInfo`` annotations that the Simplifier acts on.
+
+    **Notation**
+
+    So demand analysis is about conservatively inferring lower and upper
+    bounds about how many times something is evaluated/called. We call the
+    "how many times" part a *cardinality*. In the compiler and debug output
+    we differentiate the following cardinality intervals as approximations
+    to cardinality:
+
+    +----------+------------------------------+--------+---------------------------------------+
+    | Interval | Set of denoted cardinalities | Syntax | Explanation tying syntax to semantics |
+    +==========+==============================+========+=======================================+
+    | [1,0]    | {}                           | ``B``  | Bottom element                        |
+    +----------+------------------------------+--------+---------------------------------------+
+    | [0,0]    | {0}                          | ``A``  | Absent                                |
+    +----------+------------------------------+--------+---------------------------------------+
+    | [0,1]    | {0,1}                        | ``M``  | Used at most once ("Maybe")           |
+    +----------+------------------------------+--------+---------------------------------------+
+    | [0,ω]    | {0,1,ω}                      | ``L``  | Lazy. Top element, no information,    |
+    |          |                              |        | used at least 0, at most many times   |
+    +----------+------------------------------+--------+---------------------------------------+
+    | [1,1]    | {1}                          | ``1``  | Strict, used exactly once             |
+    +----------+------------------------------+--------+---------------------------------------+
+    | [1,ω]    | {1,ω}                        | ``S``  | Strict, used possibly many times      |
+    +----------+------------------------------+--------+---------------------------------------+
+
+    Note that it's never interesting to differentiate between a cardinality
+    of 2 and 3, or even 4232123. We just approximate the >1 case with ω,
+    standing for "many times".
+
+    Apart from the cardinality describing *how often* an argument is evaluated,
+    a demand also carries a *sub-demand*, describing *how deep* something
+    is evaluated beyond a simple ``seq``-like evaluation.
+
+    This is the full syntax for cardinalities, demands and sub-demands in BNF:
+
+    .. code-block:: none
+
+        card ::= B | A | M | L | 1 | S    semantics as in the table above
+
+        d    ::= card sd                  card = how often, sd = how deep
+              |  card                     abbreviation: Same as "card card"
+
+        sd   ::= card                     polymorphic sub-demand, card at every level
+              |  P(d,d,..)                product sub-demand
+              |  Ccard(sd)                call sub-demand
+
+    For example, ``fst`` is strict in its argument, and also in the first
+    component of the argument.  It will not evaluate the argument's second
+    component. That is expressed by the demand ``1P(1L,A)``. The ``P`` is for
+    "product sub-demand", which has a *demand* for each product field. The
+    notation ``1L`` just says "evaluated strictly (``1``), with everything
+    nested inside evaluated according to ``L``" -- e.g., no information,
+    because that would depend on the evaluation context of the call site of
+    ``fst``. The role of ``L`` in ``1L`` is that of a *polymorphic* sub-demand,
+    being semantically equivalent to the sub-demand ``P(LP(..))``, which we
+    simply abbreviate by the (consequently overloaded) cardinality notation
+    ``L``.
+
+    For another example, the expression ``x + 1`` evaluates ``x`` according to
+    demand ``1P(L)``. We have seen single letters stand for cardinalities and
+    polymorphic sub-demands, but what does the single letter ``L`` mean for a
+    *demand*? Such a single letter demand simply expands to a cardinality and
+    a polymorphic sub-demand of the same letter: E.g. ``L`` is equivalent to
+    ``LL`` by expansion of the single letter demand, which is equivalent to
+    ``LP(LP(..))``, so ``L``\s all the way down. It is always clear from
+    context whether we talk about about a cardinality, sub-demand or demand.
+
+    **Demand signatures**
+
+    We summarise a function's demand properties in its *demand signature*.
+    This is the general syntax:
+
+    .. code-block:: none
+
+        {x->dx,y->dy,z->dz...}<d1><d2><d3>...<dn>div
+                ^              ^   ^   ^      ^   ^
+                |              |   |   |      |   |
+                |              \---+---+------/   |
+                |                  |              |
+           demand on free        demand on      divergence
+             variables           arguments      information
+         (omitted if empty)                     (omitted if
+                                              no information)
+
+    We summarise ``fst``'s demand properties in its *demand signature*
+    ``<1P(1L,A)>``, which just says "If ``fst`` is applied to one argument,
+    that argument is evaluated according to ``1P(1L,A)``". For another
+    example, the demand signature of ``seq`` would be ``<1A><1L>`` and that of
+    ``+`` would be ``<1P(L)><1P(L)>``.
+
+    If not omitted, the divergence information can be ``b`` (surely diverges)
+    or ``x`` (surely diverges or throws a precise exception).  For example,
+    ``error`` has demand signature ``<S>b`` and ``throwIO`` (which is the
+    only way to throw precise exceptions) has demand signature ``<_><L><L>x``
+    (leaving out the complicated demand on the ``Exception`` dictionary).
+
+    **Call sub-demands**
+
+    Consider ``maybe``: ::
+
+        maybe :: b -> (a -> b) -> Maybe a -> b
+        maybe n _ Nothing  = n
+        maybe _ s (Just a) = s a
+
+    We give it demand signature ``<L><MCM(L)><1L>``.  The ``CM(L)`` is a *call
+    sub-demand* that says "Called at most once, where the result is used
+    according to ``L``". The expression ``f `seq` f 1`` puts ``f`` under
+    demand ``SC1(L)`` and serves as an example where the upper bound on
+    evaluation cardinality doesn't coincide with that of the call cardinality.
+
+    Cardinality is always relative to the enclosing call cardinality, so
+    ``g 1 2 + g 3 4`` puts ``g`` under demand ``SCS(C1(L))``, which says
+    "called multiple times (``S``), but every time it is called with one
+    argument, it is applied exactly once to another argument (``1``)".
 
 .. ghc-flag:: -fstrictness-before=⟨n⟩
-    :shortdesc: Run an additional strictness analysis before simplifier phase ⟨n⟩
+    :shortdesc: Run an additional demand analysis before simplifier phase ⟨n⟩
     :type: dynamic
     :category:
 
-    Run an additional strictness analysis before simplifier phase ⟨n⟩.
+    Run an additional demand analysis before simplifier phase ⟨n⟩.
 
 .. ghc-flag:: -funbox-small-strict-fields
     :shortdesc: Flatten strict constructor fields with a pointer-sized
@@ -1203,24 +1506,20 @@ by saying ``-fno-wombat``.
     How eager should the compiler be to inline functions?
 
 .. ghc-flag:: -funfolding-keeness-factor=⟨n⟩
-    :shortdesc: *default: 1.5.* Tweak unfolding settings.
+    :shortdesc: This has been deprecated in GHC 9.0.1.
     :type: dynamic
     :category:
 
-    :default: 1.5
-
-    .. index::
-       single: inlining, controlling
-       single: unfolding, controlling
-
-    How eager should the compiler be to inline functions?
+    This factor was deprecated in GHC 9.0.1. See :ghc-ticket:`15304` for
+    details. Users who need to control inlining should rather consider
+    :ghc-flag:`-funfolding-use-threshold=⟨n⟩`.
 
 .. ghc-flag:: -funfolding-use-threshold=⟨n⟩
-    :shortdesc: *default: 60.* Tweak unfolding settings.
+    :shortdesc: *default: 80.* Tweak unfolding settings.
     :type: dynamic
     :category:
 
-    :default: 60
+    :default: 80
 
     .. index::
        single: inlining, controlling
@@ -1238,3 +1537,129 @@ by saying ``-fno-wombat``.
     if a function definition will be inlined *at a call site*. The other option
     determines if a function definition will be kept around at all for
     potential inlining.
+
+.. ghc-flag:: -funfolding-case-threshold=⟨n⟩
+    :shortdesc: *default: 2.* Reduce inlining for cases nested deeper than n.
+    :type: dynamic
+    :category:
+
+    :default: 2
+
+    .. index::
+       single: inlining, controlling
+       single: unfolding, controlling
+
+    GHC is in general quite eager to inline small functions. However sometimes
+    these functions will be expanded by more inlining after inlining. Since
+    they are now applied to "interesting" arguments. Even worse, their expanded
+    form might reference again a small function, which will be inlined and expanded
+    afterwards. This can repeat often and lead to explosive growth of programs.
+
+    As it happened in #18730.
+
+    Starting with GHC 9.0 we will be less eager to inline deep into nested cases.
+    We achieve this by applying a inlining penalty that increases as the nesting
+    gets deeper. However sometimes a specific (maybe quite high!) threshold of nesting
+    is to be expected.
+
+    In such cases this flag can be used to ignore the first ⟨n⟩ levels of nesting
+    when computing the penalty.
+
+    This flag in combination with :ghc-flag:`-funfolding-case-scaling=⟨n⟩` can
+    be used to break inlining loops without disabling inlining completely. For
+    this purpose a smaller value is more likely to break such loops although
+    often adjusting the scaling is enough and preferably.
+
+.. ghc-flag:: -funfolding-case-scaling=⟨n⟩
+    :shortdesc: *default: 30.* Apply a penalty of (inlining_cost * `1/n`) for each level of case nesting.
+    :type: dynamic
+    :category:
+
+    :default: 30
+
+    .. index::
+       single: inlining, controlling
+       single: unfolding, controlling
+
+    GHC is in general quite eager to inline small functions. However sometimes
+    these functions will be expanded by more inlining after inlining. Since
+    they are now applied to "interesting" arguments. Even worse, their expanded
+    form might reference again a small function, which will be inlined and expanded
+    afterwards. This can repeat often and lead to explosive growth of programs.
+
+    As it happened in #18730.
+
+    Starting with GHC 9.0 we will be less eager to inline deep into nested cases.
+    We achieve this by applying a inlining penalty that increases as the nesting
+    gets deeper. However sometimes we are ok with inlining a lot in the name of
+    performance.
+
+    In such cases this flag can be used to tune how hard we penalize inlining into
+    deeply nested cases beyond the threshold set by :ghc-flag:`-funfolding-case-threshold=⟨n⟩`.
+    Cases are only counted against the nesting level if they have more than one alternative.
+
+    We use 1/n to scale the penalty. That is a higher value gives a lower penalty.
+
+    This can be used to break inlining loops. For this purpose a lower value is
+    recommended. Values in the range 10 <= n <= 20 allow some inlining to take place
+    while still allowing GHC to compile modules containing such inlining loops.
+
+
+.. ghc-flag:: -fworker-wrapper
+    :shortdesc: Enable the worker/wrapper transformation.
+    :type: dynamic
+    :category:
+
+    Enable the worker/wrapper transformation after a demand analysis pass.
+
+    Exploits strictness and absence information by unboxing strict arguments
+    and replacing absent fields by dummy values in a wrapper function that
+    will inline in all relevant scenarios and thus expose a specialised,
+    unboxed calling convention of the worker function.
+
+    Implied by :ghc-flag:`-O`, and by :ghc-flag:`-fstrictness`.
+    Disabled by :ghc-flag:`-fno-strictness`. Enabling :ghc-flag:`-fworker-wrapper`
+    while demand analysis is disabled (by :ghc-flag:`-fno-strictness`)
+    has no effect.
+
+.. ghc-flag:: -fworker-wrapper-cbv
+    :shortdesc: Enable w/w splits for wrappers whos sole purpose is evaluating arguments.
+    :type: dynamic
+    :category: optimization
+
+    Disabling this flag prevents a W/W split if the only benefit would be call-by-value
+    for some arguments.
+
+    Otherwise this exploits strictness information by passing strict value arguments
+    call-by-value to the functions worker. Even for functions who would
+    otherwise not get a worker.
+
+    This avoids (potentially repeated) checks for evaluatedness of arguments in
+    the rhs of the worker by pushing this check to the call site.
+    If the argument is statically visible to be a value at the call site the
+    overhead for the check disappears completely.
+
+    This can cause slight codesize increases. It will also cause many more functions
+    to get a worker/wrapper split which can play badly with rules (see Ticket #20364)
+    which is why it's currently disabled by default.
+    In particular if you depend on rules firing on functions marked as NOINLINE without
+    marking use sites of these functions as INLINE or INLINEABLE then things will break
+    unless this flag is disabled.
+
+    While WorkerWrapper is disabled this has no effect.
+
+.. ghc-flag:: -fbinary-blob-threshold=⟨n⟩
+    :shortdesc: *default: 500K.* Tweak assembly generator for binary blobs.
+    :type: dynamic
+    :category: optimization
+
+    :default: 500000
+
+    The native code-generator can either dump binary blobs (e.g. string
+    literals) into the assembly file (by using ".asciz" or ".string" assembler
+    directives) or it can dump them as binary data into a temporary file which
+    is then included by the assembler (using the ".incbin" assembler directive).
+
+    This flag sets the size (in bytes) threshold above which the second approach
+    is used. You can disable the second approach entirely by setting the
+    threshold to 0.

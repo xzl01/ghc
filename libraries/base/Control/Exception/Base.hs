@@ -1,6 +1,6 @@
-{-# LANGUAGE Trustworthy #-}
-{-# LANGUAGE NoImplicitPrelude, MagicHash #-}
-{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE MagicHash         #-}
+{-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE Trustworthy       #-}
 
 -----------------------------------------------------------------------------
 -- |
@@ -9,7 +9,7 @@
 -- License     :  BSD-style (see the file libraries/base/LICENSE)
 --
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  non-portable (extended exceptions)
 --
 -- Extensible exceptions, except for multiple handlers.
@@ -95,19 +95,19 @@ module Control.Exception.Base (
         -- * Calls for GHC runtime
         recSelError, recConError, runtimeError,
         nonExhaustiveGuardsError, patError, noMethodBindingError,
-        absentError, absentSumFieldError, typeError,
+        typeError,
         nonTermination, nestedAtomically,
   ) where
 
-import GHC.Base
-import GHC.IO hiding (bracket,finally,onException)
-import GHC.IO.Exception
-import GHC.Exception
-import GHC.Show
+import           GHC.Base
+import           GHC.Exception
+import           GHC.IO           hiding (bracket, finally, onException)
+import           GHC.IO.Exception
+import           GHC.Show
 -- import GHC.Exception hiding ( Exception )
-import GHC.Conc.Sync
+import           GHC.Conc.Sync
 
-import Data.Either
+import           Data.Either
 
 -----------------------------------------------------------------------------
 -- Catching exceptions
@@ -166,7 +166,7 @@ mapException f v = unsafePerformIO (catch (evaluate v)
 -- | Similar to 'catch', but returns an 'Either' result which is
 -- @('Right' a)@ if no exception of type @e@ was raised, or @('Left' ex)@
 -- if an exception of type @e@ was raised and its value is @ex@.
--- If any other type of exception is raised than it will be propogated
+-- If any other type of exception is raised then it will be propagated
 -- up to the next enclosing exception handler.
 --
 -- >  try a = catch (Right `liftM` a) (return . Left)
@@ -213,6 +213,22 @@ onException io what = io `catch` \e -> do _ <- what
 -- it, e.g.:
 --
 -- > withFile name mode = bracket (openFile name mode) hClose
+--
+-- Bracket wraps the release action with 'mask', which is sufficient to ensure
+-- that the release action executes to completion when it does not invoke any
+-- interruptible actions, even in the presence of asynchronous exceptions.  For
+-- example, `hClose` is uninterruptible when it is not racing other uses of the
+-- handle.  Similarly, closing a socket (from \"network\" package) is also
+-- uninterruptible under similar conditions.  An example of an interruptible
+-- action is 'killThread'.  Completion of interruptible release actions can be
+-- ensured by wrapping them in in 'uninterruptibleMask_', but this risks making
+-- the program non-responsive to @Control-C@, or timeouts.  Another option is to
+-- run the release action asynchronously in its own thread:
+--
+-- > void $ uninterruptibleMask_ $ forkIO $ do { ... }
+--
+-- The resource will be released as soon as possible, but the thread that invoked
+-- bracket will not block in an uninterruptible state.
 --
 bracket
         :: IO a         -- ^ computation to run first (\"acquire resource\")
@@ -375,15 +391,15 @@ instance Exception NestedAtomically
 
 -----
 
+-- See Note [Compiler error functions] in ghc-prim:GHC.Prim.Panic
 recSelError, recConError, runtimeError,
   nonExhaustiveGuardsError, patError, noMethodBindingError,
-  absentError, typeError
+  typeError
         :: Addr# -> a   -- All take a UTF8-encoded C string
 
 recSelError              s = throw (RecSelError ("No match in record selector "
                                                  ++ unpackCStringUtf8# s))  -- No location info unfortunately
 runtimeError             s = errorWithoutStackTrace (unpackCStringUtf8# s)                   -- No location info unfortunately
-absentError              s = errorWithoutStackTrace ("Oops!  Entered absent arg " ++ unpackCStringUtf8# s)
 
 nonExhaustiveGuardsError s = throw (PatternMatchFail (untangle s "Non-exhaustive guards in"))
 recConError              s = throw (RecConError      (untangle s "Missing field in record construction"))
@@ -398,7 +414,3 @@ nonTermination = toException NonTermination
 -- GHC's RTS calls this
 nestedAtomically :: SomeException
 nestedAtomically = toException NestedAtomically
-
--- Introduced by unarise for unused unboxed sum fields
-absentSumFieldError :: a
-absentSumFieldError = absentError " in unboxed sum."#

@@ -3,6 +3,8 @@
 # Copyright 2009 Kari Pahula
 # Licensed under BSD3, see /usr/share/common-licenses/BSD
 
+use Cwd qw(abs_path);
+
 my @ifaces;
 my %pkgs;
 
@@ -31,6 +33,7 @@ sub addInfo {
         chomp ($dat{ver} = <$fh>);
         chomp ($dat{ifaces} = <$fh>);
         chomp ($dat{html} = <$fh>);
+        $dat{html} = abs_path($dat{html});
         process(\%dat, @_);
     }
 }
@@ -45,7 +48,7 @@ sub process {
     return undef if (exists $$pkgs{$p});
     if ($$dat{html} =~ m,^/usr/share/doc/ghc-doc/html/libraries/(.*),) {
         $path = $1;
-    } elsif ($$dat{html} =~ m,^/usr/share/doc/([^/]*-doc/html/.*),) {
+    } elsif ($$dat{html} =~ m,^/usr/share/doc/([^/]*-doc/html.*),) {
         $path = "../../../$1";
     }
 

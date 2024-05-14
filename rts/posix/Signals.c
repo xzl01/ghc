@@ -6,12 +6,13 @@
  *
  * ---------------------------------------------------------------------------*/
 
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
 
 #include "Schedule.h"
 #include "RtsSignals.h"
 #include "Signals.h"
+#include "IOManager.h"
 #include "RtsUtils.h"
 #include "Prelude.h"
 #include "Ticker.h"
@@ -128,7 +129,7 @@ more_handlers(int sig)
 }
 
 // Here's the pipe into which we will send our signals
-static volatile int io_manager_wakeup_fd = -1;
+static int io_manager_wakeup_fd = -1;
 static int timer_manager_control_wr_fd = -1;
 
 #define IO_MANAGER_WAKEUP 0xff
@@ -136,7 +137,7 @@ static int timer_manager_control_wr_fd = -1;
 #define IO_MANAGER_SYNC   0xfd
 
 void setTimerManagerControlFd(int fd) {
-    timer_manager_control_wr_fd = fd;
+    RELAXED_STORE(&timer_manager_control_wr_fd, fd);
 }
 
 void
@@ -144,7 +145,7 @@ setIOManagerWakeupFd (int fd)
 {
     // only called when THREADED_RTS, but unconditionally
     // compiled here because GHC.Event.Control depends on it.
-    io_manager_wakeup_fd = fd;
+    SEQ_CST_STORE(&io_manager_wakeup_fd, fd);
 }
 
 /* -----------------------------------------------------------------------------
@@ -154,14 +155,15 @@ void
 ioManagerWakeup (void)
 {
     int r;
+    const int wakeup_fd = SEQ_CST_LOAD(&io_manager_wakeup_fd);
     // Wake up the IO Manager thread by sending a byte down its pipe
-    if (io_manager_wakeup_fd >= 0) {
+    if (wakeup_fd >= 0) {
 #if defined(HAVE_EVENTFD)
         StgWord64 n = (StgWord64)IO_MANAGER_WAKEUP;
-        r = write(io_manager_wakeup_fd, (char *) &n, 8);
+        r = write(wakeup_fd, (char *) &n, 8);
 #else
         StgWord8 byte = (StgWord8)IO_MANAGER_WAKEUP;
-        r = write(io_manager_wakeup_fd, &byte, 1);
+        r = write(wakeup_fd, &byte, 1);
 #endif
         /* N.B. If the TimerManager is shutting down as we run this
          * then there is a possibility that our first read of
@@ -174,7 +176,7 @@ ioManagerWakeup (void)
          * Since this is not an error condition, we do not print the error
          * message in this case.
          */
-        if (r == -1 && io_manager_wakeup_fd >= 0) {
+        if (r == -1 && SEQ_CST_LOAD(&io_manager_wakeup_fd) >= 0) {
             sysErrorBelch("ioManagerWakeup: write");
         }
     }
@@ -186,21 +188,27 @@ ioManagerDie (void)
 {
     StgWord8 byte = (StgWord8)IO_MANAGER_DIE;
     uint32_t i;
-    int fd;
     int r;
 
-    if (0 <= timer_manager_control_wr_fd) {
-        r = write(timer_manager_control_wr_fd, &byte, 1);
-        if (r == -1) { sysErrorBelch("ioManagerDie: write"); }
-        timer_manager_control_wr_fd = -1;
-    }
-
-    for (i=0; i < n_capabilities; i++) {
-        fd = capabilities[i]->io_manager_control_wr_fd;
+    {
+        // Shut down timer manager
+        const int fd = RELAXED_LOAD(&timer_manager_control_wr_fd);
         if (0 <= fd) {
             r = write(fd, &byte, 1);
             if (r == -1) { sysErrorBelch("ioManagerDie: write"); }
-            capabilities[i]->io_manager_control_wr_fd = -1;
+            RELAXED_STORE(&timer_manager_control_wr_fd, -1);
+        }
+    }
+
+    {
+        // Shut down IO managers
+        for (i=0; i < getNumCapabilities(); i++) {
+            const int fd = RELAXED_LOAD(&getCapability(i)->io_manager_control_wr_fd);
+            if (0 <= fd) {
+                r = write(fd, &byte, 1);
+                if (r == -1) { sysErrorBelch("ioManagerDie: write"); }
+                RELAXED_STORE(&getCapability(i)->io_manager_control_wr_fd, -1);
+            }
         }
     }
 }
@@ -216,7 +224,7 @@ ioManagerStart (void)
 {
     // Make sure the IO manager thread is running
     Capability *cap;
-    if (timer_manager_control_wr_fd < 0 || io_manager_wakeup_fd < 0) {
+    if (SEQ_CST_LOAD(&timer_manager_control_wr_fd) < 0 || SEQ_CST_LOAD(&io_manager_wakeup_fd) < 0) {
         cap = rts_lock();
         ioManagerStartCap(&cap);
         rts_unlock(cap);
@@ -258,9 +266,10 @@ generic_handler(int sig USED_IF_THREADS,
         memcpy(buf+1, info, sizeof(siginfo_t));
     }
 
-    if (0 <= timer_manager_control_wr_fd)
+    int timer_control_fd = RELAXED_LOAD(&timer_manager_control_wr_fd);
+    if (0 <= timer_control_fd)
     {
-        r = write(timer_manager_control_wr_fd, buf, sizeof(siginfo_t)+1);
+        r = write(timer_control_fd, buf, sizeof(siginfo_t)+1);
         if (r == -1 && errno == EAGAIN) {
             errorBelch("lost signal due to full pipe: %d\n", sig);
         }
@@ -341,7 +350,7 @@ anyUserHandlers(void)
 void
 awaitUserSignals(void)
 {
-    while (!signals_pending() && sched_state == SCHED_RUNNING) {
+    while (!signals_pending() && getSchedState() == SCHED_RUNNING) {
         pause();
     }
 }
@@ -512,7 +521,7 @@ shutdown_handler(int sig STG_UNUSED)
     // If we're already trying to interrupt the RTS, terminate with
     // extreme prejudice.  So the first ^C tries to exit the program
     // cleanly, and the second one just kills it.
-    if (sched_state >= SCHED_INTERRUPTING) {
+    if (getSchedState() >= SCHED_INTERRUPTING) {
         stg_exit(EXIT_INTERRUPTED);
     } else {
         interruptStgRts();
@@ -624,7 +633,7 @@ set_sigtstp_action (bool handle)
 void
 install_vtalrm_handler(int sig, TickProc handle_tick)
 {
-    struct sigaction action;
+    struct sigaction action = {};
 
     action.sa_handler = handle_tick;
 
@@ -666,19 +675,16 @@ install_vtalrm_handler(int sig, TickProc handle_tick)
 void
 initDefaultHandlers(void)
 {
-    struct sigaction action,oact;
+    struct sigaction action = {};
+    struct sigaction oact = {};
 
     // install the SIGINT handler
     action.sa_handler = shutdown_handler;
     sigemptyset(&action.sa_mask);
-    action.sa_flags = 0;
+    action.sa_flags = 0; // disable SA_RESTART
     if (sigaction(SIGINT, &action, &oact) != 0) {
         sysErrorBelch("warning: failed to install SIGINT handler");
     }
-
-#if defined(HAVE_SIGINTERRUPT)
-    siginterrupt(SIGINT, 1);    // isn't this the default? --SDM
-#endif
 
     // install the SIGFPE handler
 

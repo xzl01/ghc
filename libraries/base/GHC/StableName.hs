@@ -1,6 +1,5 @@
-{-# LANGUAGE Trustworthy #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE MagicHash #-}
+{-# LANGUAGE Trustworthy #-}
 {-# LANGUAGE UnboxedTuples #-}
 
 -----------------------------------------------------------------------------
@@ -10,11 +9,11 @@
 -- License     :  BSD-style (see the file libraries/base/LICENSE)
 --
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  non-portable
 --
--- Stable names are a way of performing fast (O(1)), not-quite-exact
--- comparison between objects.
+-- Stable names are a way of performing fast ( \(\mathcal{O}(1)\) ),
+-- not-quite-exact comparison between objects.
 --
 -- Stable names solve the following problem: suppose you want to build
 -- a hash table with Haskell objects as keys, but you want to use

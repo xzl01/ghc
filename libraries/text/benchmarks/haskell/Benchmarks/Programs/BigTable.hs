@@ -6,13 +6,12 @@
 --
 -- * Writing to a handle
 --
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE CPP, OverloadedStrings #-}
 module Benchmarks.Programs.BigTable
     ( benchmark
     ) where
 
-import Criterion (Benchmark, bench, whnfIO)
-import Data.Monoid (mappend, mconcat)
+import Test.Tasty.Bench (Benchmark, bench, whnfIO)
 import Data.Text.Lazy.Builder (Builder, fromText, toLazyText)
 import Data.Text.Lazy.IO (hPutStr)
 import System.IO (Handle)

@@ -1,6 +1,23 @@
 binary
 ======
 
+binary-0.8.9.1
+--------------
+
+- Fix redundant pattern match warning in GHC 9.4
+
+binary-0.8.9.0
+--------------
+
+- Compatibility with GHC 9.2
+- Drop instances for deprecated `Data.Semigroup.Option`
+
+binary-0.8.8.0
+--------------
+
+- Support Int32Rep and Word32Rep (3e0134df).
+- Use bases built-in float/word32 and double/word64 casts (8eae4af0).
+
 binary-0.8.7.0
 --------------
 

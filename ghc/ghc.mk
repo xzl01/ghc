@@ -5,8 +5,8 @@
 # This file is part of the GHC build system.
 #
 # To understand how the build system works and how to modify it, see
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Architecture
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Modifying
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/architecture
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/modifying
 #
 # -----------------------------------------------------------------------------
 
@@ -19,14 +19,9 @@ ghc_stage2_CONFIGURE_OPTS += --flags=stage2
 ghc_stage3_CONFIGURE_OPTS += --flags=stage3
 
 ifeq "$(GhcWithInterpreter)" "YES"
-ghc_stage2_CONFIGURE_OPTS += --flags=ghci
-ghc_stage3_CONFIGURE_OPTS += --flags=ghci
+ghc_stage2_CONFIGURE_OPTS += --flags=internal-interpreter
+ghc_stage3_CONFIGURE_OPTS += --flags=internal-interpreter
 endif
-
-# This package doesn't pass the Cabal checks because data-dir
-# points outside the source directory. This isn't a real problem, so
-# we just skip the check.
-ghc_NO_CHECK = YES
 
 ghc_stage1_MORE_HC_OPTS = $(GhcStage1HcOpts)
 ghc_stage2_MORE_HC_OPTS = $(GhcStage2HcOpts)
@@ -37,15 +32,6 @@ ghc_stage3_MORE_HC_OPTS = $(GhcStage3HcOpts)
 ghc_stage1_UseGhcForCC = YES
 ghc_stage2_UseGhcForCC = YES
 ghc_stage3_UseGhcForCC = YES
-
-ghc_stage1_C_FILES_NODEPS = ghc/hschooks.c
-
-ghc_stage2_MKDEPENDC_OPTS = -DMAKING_GHC_BUILD_SYSTEM_DEPENDENCIES
-ghc_stage3_MKDEPENDC_OPTS = -DMAKING_GHC_BUILD_SYSTEM_DEPENDENCIES
-
-ghc_stage1_MORE_HC_OPTS += -no-hs-main
-ghc_stage2_MORE_HC_OPTS += -no-hs-main
-ghc_stage3_MORE_HC_OPTS += -no-hs-main
 
 ifeq "$(GhcDebugged)" "YES"
 ghc_stage1_MORE_HC_OPTS += -debug
@@ -61,6 +47,10 @@ ifeq "$(GhcThreaded)" "YES"
 # Use threaded RTS with GHCi, so threads don't get blocked at the prompt.
 ghc_stage2_MORE_HC_OPTS += -threaded
 ghc_stage3_MORE_HC_OPTS += -threaded
+else
+# Opt out from threaded GHC. See ghc-bin.cabal.in
+ghc_stage2_CONFIGURE_OPTS += -f-threaded
+ghc_stage3_CONFIGURE_OPTS += -f-threaded
 endif
 
 # If stage 0 supplies a threaded RTS, we can use it for stage 1.
@@ -129,25 +119,17 @@ ghc/stage2/build/tmp/$(ghc_stage2_PROG) : $(compiler_stage2_p_LIB)
 ghc/stage2/build/tmp/$(ghc_stage2_PROG) : $(foreach lib,$(PACKAGES_STAGE1),$(libraries/$(lib)_dist-install_p_LIB))
 endif
 
-# Modules here import HsVersions.h, so we need ghc_boot_platform.h
-$(ghc_stage1_depfile_haskell) : compiler/stage1/$(PLATFORM_H)
-$(ghc_stage2_depfile_haskell) : compiler/stage2/$(PLATFORM_H)
-$(ghc_stage3_depfile_haskell) : compiler/stage3/$(PLATFORM_H)
-
 all_ghc_stage1 : $(GHC_STAGE1)
 all_ghc_stage2 : $(GHC_STAGE2)
 all_ghc_stage3 : $(GHC_STAGE3)
 
-$(INPLACE_LIB)/settings : settings
+$(INPLACE_LIB)/settings : $(includes_SETTINGS)
 	"$(CP)" $< $@
 
 $(INPLACE_LIB)/llvm-targets : llvm-targets
 	"$(CP)" $< $@
 
 $(INPLACE_LIB)/llvm-passes : llvm-passes
-	"$(CP)" $< $@
-
-$(INPLACE_LIB)/platformConstants: $(includes_GHCCONSTANTS_HASKELL_VALUE)
 	"$(CP)" $< $@
 
 # The GHC programs need to depend on all the helper programs they might call,
@@ -157,17 +139,10 @@ GHC_DEPENDENCIES += $$(unlit_INPLACE)
 GHC_DEPENDENCIES += $(INPLACE_LIB)/settings
 GHC_DEPENDENCIES += $(INPLACE_LIB)/llvm-targets
 GHC_DEPENDENCIES += $(INPLACE_LIB)/llvm-passes
-GHC_DEPENDENCIES += $(INPLACE_LIB)/platformConstants
 
 $(GHC_STAGE1) : | $(GHC_DEPENDENCIES)
 $(GHC_STAGE2) : | $(GHC_DEPENDENCIES)
 $(GHC_STAGE3) : | $(GHC_DEPENDENCIES)
-
-ifeq "$(GhcUnregisterised)" "NO"
-$(GHC_STAGE1) : | $$(ghc-split_INPLACE)
-$(GHC_STAGE2) : | $$(ghc-split_INPLACE)
-$(GHC_STAGE3) : | $$(ghc-split_INPLACE)
-endif
 
 ifeq "$(Windows_Host)" "YES"
 $(GHC_STAGE1) : | $$(touchy_INPLACE)
@@ -183,7 +158,7 @@ $(GHC_STAGE2) : $(foreach w,$(GhcLibWays),libraries/base/dist-install/build/GHC/
 
 endif
 
-INSTALL_LIBS += settings
+INSTALL_LIBS += $(includes_SETTINGS)
 INSTALL_LIBS += llvm-targets
 INSTALL_LIBS += llvm-passes
 

@@ -10,6 +10,7 @@
  */
 
 #include "LinkerInternals.h"
+#include "linker/MMap.h"
 
 #if defined(NEED_SYMBOL_EXTRAS)
 #if !defined(x86_64_HOST_ARCH) || !defined(mingw32_HOST_OS)
@@ -19,16 +20,23 @@
 #include "linker/SymbolExtras.h"
 #include "linker/M32Alloc.h"
 
+#if defined(OBJFORMAT_ELF)
+#  include "linker/Elf.h"
+#elif defined(OBJFORMAT_MACHO)
+#  include "linker/MachO.h"
+#endif
+
 #include <string.h>
 #if RTS_LINKER_USE_MMAP
 #include <sys/mman.h>
 #endif /* RTS_LINKER_USE_MMAP */
 
 /*
-  ocAllocateSymbolExtras
+  ocAllocateExtras
 
   Allocate additional space at the end of the object file image to make room
-  for jump islands (powerpc, x86_64, arm) and GOT entries (x86_64).
+  for jump islands (powerpc, x86_64, arm), GOT entries (x86_64) and
+  bss sections.
 
   PowerPC relative branch instructions have a 24 bit displacement field.
   As PPC code is always 4-byte-aligned, this yields a +-32MB range.
@@ -43,60 +51,76 @@
   filled in by makeSymbolExtra below.
 */
 
-int ocAllocateSymbolExtras( ObjectCode* oc, int count, int first )
+int ocAllocateExtras(ObjectCode* oc, int count, int first, int bssSize)
 {
-  size_t n;
+  void* oldImage = oc->image;
+  const size_t extras_size = sizeof(SymbolExtra) * count;
 
-  if (RTS_LINKER_USE_MMAP && USE_CONTIGUOUS_MMAP) {
-      n = roundUpToPage(oc->fileSize);
+  if (count > 0 || bssSize > 0) {
+    if (!RTS_LINKER_USE_MMAP) {
+      /* N.B. We currently can't mark symbol extras as non-executable in this
+       * case. */
 
-      /* Keep image and symbol_extras contiguous */
+      // round up to the nearest 4
+      int aligned = (oc->fileSize + 3) & ~3;
+      int misalignment = oc->misalignment;
 
-      size_t allocated_size = n + (sizeof(SymbolExtra) * count);
-      void *new = mmapForLinker(allocated_size, MAP_ANONYMOUS, -1, 0);
+      oc->image -= misalignment;
+      oc->image = stgReallocBytes( oc->image,
+                               misalignment +
+                               aligned + extras_size,
+                               "ocAllocateExtras" );
+      oc->image += misalignment;
+
+      oc->symbol_extras = (SymbolExtra *) (oc->image + aligned);
+    } else if (USE_CONTIGUOUS_MMAP || RtsFlags.MiscFlags.linkerAlwaysPic) {
+      /* Keep image, bssExtras and symbol_extras contiguous */
+      /* N.B. We currently can't mark symbol extras as non-executable in this
+       * case. */
+      size_t n = roundUpToPage(oc->fileSize);
+      // round bssSize up to the nearest page size since we need to ensure that
+      // symbol_extras is aligned to a page boundary so it can be mprotect'd.
+      bssSize = roundUpToPage(bssSize);
+      size_t allocated_size = n + bssSize + extras_size;
+      void *new = mmapAnonForLinker(allocated_size);
       if (new) {
           memcpy(new, oc->image, oc->fileSize);
           if (oc->imageMapped) {
-              munmap(oc->image, n);
+              munmapForLinker(oc->image, n, "ocAllocateExtras");
           }
           oc->image = new;
           oc->imageMapped = true;
-          oc->fileSize = n + (sizeof(SymbolExtra) * count);
-          oc->symbol_extras = (SymbolExtra *) (oc->image + n);
-          if(mprotect(new, allocated_size, PROT_READ | PROT_EXEC) != 0) {
-              sysErrorBelch("unable to protect memory");
-          }
+          oc->fileSize = allocated_size;
+          oc->symbol_extras = (SymbolExtra *) (oc->image + n + bssSize);
+          oc->bssBegin = oc->image + n;
+          oc->bssEnd = oc->image + n + bssSize;
       }
       else {
           oc->symbol_extras = NULL;
           return 0;
       }
-  }
-  else if( count > 0 ) {
-    if (RTS_LINKER_USE_MMAP) {
-        n = roundUpToPage(oc->fileSize);
-
-        oc->symbol_extras = m32_alloc(sizeof(SymbolExtra) * count, 8);
+    } else {
+        /* m32_allocator_flush ensures that these are marked as executable when
+         * we finish building them. */
+        oc->symbol_extras = m32_alloc(oc->rx_m32, extras_size, 8);
         if (oc->symbol_extras == NULL) return 0;
-    }
-    else {
-        // round up to the nearest 4
-        int aligned = (oc->fileSize + 3) & ~3;
-        int misalignment = oc->misalignment;
-
-        oc->image -= misalignment;
-        oc->image = stgReallocBytes( oc->image,
-                                 misalignment +
-                                 aligned + sizeof (SymbolExtra) * count,
-                                 "ocAllocateSymbolExtras" );
-        oc->image += misalignment;
-
-        oc->symbol_extras = (SymbolExtra *) (oc->image + aligned);
     }
   }
 
   if (oc->symbol_extras != NULL) {
-      memset( oc->symbol_extras, 0, sizeof (SymbolExtra) * count );
+      memset( oc->symbol_extras, 0, extras_size );
+  }
+
+  // ObjectCodeFormatInfo contains computed addresses based on offset to
+  // image, if the address of image changes, we need to invalidate
+  // the ObjectCodeFormatInfo and recompute it.
+  if (oc->image != oldImage) {
+#if defined(OBJFORMAT_MACHO)
+    ocInit_MachO( oc );
+#endif
+#if defined(OBJFORMAT_ELF)
+    ocInit_ELF( oc );
+#endif
   }
 
   oc->first_symbol_extra = first;
@@ -105,8 +129,31 @@ int ocAllocateSymbolExtras( ObjectCode* oc, int count, int first )
   return 1;
 }
 
+/**
+ * Mark the symbol extras as non-writable.
+ */
+void ocProtectExtras(ObjectCode* oc)
+{
+  if (oc->n_symbol_extras == 0) return;
 
-#if !defined(arm_HOST_ARCH)
+  if (!RTS_LINKER_USE_MMAP) {
+    /*
+     * In this case the symbol extras were allocated via malloc. All we can do
+     * in this case is hope that the platform doesn't mark such allocations as
+     * non-executable.
+     */
+  } else if (USE_CONTIGUOUS_MMAP || RtsFlags.MiscFlags.linkerAlwaysPic) {
+    mprotectForLinker(oc->symbol_extras, sizeof(SymbolExtra) * oc->n_symbol_extras, MEM_READ_EXECUTE);
+  } else {
+    /*
+     * The symbol extras were allocated via m32. They will be protected when
+     * the m32 allocator is finalized
+     */
+  }
+}
+
+
+#if defined(powerpc_HOST_ARCH) || defined(x86_64_HOST_ARCH)
 SymbolExtra* makeSymbolExtra( ObjectCode const* oc,
                               unsigned long symbolNumber,
                               unsigned long target )
@@ -135,13 +182,16 @@ SymbolExtra* makeSymbolExtra( ObjectCode const* oc,
 #endif /* powerpc_HOST_ARCH */
 #if defined(x86_64_HOST_ARCH)
     // jmp *-14(%rip)
-    static uint8_t jmp[] = { 0xFF, 0x25, 0xF2, 0xFF, 0xFF, 0xFF };
+    // 0xFF 25 is opcode + ModRM of near absolute indirect jump
+    // Two bytes trailing padding, needed for TLSGD GOT entries
+    // See Note [TLSGD relocation] in elf_tlsgd.c
+    static uint8_t jmp[] = { 0xFF, 0x25, 0xF2, 0xFF, 0xFF, 0xFF, 0x00, 0x00 };
     extra->addr = target;
-    memcpy(extra->jumpIsland, jmp, 6);
+    memcpy(extra->jumpIsland, jmp, 8);
 #endif /* x86_64_HOST_ARCH */
 
     return extra;
 }
-#endif /* !arm_HOST_ARCH */
+#endif /* powerpc_HOST_ARCH || x86_64_HOST_ARCH */
 #endif /* !x86_64_HOST_ARCH) || !mingw32_HOST_OS */
 #endif // NEED_SYMBOL_EXTRAS

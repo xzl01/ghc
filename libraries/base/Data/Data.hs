@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -19,7 +18,7 @@
 -- License     :  BSD-style (see the file libraries/base/LICENSE)
 --
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  non-portable (local universal quantification)
 --
 -- \"Scrap your boilerplate\" --- Generic programming in Haskell.  See
@@ -86,6 +85,7 @@ module Data.Data (
         Fixity(..),
         -- ** Constructors
         mkConstr,
+        mkConstrTag,
         mkIntegralConstr,
         mkRealConstr,
         mkCharConstr,
@@ -121,6 +121,7 @@ import Data.Eq
 import Data.Maybe
 import Data.Monoid
 import Data.Ord
+import Data.List (findIndex)
 import Data.Typeable
 import Data.Version( Version(..) )
 import GHC.Base hiding (Any, IntRep, FloatRep)
@@ -128,9 +129,12 @@ import GHC.List
 import GHC.Num
 import GHC.Read
 import GHC.Show
+import GHC.Tuple (Solo (..))
 import Text.Read( reads )
 
 -- Imports for the instances
+import Control.Applicative (WrappedArrow(..), WrappedMonad(..), ZipList(..))
+       -- So we can give them Data instances
 import Data.Functor.Identity -- So we can give Data instance for Identity
 import Data.Int              -- So we can give Data instance for Int8, ...
 import Data.Type.Coercion
@@ -192,7 +196,7 @@ immediate subterms.  In the definition of gmapQr, extra effort is
 needed. We use a higher-order accumulation trick to mediate between
 left-associative constructor application vs. right-associative binary
 operation (e.g., @(:)@).  When the query is meant to compute a value
-of type @r@, then the result type withing generic folding is @r -> r@.
+of type @r@, then the result type within generic folding is @r -> r@.
 So the result of folding is a function to which we finally pass the
 right unit.
 
@@ -627,10 +631,9 @@ mkDataType str cs = DataType
                         , datarep = AlgRep cs
                         }
 
-
 -- | Constructs a constructor
-mkConstr :: DataType -> String -> [String] -> Fixity -> Constr
-mkConstr dt str fields fix =
+mkConstrTag :: DataType -> String -> Int -> [String] -> Fixity -> Constr
+mkConstrTag dt str idx fields fix =
         Constr
                 { conrep    = AlgConstr idx
                 , constring = str
@@ -638,9 +641,15 @@ mkConstr dt str fields fix =
                 , confixity = fix
                 , datatype  = dt
                 }
+
+-- | Constructs a constructor
+mkConstr :: DataType -> String -> [String] -> Fixity -> Constr
+mkConstr dt str fields fix = mkConstrTag dt str idx fields fix
   where
-    idx = head [ i | (c,i) <- dataTypeConstrs dt `zip` [1..],
-                     showConstr c == str ]
+    idx = case findIndex (\c -> showConstr c == str) (dataTypeConstrs dt) of
+            Just i  -> i+1 -- ConTag starts at 1
+            Nothing -> errorWithoutStackTrace $
+                        "Data.Data.mkConstr: couldn't find constructor " ++ str
 
 
 -- | Gets the constructors of an algebraic datatype
@@ -1108,7 +1117,7 @@ ratioDataType = mkDataType "GHC.Real.Ratio" [ratioConstr]
 
 -- NB: This Data instance intentionally uses the (%) smart constructor instead
 -- of the internal (:%) constructor to preserve the invariant that a Ratio
--- value is reduced to normal form. See Trac #10011.
+-- value is reduced to normal form. See #10011.
 
 -- | @since 4.0.0.0
 instance (Data a, Integral a) => Data (Ratio a) where
@@ -1156,6 +1165,18 @@ instance Data a => Data [a] where
 
 ------------------------------------------------------------------------------
 
+-- | @since 4.14.0.0
+deriving instance (Typeable (a :: Type -> Type -> Type), Typeable b, Typeable c,
+                   Data (a b c))
+         => Data (WrappedArrow a b c)
+
+-- | @since 4.14.0.0
+deriving instance (Typeable (m :: Type -> Type), Typeable a, Data (m a))
+         => Data (WrappedMonad m a)
+
+-- | @since 4.14.0.0
+deriving instance Data a => Data (ZipList a)
+
 -- | @since 4.9.0.0
 deriving instance Data a => Data (NonEmpty a)
 
@@ -1170,6 +1191,9 @@ deriving instance (Data a, Data b) => Data (Either a b)
 
 -- | @since 4.0.0.0
 deriving instance Data ()
+
+-- | @since 4.15
+deriving instance Data a => Data (Solo a)
 
 -- | @since 4.0.0.0
 deriving instance (Data a, Data b) => Data (a,b)

@@ -6,7 +6,14 @@
     ></head
   ><body
   ><pre
-    ><span class="hs-keyword"
+    ><span class="hs-pragma"
+      >{-# LANGUAGE Haskell2010 #-}</span
+      ><span
+      >
+</span
+      ><span id="line-2"
+      ></span
+      ><span class="hs-keyword"
       >module</span
       ><span
       > </span
@@ -16,11 +23,6 @@
       > </span
       ><span class="hs-keyword"
       >where</span
-      ><span
-      >
-</span
-      ><span id="line-2"
-      ></span
       ><span
       >
 </span
@@ -95,7 +97,7 @@
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >a :: [a]
+	  >[a]
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -108,7 +110,7 @@
       ><span id="%2B%2B%2B"
       ><span class="annot"
 	><span class="annottext"
-	  >+++ :: [a] -&gt; [a] -&gt; [a]
+	  >+++ :: forall a. [a] -&gt; [a] -&gt; [a]
 </span
 	  ><a href="Operators.html#%2B%2B%2B"
 	  ><span class="hs-operator hs-var hs-var"
@@ -121,7 +123,7 @@
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >b :: [a]
+	  >[a]
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -260,7 +262,7 @@ forall a. [a] -&gt; [a] -&gt; [a]
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >a :: [a]
+	  >[a]
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -273,7 +275,7 @@ forall a. [a] -&gt; [a] -&gt; [a]
       ><span id="%24%24%24"
       ><span class="annot"
 	><span class="annottext"
-	  >$$$ :: [a] -&gt; [a] -&gt; [a]
+	  >$$$ :: forall a. [a] -&gt; [a] -&gt; [a]
 </span
 	  ><a href="Operators.html#%24%24%24"
 	  ><span class="hs-operator hs-var hs-var"
@@ -286,7 +288,7 @@ forall a. [a] -&gt; [a] -&gt; [a]
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >b :: [a]
+	  >[a]
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -406,7 +408,7 @@ forall a. [a] -&gt; [a] -&gt; [a]
       ><span id="%2A%2A%2A"
       ><span class="annot"
 	><span class="annottext"
-	  >*** :: [a] -&gt; [a] -&gt; [a]
+	  >*** :: forall a. [a] -&gt; [a] -&gt; [a]
 </span
 	  ><a href="Operators.html#%2A%2A%2A"
 	  ><span class="hs-operator hs-var hs-var"
@@ -419,7 +421,7 @@ forall a. [a] -&gt; [a] -&gt; [a]
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >a :: [a]
+	  >[a]
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -464,7 +466,7 @@ forall a. [a] -&gt; [a] -&gt; [a]
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >a :: [a]
+	  >[a]
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -476,8 +478,13 @@ forall a. [a] -&gt; [a] -&gt; [a]
       > </span
       ><span class="hs-special"
       >(</span
-      ><span class="hs-identifier"
-      >_</span
+      ><span class="annot"
+      ><span class="annottext"
+	>a
+</span
+	><span class="hs-identifier"
+	>_</span
+	></span
       ><span class="annot"
       ><span class="hs-glyph hs-type"
 	>:</span
@@ -485,7 +492,7 @@ forall a. [a] -&gt; [a] -&gt; [a]
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >b :: [a]
+	  >[a]
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -638,7 +645,7 @@ forall a. [a] -&gt; [a] -&gt; [a]
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >a :: [[a]]
+	  >[[a]]
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -651,7 +658,7 @@ forall a. [a] -&gt; [a] -&gt; [a]
       ><span id="%2A%2F%5C%2A"
       ><span class="annot"
 	><span class="annottext"
-	  >*/\* :: [[a]] -&gt; [a] -&gt; [a]
+	  >*/\* :: forall a. [[a]] -&gt; [a] -&gt; [a]
 </span
 	  ><a href="Operators.html#%2A%2F%5C%2A"
 	  ><span class="hs-operator hs-var hs-var"
@@ -664,7 +671,7 @@ forall a. [a] -&gt; [a] -&gt; [a]
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >b :: [a]
+	  >[a]
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -810,7 +817,7 @@ forall a. [a] -&gt; [a] -&gt; [a]
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >a :: [[a]]
+	  >[[a]]
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -823,7 +830,7 @@ forall a. [a] -&gt; [a] -&gt; [a]
       ><span id="%2A%2A%2F%5C%2A%2A"
       ><span class="annot"
 	><span class="annottext"
-	  >**/\** :: [[a]] -&gt; [[a]] -&gt; [[a]]
+	  >**/\** :: forall a. [[a]] -&gt; [[a]] -&gt; [[a]]
 </span
 	  ><a href="Operators.html#%2A%2A%2F%5C%2A%2A"
 	  ><span class="hs-operator hs-var hs-var"
@@ -836,7 +843,7 @@ forall a. [a] -&gt; [a] -&gt; [a]
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >b :: [[a]]
+	  >[[a]]
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -956,11 +963,6 @@ forall a. [a] -&gt; [a] -&gt; [a]
 </span
       ><span id="line-20"
       ></span
-      ><span
-      >
-</span
-      ><span id="line-21"
-      ></span
       ><span id=""
       ><span id=""
 	><span id=""
@@ -1042,12 +1044,12 @@ forall a. [a] -&gt; [a] -&gt; [a]
       ><span
       >
 </span
-      ><span id="line-22"
+      ><span id="line-21"
       ></span
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >a :: a
+	  >a
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -1060,7 +1062,7 @@ forall a. [a] -&gt; [a] -&gt; [a]
       ><span id="%23.%23"
       ><span class="annot"
 	><span class="annottext"
-	  >#.# :: a -&gt; b -&gt; c -&gt; (a, b)
+	  >#.# :: forall a b c. a -&gt; b -&gt; c -&gt; (a, b)
 </span
 	  ><a href="Operators.html#%23.%23"
 	  ><span class="hs-operator hs-var hs-var"
@@ -1073,7 +1075,7 @@ forall a. [a] -&gt; [a] -&gt; [a]
       ><span id=""
       ><span class="annot"
 	><span class="annottext"
-	  >b :: b
+	  >b
 </span
 	  ><a href="#"
 	  ><span class="hs-identifier hs-var"
@@ -1094,16 +1096,6 @@ forall a b. a -&gt; b -&gt; a
 </span
 	><span class="hs-identifier hs-var"
 	>const</span
-	></span
-      ><span
-      > </span
-      ><span class="annot"
-      ><span class="annottext"
-	>((a, b) -&gt; c -&gt; (a, b)) -&gt; (a, b) -&gt; c -&gt; (a, b)
-forall a b. (a -&gt; b) -&gt; a -&gt; b
-</span
-	><span class="hs-operator hs-var"
-	>$</span
 	></span
       ><span
       > </span
@@ -1136,7 +1128,7 @@ forall a b. (a -&gt; b) -&gt; a -&gt; b
       ><span
       >
 </span
-      ><span id="line-23"
+      ><span id="line-22"
       ></span
       ></pre
     ></body

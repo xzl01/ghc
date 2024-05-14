@@ -1,5 +1,6 @@
-{-# LANGUAGE DeriveFunctor #-}
 {-# OPTIONS_GHC -Wwarn #-}
+{-# LANGUAGE DeriveFunctor #-}
+
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Haddock.Interface.ParseModuleHeader
@@ -15,7 +16,7 @@ module Haddock.Interface.ParseModuleHeader (parseModuleHeader) where
 import Control.Applicative (Alternative (..))
 import Control.Monad (ap)
 import Data.Char
-import DynFlags
+import GHC.Driver.Session
 import Haddock.Parser
 import Haddock.Types
 

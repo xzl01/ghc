@@ -1,6 +1,6 @@
 -- Written by Bertram Felgenhauer
 --
--- https://ghc.haskell.org/trac/ghc/ticket/11760#comment:14
+-- https://gitlab.haskell.org/ghc/ghc/issues/11760#note_131217
 --
 -- Compile with -threaded -with-rtsopts=-N2
 
@@ -12,7 +12,7 @@ import Control.Exception
 import Data.STRef
 import Data.IORef
 import Control.Concurrent.MVar
-import Data.List
+import Data.List (foldl')
 
 -- evil ST action that tries to synchronize (by busy waiting on the
 -- shared STRef) with a concurrent evaluation

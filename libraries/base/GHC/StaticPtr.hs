@@ -1,7 +1,7 @@
-{-# LANGUAGE CPP                       #-}
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE MagicHash                 #-}
 {-# LANGUAGE UnboxedTuples             #-}
+{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  GHC.StaticPtr
@@ -47,25 +47,20 @@ module GHC.StaticPtr
   , IsStatic(..)
   ) where
 
+import Data.Typeable       (Typeable)
 import Foreign.C.Types     (CInt(..))
-import Foreign.Marshal     (allocaArray, peekArray)
+import Foreign.Marshal     (allocaArray, peekArray, withArray)
 import GHC.Ptr             (Ptr(..), nullPtr)
 import GHC.Fingerprint     (Fingerprint(..))
 import GHC.Prim
 import GHC.Word            (Word64(..))
 
 
-#include "MachDeps.h"
-
 -- | A reference to a value of type @a@.
-#if WORD_SIZE_IN_BITS < 64
 data StaticPtr a = StaticPtr Word64# Word64# -- The flattened Fingerprint is
                                              -- convenient in the compiler.
                              StaticPtrInfo a
-#else
-data StaticPtr a = StaticPtr Word# Word#
-                             StaticPtrInfo a
-#endif
+
 -- | Dereferences a static pointer.
 deRefStaticPtr :: StaticPtr a -> a
 deRefStaticPtr (StaticPtr _ _ _ v) = v
@@ -87,23 +82,28 @@ staticKey (StaticPtr w0 w1 _ _) = Fingerprint (W64# w0) (W64# w1)
 --
 unsafeLookupStaticPtr :: StaticKey -> IO (Maybe (StaticPtr a))
 unsafeLookupStaticPtr (Fingerprint w1 w2) = do
-    ptr@(Ptr addr) <- hs_spt_lookup w1 w2
+    ptr@(Ptr addr) <- withArray [w1, w2] hs_spt_lookup
     if (ptr == nullPtr)
     then return Nothing
     else case addrToAny# addr of
            (# spe #) -> return (Just spe)
 
-foreign import ccall unsafe hs_spt_lookup :: Word64 -> Word64 -> IO (Ptr a)
+foreign import ccall unsafe hs_spt_lookup :: Ptr Word64 -> IO (Ptr a)
 
 -- | A class for things buildable from static pointers.
+--
+-- GHC wraps each use of the 'static' keyword with
+-- 'fromStaticPtr'. Because the 'static' keyword requires its argument
+-- to be an instance of 'Typeable', 'fromStaticPtr' carries a
+-- 'Typeable' constraint as well.
 class IsStatic p where
-    fromStaticPtr :: StaticPtr a -> p a
+    fromStaticPtr :: Typeable a => StaticPtr a -> p a
 
 -- | @since 4.9.0.0
 instance IsStatic StaticPtr where
     fromStaticPtr = id
 
--- | Miscelaneous information available for debugging purposes.
+-- | Miscellaneous information available for debugging purposes.
 data StaticPtrInfo = StaticPtrInfo
     { -- | Package key of the package where the static pointer is defined
       spInfoUnitId  :: String

@@ -8,7 +8,7 @@
 -- License     :  BSD-style (see the file libraries/base/LICENSE)
 -- 
 -- Maintainer  :  libraries@haskell.org
--- Stability   :  experimental
+-- Stability   :  stable
 -- Portability :  non-portable (concurrency)
 --
 -- Simple quantity semaphores.
@@ -82,7 +82,7 @@ waitQSem (QSem m) =
          putMVar m (z, b1, b2)
          return ()
   where
-    wait b = takeMVar b `onException` do
+    wait b = takeMVar b `onException`
                 (uninterruptibleMask_ $ do -- Note [signal uninterruptible]
                    (i,b1,b2) <- takeMVar m
                    r <- tryTakeMVar b
@@ -100,7 +100,7 @@ signalQSem (QSem m) =
     putMVar m r'
 
 -- Note [signal uninterruptible]
---
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 --   If we have
 --
 --      bracket waitQSem signalQSem (...)

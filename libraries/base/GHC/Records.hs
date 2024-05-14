@@ -1,9 +1,6 @@
-{-# LANGUAGE AllowAmbiguousTypes
-           , FunctionalDependencies
-           , KindSignatures
-           , MultiParamTypeClasses
-           , PolyKinds
-  #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE PolyKinds #-}
 
 -----------------------------------------------------------------------------
 -- |
@@ -17,7 +14,7 @@
 --
 -- This module defines the 'HasField' class used by the
 -- @OverloadedRecordFields@ extension.  See the
--- <https://ghc.haskell.org/trac/ghc/wiki/Records/OverloadedRecordFields
+-- <https://gitlab.haskell.org/ghc/ghc/wikis/records/overloaded-record-fields
 -- wiki page> for more details.
 --
 -----------------------------------------------------------------------------

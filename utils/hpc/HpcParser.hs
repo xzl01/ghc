@@ -12,7 +12,7 @@ import qualified GHC.Exts as Happy_GHC_Exts
 import Control.Applicative(Applicative(..))
 import Control.Monad (ap)
 
--- parser produced by Happy Version 1.19.12
+-- parser produced by Happy Version 1.20.0
 
 newtype HappyAbsSyn  = HappyAbsSyn HappyAny
 #if __GLASGOW_HASKELL__ >= 607
@@ -105,14 +105,14 @@ happyExpList = HappyA# "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x10\x00\x00\x00\x00
 happyExpListPerState st =
     token_strs_expected
   where token_strs = ["error","%dummy","%start_parser","Spec","Modules","Module","TopTicks","TopTick","Ticks","Tick","optString","optQual","optCat","MODULE","TICK","EXPRESSION","ON","LINE","POSITION","FUNCTION","INSIDE","AT","':'","'-'","';'","'{'","'}'","int","string","cat","%eof"]
-        bit_start = st * 31
-        bit_end = (st + 1) * 31
+        bit_start = st Prelude.* 31
+        bit_end = (st Prelude.+ 1) Prelude.* 31
         read_bit = readArrayBit happyExpList
-        bits = map read_bit [bit_start..bit_end - 1]
-        bits_indexed = zip bits [0..30]
-        token_strs_expected = concatMap f bits_indexed
-        f (False, _) = []
-        f (True, nr) = [token_strs !! nr]
+        bits = Prelude.map read_bit [bit_start..bit_end Prelude.- 1]
+        bits_indexed = Prelude.zip bits [0..30]
+        token_strs_expected = Prelude.concatMap f bits_indexed
+        f (Prelude.False, _) = []
+        f (Prelude.True, nr) = [token_strs Prelude.!! nr]
 
 happyActOffsets :: HappyAddr
 happyActOffsets = HappyA# "\x00\x00\x00\x00\x0e\x00\xf2\xff\x11\x00\x00\x00\x04\x00\x08\x00\x00\x00\x00\x00\x06\x00\x0a\x00\x07\x00\x10\x00\x13\x00\x0b\x00\x0c\x00\x12\x00\x00\x00\x00\x00\xff\xff\x00\x00\x00\x00\x15\x00\x14\x00\x00\x00\x00\x00\xfb\xff\x16\x00\x00\x00\x0f\x00\x17\x00\x19\x00\x1a\x00\x08\x00\x00\x00\x01\x00\x1b\x00\x18\x00\x1c\x00\x1e\x00\x00\x00\x00\x00\x00\x00\x00\x00"#
@@ -154,8 +154,8 @@ happyReduceArr = Happy_Data_Array.array (1, 19) [
 	(19 , happyReduce_19)
 	]
 
-happy_n_terms = 19 :: Int
-happy_n_nonterms = 10 :: Int
+happy_n_terms = 19 :: Prelude.Int
+happy_n_nonterms = 10 :: Prelude.Int
 
 happyReduce_1 = happySpecReduce_2  0# happyReduction_1
 happyReduction_1 happy_x_2
@@ -360,25 +360,25 @@ newtype HappyIdentity a = HappyIdentity a
 happyIdentity = HappyIdentity
 happyRunIdentity (HappyIdentity a) = a
 
-instance Functor HappyIdentity where
+instance Prelude.Functor HappyIdentity where
     fmap f (HappyIdentity a) = HappyIdentity (f a)
 
 instance Applicative HappyIdentity where
     pure  = HappyIdentity
     (<*>) = ap
-instance Monad HappyIdentity where
+instance Prelude.Monad HappyIdentity where
     return = pure
     (HappyIdentity p) >>= q = q p
 
 happyThen :: () => HappyIdentity a -> (a -> HappyIdentity b) -> HappyIdentity b
-happyThen = (>>=)
+happyThen = (Prelude.>>=)
 happyReturn :: () => a -> HappyIdentity a
-happyReturn = (return)
-happyThen1 m k tks = (>>=) m (\a -> k a tks)
+happyReturn = (Prelude.return)
+happyThen1 m k tks = (Prelude.>>=) m (\a -> k a tks)
 happyReturn1 :: () => a -> b -> HappyIdentity a
-happyReturn1 = \a tks -> (return) a
-happyError' :: () => ([(Token)], [String]) -> HappyIdentity a
-happyError' = HappyIdentity . (\(tokens, _) -> happyError tokens)
+happyReturn1 = \a tks -> (Prelude.return) a
+happyError' :: () => ([(Token)], [Prelude.String]) -> HappyIdentity a
+happyError' = HappyIdentity Prelude.. (\(tokens, _) -> happyError tokens)
 parser tks = happyRunIdentity happySomeParser where
  happySomeParser = happyThen (happyParse 0# tks) (\x -> happyReturn (let {(HappyWrap4 x') = happyOut4 x} in x'))
 
@@ -433,9 +433,9 @@ happyError e = error $ show (take 10 e)
 
 -- Do not remove this comment. Required to fix CPP parsing when using GCC and a clang-compiled alex.
 #if __GLASGOW_HASKELL__ > 706
-#define LT(n,m) ((Happy_GHC_Exts.tagToEnum# (n Happy_GHC_Exts.<# m)) :: Bool)
-#define GTE(n,m) ((Happy_GHC_Exts.tagToEnum# (n Happy_GHC_Exts.>=# m)) :: Bool)
-#define EQ(n,m) ((Happy_GHC_Exts.tagToEnum# (n Happy_GHC_Exts.==# m)) :: Bool)
+#define LT(n,m) ((Happy_GHC_Exts.tagToEnum# (n Happy_GHC_Exts.<# m)) :: Prelude.Bool)
+#define GTE(n,m) ((Happy_GHC_Exts.tagToEnum# (n Happy_GHC_Exts.>=# m)) :: Prelude.Bool)
+#define EQ(n,m) ((Happy_GHC_Exts.tagToEnum# (n Happy_GHC_Exts.==# m)) :: Prelude.Bool)
 #else
 #define LT(n,m) (n Happy_GHC_Exts.<# m)
 #define GTE(n,m) (n Happy_GHC_Exts.>=# m)
@@ -529,7 +529,7 @@ happyDoAction i tk st
         = {- nothing -}
           case action of
                 0#           -> {- nothing -}
-                                     happyFail (happyExpListPerState ((Happy_GHC_Exts.I# (st)) :: Int)) i tk st
+                                     happyFail (happyExpListPerState ((Happy_GHC_Exts.I# (st)) :: Prelude.Int)) i tk st
                 -1#          -> {- nothing -}
                                      happyAccept i tk st
                 n | LT(n,(0# :: Happy_GHC_Exts.Int#)) -> {- nothing -}
@@ -542,10 +542,10 @@ happyDoAction i tk st
          off_i  = (off Happy_GHC_Exts.+# i)
          check  = if GTE(off_i,(0# :: Happy_GHC_Exts.Int#))
                   then EQ(indexShortOffAddr happyCheck off_i, i)
-                  else False
+                  else Prelude.False
          action
           | check     = indexShortOffAddr happyTable off_i
-          | otherwise = indexShortOffAddr happyDefActions st
+          | Prelude.otherwise = indexShortOffAddr happyDefActions st
 
 
 
@@ -566,7 +566,7 @@ happyLt x y = LT(x,y)
 
 
 readArrayBit arr bit =
-    Bits.testBit (Happy_GHC_Exts.I# (indexShortOffAddr arr ((unbox_int bit) `Happy_GHC_Exts.iShiftRA#` 4#))) (bit `mod` 16)
+    Bits.testBit (Happy_GHC_Exts.I# (indexShortOffAddr arr ((unbox_int bit) `Happy_GHC_Exts.iShiftRA#` 4#))) (bit `Prelude.mod` 16)
   where unbox_int (Happy_GHC_Exts.I# x) = x
 
 
@@ -710,7 +710,7 @@ happyFail explist i tk (action) sts stk =
 -- Internal happy errors:
 
 notHappyAtAll :: a
-notHappyAtAll = error "Internal Happy error\n"
+notHappyAtAll = Prelude.error "Internal Happy error\n"
 
 -----------------------------------------------------------------------------
 -- Hack to get the typechecker to accept our action functions
@@ -728,7 +728,7 @@ happyTcHack x y = y
 --      happySeq = happyDontSeq
 
 happyDoSeq, happyDontSeq :: a -> b -> b
-happyDoSeq   a b = a `seq` b
+happyDoSeq   a b = a `Prelude.seq` b
 happyDontSeq a b = b
 
 -----------------------------------------------------------------------------

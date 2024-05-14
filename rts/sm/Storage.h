@@ -17,6 +17,7 @@
    -------------------------------------------------------------------------- */
 
 void initStorage(void);
+void initGeneration(generation *gen, int g);
 void exitStorage(void);
 void freeStorage(bool free_heap);
 
@@ -42,12 +43,22 @@ extern Mutex sm_mutex;
 #define ASSERT_SM_LOCK()
 #endif
 
+#if defined(THREADED_RTS)
+// needed for HEAP_ALLOCED below
+extern SpinLock gc_alloc_block_sync;
+#endif
+
+#define ACQUIRE_ALLOC_BLOCK_SPIN_LOCK() ACQUIRE_SPIN_LOCK(&gc_alloc_block_sync)
+#define RELEASE_ALLOC_BLOCK_SPIN_LOCK() RELEASE_SPIN_LOCK(&gc_alloc_block_sync)
+
+
 /* -----------------------------------------------------------------------------
    The write barrier for MVARs and TVARs
    -------------------------------------------------------------------------- */
 
-void dirty_MVAR(StgRegTable *reg, StgClosure *p);
-void dirty_TVAR(Capability *cap, StgTVar *p);
+void update_MVAR(StgRegTable *reg, StgClosure *p, StgClosure *old_val);
+void dirty_MVAR(StgRegTable *reg, StgClosure *p, StgClosure *old);
+void dirty_TVAR(Capability *cap, StgTVar *p, StgClosure *old);
 
 /* -----------------------------------------------------------------------------
    Nursery manipulation
@@ -70,14 +81,17 @@ bool     getNewNursery        (Capability *cap);
 INLINE_HEADER
 bool doYouWantToGC(Capability *cap)
 {
+    // This is necessarily approximate since otherwise we would need to take
+    // SM_LOCK to safely look at n_new_large_words.
+    TSAN_ANNOTATE_BENIGN_RACE(&g0->n_new_large_words, "doYouWantToGC(n_new_large_words)");
     return ((cap->r.rCurrentNursery->link == NULL && !getNewNursery(cap)) ||
-            g0->n_new_large_words >= large_alloc_lim);
+            RELAXED_LOAD(&g0->n_new_large_words) >= large_alloc_lim);
 }
 
 /* -----------------------------------------------------------------------------
    Allocation accounting
 
-   See [Note allocation accounting] in Storage.c
+   See Note [allocation accounting] in Storage.c
    -------------------------------------------------------------------------- */
 
 //
@@ -89,11 +103,11 @@ INLINE_HEADER void finishedNurseryBlock (Capability *cap, bdescr *bd) {
 }
 
 INLINE_HEADER void newNurseryBlock (bdescr *bd) {
-    bd->free = bd->start;
+    RELAXED_STORE(&bd->free, bd->start);
 }
 
-void    updateNurseriesStats (void);
-StgWord calcTotalAllocated   (void);
+void     updateNurseriesStats (void);
+uint64_t calcTotalAllocated   (void);
 
 /* -----------------------------------------------------------------------------
    Stats 'n' DEBUG stuff
@@ -111,6 +125,8 @@ StgWord genLiveBlocks (generation *gen);
 StgWord calcTotalLargeObjectsW (void);
 StgWord calcTotalCompactW (void);
 
+void accountAllocation(Capability *cap, W_ n);
+
 /* ----------------------------------------------------------------------------
    Storage manager internal APIs and globals
    ------------------------------------------------------------------------- */
@@ -121,7 +137,7 @@ void move_STACK (StgStack *src, StgStack *dest);
 
 /* -----------------------------------------------------------------------------
    Note [STATIC_LINK fields]
-
+   ~~~~~~~~~~~~~~~~~~~~~~~~~
    The low 2 bits of the static link field have the following meaning:
 
    00     we haven't seen this static object before
@@ -141,6 +157,12 @@ void move_STACK (StgStack *src, StgStack *dest);
 
   bits = link_field & 3;
   if ((bits | prev_static_flag) != 3) { ... }
+
+  However, this mechanism for tracking liveness has an important implication:
+  once a static object becomes unreachable it must never become reachable again.
+  One would think that this can by definition never happen but in the past SRT
+  generation bugs have caused precisely this behavior with disasterous results.
+  See Note [No static object resurrection] in GHC.Cmm.Info.Build for details.
 
   -------------------------------------------------------------------------- */
 
@@ -170,7 +192,7 @@ extern uint32_t prev_static_flag, static_flag;
 
 /* -----------------------------------------------------------------------------
    Note [CAF lists]
-
+   ~~~~~~~~~~~~~~~~
    dyn_caf_list  (CAFs chained through static_link)
       This is a chain of all CAFs in the program, used for
       dynamically-linked GHCi.

@@ -10,7 +10,6 @@
 # indicates a directory relative to the top of the source tree.
 
 GHC_UTILS_DIR           = utils
-GHC_INCLUDE_DIRS        = includes includes/dist includes/dist-derivedconstants/header includes/dist-ghcconstants/header
 GHC_RTS_DIR             = rts
 GHC_DRIVER_DIR          = driver
 
@@ -19,7 +18,6 @@ INPLACE_BIN             = $(INPLACE)/bin
 INPLACE_LIB             = $(INPLACE)/lib
 INPLACE_TOPDIR          = $(INPLACE)/lib
 INPLACE_MINGW           = $(INPLACE)/mingw
-INPLACE_PERL            = $(INPLACE)/perl
 
 ################################################################################
 #

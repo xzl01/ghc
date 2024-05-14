@@ -1,14 +1,12 @@
+{-# LANGUAGE CApiFFI #-}
+
 module Data.Time.Clock.Internal.CTimespec where
 
 #include "HsTimeConfig.h"
 
 #if !defined(mingw32_HOST_OS) && HAVE_CLOCK_GETTIME
 
-#if __GLASGOW_HASKELL__ >= 709
 import Foreign
-#else
-import Foreign.Safe
-#endif
 import Foreign.C
 import System.IO.Unsafe
 
@@ -35,7 +33,7 @@ foreign import ccall unsafe "time.h clock_getres"
     clock_getres :: ClockID -> Ptr CTimespec -> IO CInt
 
 -- | Get the resolution of the given clock.
-clockGetRes :: #{type clockid_t} -> IO (Either Errno CTimespec)
+clockGetRes :: ClockID -> IO (Either Errno CTimespec)
 clockGetRes clockid = alloca $ \ptspec -> do
     rc <- clock_getres clockid ptspec
     case rc of
@@ -53,11 +51,15 @@ clockGetTime clockid = alloca (\ptspec -> do
     peek ptspec
     )
 
-clock_REALTIME :: ClockID
-clock_REALTIME = #{const CLOCK_REALTIME}
+foreign import capi unsafe "time.h value CLOCK_REALTIME" clock_REALTIME :: ClockID
 
-clock_TAI :: ClockID
-clock_TAI = #{const 11}
+clock_TAI :: Maybe ClockID
+clock_TAI =
+#if defined(CLOCK_TAI)
+    Just #{const CLOCK_TAI}
+#else
+    Nothing
+#endif
 
 realtimeRes :: CTimespec
 realtimeRes = unsafePerformIO $ do

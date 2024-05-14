@@ -1,3 +1,5 @@
+{-# OPTIONS_GHC -Wno-noncanonical-monoid-instances #-}
+
 {-# LANGUAGE CPP                        #-}
 {-# LANGUAGE DataKinds                  #-}
 {-# LANGUAGE DeriveFunctor              #-}
@@ -7,16 +9,17 @@
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GADTs                      #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE KindSignatures             #-}
+{-# LANGUAGE InstanceSigs               #-}
 {-# LANGUAGE MagicHash                  #-}
 {-# LANGUAGE NoImplicitPrelude          #-}
 {-# LANGUAGE PolyKinds                  #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE StandaloneDeriving         #-}
+{-# LANGUAGE StandaloneKindSignatures   #-}
 {-# LANGUAGE Trustworthy                #-}
+{-# LANGUAGE TypeApplications           #-}
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE TypeOperators              #-}
-{-# LANGUAGE TypeSynonymInstances       #-}
 {-# LANGUAGE UndecidableInstances       #-}
 
 -----------------------------------------------------------------------------
@@ -319,17 +322,17 @@ module GHC.Generics  (
 --
 -- |
 --
--- The instance for 'V1' is slightly awkward (but also rarely used):
+-- To deal with the 'V1' case, we use the following code (which requires the pragma @EmptyCase@):
 --
 -- @
 -- instance Encode' 'V1' where
---   encode' x = undefined
+--   encode' x = case x of { }
 -- @
 --
--- There are no values of type @V1 p@ to pass (except undefined), so this is
--- actually impossible. One can ask why it is useful to define an instance for
--- 'V1' at all in this case? Well, an empty type can be used as an argument to
--- a non-empty type, and you might still want to encode the resulting type.
+-- There are no values of type @V1 p@ to pass, so it is impossible for this
+-- function to be invoked. One can ask why it is useful to define an instance
+-- for 'V1' at all in this case? Well, an empty type can be used as an argument
+-- to a non-empty type, and you might still want to encode the resulting type.
 -- As a somewhat contrived example, consider @[Empty]@, which is not an empty
 -- type, but contains just the empty list. The 'V1' instance ensures that we
 -- can call the generic function on such types.
@@ -722,21 +725,25 @@ module GHC.Generics  (
   , Meta(..)
 
   -- * Generic type classes
-  , Generic(..), Generic1(..)
+  , Generic(..)
+  , Generic1(..)
 
+  -- * Generic wrapper
+  , Generically(..)
+  , Generically1(..)
   ) where
 
 -- We use some base types
-import Data.Either ( Either (..) )
-import Data.Maybe  ( Maybe(..), fromMaybe )
-import Data.Ord    ( Down(..) )
-import GHC.Integer ( Integer, integerToInt )
-import GHC.Prim    ( Addr#, Char#, Double#, Float#, Int#, Word# )
-import GHC.Ptr     ( Ptr )
+import Data.Either     ( Either (..) )
+import Data.Maybe      ( Maybe(..), fromMaybe )
+import Data.Ord        ( Down(..) )
+import GHC.Num.Integer ( Integer, integerToInt )
+import GHC.Prim        ( Addr#, Char#, Double#, Float#, Int#, Word# )
+import GHC.Ptr         ( Ptr )
 import GHC.Types
 
 -- Needed for instances
-import GHC.Arr     ( Ix )
+import GHC.Ix      ( Ix )
 import GHC.Base    ( Alternative(..), Applicative(..), Functor(..)
                    , Monad(..), MonadPlus(..), NonEmpty(..), String, coerce
                    , Semigroup(..), Monoid(..) )
@@ -744,10 +751,14 @@ import GHC.Classes ( Eq(..), Ord(..) )
 import GHC.Enum    ( Bounded, Enum )
 import GHC.Read    ( Read(..) )
 import GHC.Show    ( Show(..), showString )
+import GHC.Stack.Types ( SrcLoc(..) )
+import GHC.Tuple   (Solo (..))
+import GHC.Unicode ( GeneralCategory(..) )
+import GHC.Fingerprint.Type ( Fingerprint(..) )
 
 -- Needed for metadata
 import Data.Proxy   ( Proxy(..) )
-import GHC.TypeLits ( KnownSymbol, KnownNat, symbolVal, natVal )
+import GHC.TypeLits ( KnownSymbol, KnownNat, Nat, symbolVal, natVal )
 
 --------------------------------------------------------------------------------
 -- Representation types
@@ -1364,6 +1375,147 @@ class Generic1 (f :: k -> Type) where
   to1    :: (Rep1 f) a -> f a
 
 --------------------------------------------------------------------------------
+-- 'Generic' wrapper
+--------------------------------------------------------------------------------
+
+-- | A datatype whose instances are defined generically, using the
+-- 'Generic' representation. 'Generically1' is a higher-kinded version
+-- of 'Generically' that uses 'Generic1'.
+--
+-- Generic instances can be derived via @'Generically' A@ using
+-- @-XDerivingVia@.
+--
+-- @
+-- {-# LANGUAGE DeriveGeneric      #-}
+-- {-# LANGUAGE DerivingStrategies #-}
+-- {-# LANGUAGE DerivingVia        #-}
+--
+-- import GHC.Generics (Generic)
+--
+-- data V4 a = V4 a a a a
+--   deriving stock Generic
+--
+--   deriving (Semigroup, Monoid)
+--   via Generically (V4 a)
+-- @
+--
+-- This corresponds to 'Semigroup' and 'Monoid' instances defined by
+-- pointwise lifting:
+--
+-- @
+-- instance Semigroup a => Semigroup (V4 a) where
+--   (<>) :: V4 a -> V4 a -> V4 a
+--   V4 a1 b1 c1 d1 <> V4 a2 b2 c2 d2 =
+--     V4 (a1 <> a2) (b1 <> b2) (c1 <> c2) (d1 <> d2)
+--
+-- instance Monoid a => Monoid (V4 a) where
+--   mempty :: V4 a
+--   mempty = V4 mempty mempty mempty mempty
+-- @
+--
+-- Historically this required modifying the type class to include
+-- generic method definitions (@-XDefaultSignatures@) and deriving it
+-- with the @anyclass@ strategy (@-XDeriveAnyClass@). Having a /via
+-- type/ like 'Generically' decouples the instance from the type
+-- class.
+--
+-- @since 4.17.0.0
+newtype Generically a = Generically a
+
+-- | @since 4.17.0.0
+instance (Generic a, Semigroup (Rep a ())) => Semigroup (Generically a) where
+  (<>) :: Generically a -> Generically a -> Generically a
+  Generically a <> Generically b = Generically (to (from a <> from b :: Rep a ()))
+
+-- | @since 4.17.0.0
+instance (Generic a, Monoid (Rep a ())) => Monoid (Generically a) where
+  mempty :: Generically a
+  mempty = Generically (to (mempty :: Rep a ()))
+
+  mappend :: Generically a -> Generically a -> Generically a
+  mappend = (<>)
+
+-- | A type whose instances are defined generically, using the
+-- 'Generic1' representation. 'Generically1' is a higher-kinded
+-- version of 'Generically' that uses 'Generic'.
+--
+-- Generic instances can be derived for type constructors via
+-- @'Generically1' F@ using @-XDerivingVia@.
+--
+-- @
+-- {-# LANGUAGE DeriveGeneric      #-}
+-- {-# LANGUAGE DerivingStrategies #-}
+-- {-# LANGUAGE DerivingVia        #-}
+--
+-- import GHC.Generics (Generic)
+--
+-- data V4 a = V4 a a a a
+--   deriving stock (Functor, Generic1)
+--
+--   deriving Applicative
+--   via Generically1 V4
+-- @
+--
+-- This corresponds to 'Applicative' instances defined by pointwise
+-- lifting:
+--
+-- @
+-- instance Applicative V4 where
+--   pure :: a -> V4 a
+--   pure a = V4 a a a a
+--
+--   liftA2 :: (a -> b -> c) -> (V4 a -> V4 b -> V4 c)
+--   liftA2 (·) (V4 a1 b1 c1 d1) (V4 a2 b2 c2 d2) =
+--     V4 (a1 · a2) (b1 · b2) (c1 · c2) (d1 · d2)
+-- @
+--
+-- Historically this required modifying the type class to include
+-- generic method definitions (@-XDefaultSignatures@) and deriving it
+-- with the @anyclass@ strategy (@-XDeriveAnyClass@). Having a /via
+-- type/ like 'Generically1' decouples the instance from the type
+-- class.
+--
+-- @since 4.17.0.0
+type    Generically1 :: forall k. (k -> Type) -> (k -> Type)
+newtype Generically1 f a where
+  Generically1 :: forall {k} f a. f a -> Generically1 @k f a
+
+-- | @since 4.17.0.0
+instance (Generic1 f, Functor (Rep1 f)) => Functor (Generically1 f) where
+  fmap :: (a -> a') -> (Generically1 f a -> Generically1 f a')
+  fmap f (Generically1 as) = Generically1
+    (to1 (fmap f (from1 as)))
+
+  (<$) :: a -> Generically1 f b -> Generically1 f a
+  a <$ Generically1 as = Generically1
+    (to1 (a <$ from1 as))
+
+-- | @since 4.17.0.0
+instance (Generic1 f, Applicative (Rep1 f)) => Applicative (Generically1 f) where
+  pure :: a -> Generically1 f a
+  pure a = Generically1
+    (to1 (pure a))
+
+  (<*>) :: Generically1 f (a1 -> a2) -> Generically1 f a1 -> Generically1 f a2
+  Generically1 fs <*> Generically1 as = Generically1
+    (to1 (from1 fs <*> from1 as))
+
+  liftA2 :: (a1 -> a2 -> a3)
+         -> (Generically1 f a1 -> Generically1 f a2 -> Generically1 f a3)
+  liftA2 (·) (Generically1 as) (Generically1 bs) = Generically1
+    (to1 (liftA2 (·) (from1 as) (from1 bs)))
+
+-- | @since 4.17.0.0
+instance (Generic1 f, Alternative (Rep1 f)) => Alternative (Generically1 f) where
+  empty :: Generically1 f a
+  empty = Generically1
+    (to1 empty)
+
+  (<|>) :: Generically1 f a -> Generically1 f a -> Generically1 f a
+  Generically1 as1 <|> Generically1 as2 = Generically1
+    (to1 (from1 as1 <|> from1 as2))
+
+--------------------------------------------------------------------------------
 -- Meta-data
 --------------------------------------------------------------------------------
 
@@ -1416,6 +1568,9 @@ deriving instance Generic (Proxy t)
 -- | @since 4.6.0.0
 deriving instance Generic ()
 
+-- | @since 4.15
+deriving instance Generic (Solo a)
+
 -- | @since 4.6.0.0
 deriving instance Generic ((,) a b)
 
@@ -1434,9 +1589,41 @@ deriving instance Generic ((,,,,,) a b c d e f)
 -- | @since 4.6.0.0
 deriving instance Generic ((,,,,,,) a b c d e f g)
 
+-- | @since 4.16.0.0
+deriving instance Generic ((,,,,,,,) a b c d e f g h)
+
+-- | @since 4.16.0.0
+deriving instance Generic ((,,,,,,,,) a b c d e f g h i)
+
+-- | @since 4.16.0.0
+deriving instance Generic ((,,,,,,,,,) a b c d e f g h i j)
+
+-- | @since 4.16.0.0
+deriving instance Generic ((,,,,,,,,,,) a b c d e f g h i j k)
+
+-- | @since 4.16.0.0
+deriving instance Generic ((,,,,,,,,,,,) a b c d e f g h i j k l)
+
+-- | @since 4.16.0.0
+deriving instance Generic ((,,,,,,,,,,,,) a b c d e f g h i j k l m)
+
+-- | @since 4.16.0.0
+deriving instance Generic ((,,,,,,,,,,,,,) a b c d e f g h i j k l m n)
+
+-- | @since 4.16.0.0
+deriving instance Generic ((,,,,,,,,,,,,,,) a b c d e f g h i j k l m n o)
+
 -- | @since 4.12.0.0
 deriving instance Generic (Down a)
 
+-- | @since 4.15.0.0
+deriving instance Generic SrcLoc
+
+-- | @since 4.15.0.0
+deriving instance Generic GeneralCategory
+
+-- | @since 4.15.0.0
+deriving instance Generic Fingerprint
 
 -- | @since 4.6.0.0
 deriving instance Generic1 []
@@ -1452,6 +1639,9 @@ deriving instance Generic1 (Either a)
 
 -- | @since 4.6.0.0
 deriving instance Generic1 Proxy
+
+-- | @since 4.15
+deriving instance Generic1 Solo
 
 -- | @since 4.6.0.0
 deriving instance Generic1 ((,) a)
@@ -1470,6 +1660,30 @@ deriving instance Generic1 ((,,,,,) a b c d e)
 
 -- | @since 4.6.0.0
 deriving instance Generic1 ((,,,,,,) a b c d e f)
+
+-- | @since 4.16.0.0
+deriving instance Generic1 ((,,,,,,,) a b c d e f g)
+
+-- | @since 4.16.0.0
+deriving instance Generic1 ((,,,,,,,,) a b c d e f g h)
+
+-- | @since 4.16.0.0
+deriving instance Generic1 ((,,,,,,,,,) a b c d e f g h i)
+
+-- | @since 4.16.0.0
+deriving instance Generic1 ((,,,,,,,,,,) a b c d e f g h i j)
+
+-- | @since 4.16.0.0
+deriving instance Generic1 ((,,,,,,,,,,,) a b c d e f g h i j k)
+
+-- | @since 4.16.0.0
+deriving instance Generic1 ((,,,,,,,,,,,,) a b c d e f g h i j k l)
+
+-- | @since 4.16.0.0
+deriving instance Generic1 ((,,,,,,,,,,,,,) a b c d e f g h i j k l m)
+
+-- | @since 4.16.0.0
+deriving instance Generic1 ((,,,,,,,,,,,,,,) a b c d e f g h i j k l m n)
 
 -- | @since 4.12.0.0
 deriving instance Generic1 Down
@@ -1560,7 +1774,7 @@ instance (SingI a, KnownNat n) => SingI ('InfixI a n) where
 instance SingKind FixityI where
   type DemoteRep FixityI = Fixity
   fromSing SPrefix      = Prefix
-  fromSing (SInfix a n) = Infix (fromSing a) (I# (integerToInt n))
+  fromSing (SInfix a n) = Infix (fromSing a) (integerToInt n)
 
 -- Singleton Associativity
 data instance Sing (a :: Associativity) where

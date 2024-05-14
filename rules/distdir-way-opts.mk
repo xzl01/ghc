@@ -5,8 +5,8 @@
 # This file is part of the GHC build system.
 #
 # To understand how the build system works and how to modify it, see
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Architecture
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Modifying
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/architecture
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/modifying
 #
 # -----------------------------------------------------------------------------
 
@@ -120,15 +120,14 @@ $1_$2_$3_MOST_HC_OPTS = \
  $$(if $$($1_$2_PROG),, \
         $$(if $$($1_PACKAGE),$$($4_THIS_UNIT_ID) $$($1_$2_COMPONENT_ID))) \
  $$(if $$($1_PACKAGE),-hide-all-packages) \
+ -package-env - \
  -i $$(if $$($1_$2_HS_SRC_DIRS),$$(foreach dir,$$($1_$2_HS_SRC_DIRS),-i$1/$$(dir)),-i$1) \
  -i$1/$2/build \
  -I$1/$2/build \
  -i$1/$2/build/$$(or $$($1_EXECUTABLE),$$($1_$2_PROGNAME),.)/autogen \
  -I$1/$2/build/$$(or $$($1_EXECUTABLE),$$($1_$2_PROGNAME),.)/autogen \
- $$(foreach dir,$$(filter-out /%,$$($1_$2_INCLUDE_DIRS)),-I$1/$$(dir)) \
- $$(foreach dir,$$(filter /%,$$($1_$2_INCLUDE_DIRS)),-I$$(dir)) \
- $$(foreach inc,$$($1_$2_INCLUDE),-\#include "$$(inc)") \
- $$(foreach opt,$$($1_$2_CPP_OPTS),-optP$$(opt)) \
+ $$(foreach dir,$$(filter -I%,$$($1_$2_DIST_CPP_OPTS)),$$(dir)) \
+ $$(foreach opt,$$(filter-out -I%,$$($1_$2_DIST_CPP_OPTS)),-optP$$(opt)) \
  $$(if $$($1_PACKAGE),-optP-include \
     -optP$1/$2/build/$$(or $$($1_EXECUTABLE),$$($1_$2_PROGNAME),.)/autogen/cabal_macros.h) \
  $$($1_$2_$4_DEP_OPTS) \
@@ -163,7 +162,6 @@ $1_$2_$3_MOST_DIR_HC_OPTS = \
 $1_$2_$3_ALL_HC_OPTS = \
  -hisuf $$($3_hisuf) -osuf  $$($3_osuf) -hcsuf $$($3_hcsuf) \
  $$($1_$2_$3_MOST_DIR_HC_OPTS) \
- $$(if $$(findstring YES,$$($1_$2_SplitObjs)),$$(if $$(findstring dyn,$3),,-split-objs),) \
  $$(if $$(findstring YES,$$($1_$2_SplitSections)),$$(if $$(findstring dyn,$3),,-split-sections),) \
  $$(if $$(findstring YES,$$($1_$2_DYNAMIC_TOO)),$$(if $$(findstring v,$3),-dynamic-too))
 

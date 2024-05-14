@@ -283,15 +283,12 @@ __hscore_o_nonblock( void )
 INLINE int
 __hscore_ftruncate( int fd, off_t where )
 {
-#if defined(HAVE_FTRUNCATE)
+#if defined(HAVE__CHSIZE_S)
+  return _chsize_s(fd,where);
+#elif defined(HAVE_FTRUNCATE)
   return ftruncate(fd,where);
-#elif defined(HAVE__CHSIZE)
-  return _chsize(fd,where);
 #else
-// ToDo: we should use _chsize_s() on Windows which allows a 64-bit
-// offset, but it doesn't seem to be available from mingw at this time
-// --SDM (01/2008)
-#error at least ftruncate or _chsize functions are required to build
+#error at least _chsize_s or ftruncate functions are required to build
 #endif
 }
 
@@ -546,15 +543,15 @@ INLINE int __hscore_open(char *file, int how, mode_t mode) {
 }
 #endif
 
-#if darwin_HOST_OS
+#if defined(darwin_HOST_OS)
 // You should not access _environ directly on Darwin in a bundle/shared library.
 // See #2458 and http://developer.apple.com/library/mac/#documentation/Darwin/Reference/ManPages/man7/environ.7.html
 #include <crt_externs.h>
 INLINE char **__hscore_environ(void) { return *(_NSGetEnviron()); }
 #else
-/* ToDo: write a feature test that doesn't assume 'environ' to
- *    be in scope at link-time. */
+#if !HAVE_DECL_ENVIRON
 extern char** environ;
+#endif
 INLINE char **__hscore_environ(void) { return environ; }
 #endif
 

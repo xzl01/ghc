@@ -1,4 +1,5 @@
-{-# LANGUAGE GADTs, PatternSynonyms #-}
+{-# LANGUAGE Haskell2010 #-}
+{-# LANGUAGE GADTs #-}
 
 module GadtConstructorArgs (Boo(..)) where
 

@@ -1,8 +1,13 @@
-{-# LANGUAGE CPP, DeriveDataTypeable, DeriveFunctor, DeriveFoldable, DeriveTraversable, StandaloneDeriving, TypeFamilies, RecordWildCards #-}
+{-# LANGUAGE CPP, DeriveDataTypeable, DeriveTraversable, StandaloneDeriving, TypeFamilies, RecordWildCards #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE UndecidableInstances #-} -- Note [Pass sensitive types]
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 -----------------------------------------------------------------------------
@@ -25,24 +30,31 @@ module Haddock.Types (
   , HsDocString, LHsDocString
   , Fixity(..)
   , module Documentation.Haddock.Types
+
+  -- $ Reexports
+  , runWriter
+  , tell
  ) where
 
-import Control.Exception
-import Control.Arrow hiding ((<+>))
 import Control.DeepSeq
-import Control.Monad (ap)
+import Control.Exception (throw)
+import Control.Monad.Catch
 import Control.Monad.IO.Class (MonadIO(..))
+import Control.Monad.Writer.Strict (Writer, WriterT, MonadWriter(..), lift, runWriter, runWriterT)
 import Data.Typeable (Typeable)
 import Data.Map (Map)
 import Data.Data (Data)
+import Data.Void (Void)
 import Documentation.Haddock.Types
-import BasicTypes (Fixity(..), PromotionFlag(..))
+import GHC.Types.Basic (PromotionFlag(..))
+import GHC.Types.Fixity (Fixity(..))
+import GHC.Types.Var (Specificity)
 
 import GHC
-import DynFlags (Language)
+import GHC.Driver.Session (Language)
 import qualified GHC.LanguageExtensions as LangExt
-import OccName
-import Outputable hiding ((<>))
+import GHC.Types.Name.Occurrence
+import GHC.Utils.Outputable
 
 -----------------------------------------------------------------------------
 -- * Convenient synonyms
@@ -55,7 +67,7 @@ type DocMap a      = Map Name (MDoc a)
 type ArgMap a      = Map Name (Map Int (MDoc a))
 type SubMap        = Map Name [Name]
 type DeclMap       = Map Name [LHsDecl GhcRn]
-type InstMap       = Map SrcSpan Name
+type InstMap       = Map RealSrcSpan Name
 type FixMap        = Map Name Fixity
 type DocPaths      = (FilePath, Maybe FilePath) -- paths to HTML and sources
 
@@ -139,7 +151,7 @@ data Interface = Interface
     -- | Warnings for things defined in this module.
   , ifaceWarningMap :: !WarningMap
 
-    -- | Tokenized source code of module (avaliable if Haddock is invoked with
+    -- | Tokenized source code of module (available if Haddock is invoked with
     -- source generation flag).
   , ifaceHieFile :: !(Maybe FilePath)
   , ifaceDynFlags :: !DynFlags
@@ -303,8 +315,13 @@ data DocName
 
 data DocNameI
 
+type instance NoGhcTc DocNameI = DocNameI
+
 type instance IdP DocNameI = DocName
 
+instance CollectPass DocNameI where
+  collectXXPat _ ext = dataConCantHappen ext
+  collectXXHsBindsLR ext = dataConCantHappen ext
 
 instance NamedThing DocName where
   getName (Documented name _) = name
@@ -374,8 +391,8 @@ data InstType name
   | TypeInst  (Maybe (HsType name)) -- ^ Body (right-hand side)
   | DataInst (TyClDecl name)        -- ^ Data constructors
 
-instance (a ~ GhcPass p,OutputableBndrId a)
-         => Outputable (InstType a) where
+instance (OutputableBndrId p)
+         => Outputable (InstType (GhcPass p)) where
   ppr (ClassInst { .. }) = text "ClassInst"
       <+> ppr clsiCtx
       <+> ppr clsiTyVars
@@ -393,13 +410,13 @@ instance (a ~ GhcPass p,OutputableBndrId a)
 -- 'PseudoFamilyDecl' type is introduced.
 data PseudoFamilyDecl name = PseudoFamilyDecl
     { pfdInfo :: FamilyInfo name
-    , pfdLName :: Located (IdP name)
+    , pfdLName :: LocatedN (IdP name)
     , pfdTyVars :: [LHsType name]
     , pfdKindSig :: LFamilyResultSig name
     }
 
 
-mkPseudoFamilyDecl :: FamilyDecl (GhcPass p) -> PseudoFamilyDecl (GhcPass p)
+mkPseudoFamilyDecl :: FamilyDecl GhcRn -> PseudoFamilyDecl GhcRn
 mkPseudoFamilyDecl (FamilyDecl { .. }) = PseudoFamilyDecl
     { pfdInfo = fdInfo
     , pfdLName = fdLName
@@ -407,13 +424,12 @@ mkPseudoFamilyDecl (FamilyDecl { .. }) = PseudoFamilyDecl
     , pfdKindSig = fdResultSig
     }
   where
-    mkType (KindedTyVar _ (L loc name) lkind) =
-        HsKindSig NoExt tvar lkind
+    mkType :: HsTyVarBndr flag GhcRn -> HsType GhcRn
+    mkType (KindedTyVar _ _ (L loc name) lkind) =
+        HsKindSig noAnn tvar lkind
       where
-        tvar = L loc (HsTyVar NoExt NotPromoted (L loc name))
-    mkType (UserTyVar _ name) = HsTyVar NoExt NotPromoted name
-    mkType (XTyVarBndr _ ) = panic "haddock:mkPseudoFamilyDecl"
-mkPseudoFamilyDecl (XFamilyDecl {}) = panic "haddock:mkPseudoFamilyDecl"
+        tvar = L (na2la loc) (HsTyVar noAnn NotPromoted (L loc name))
+    mkType (UserTyVar _ _ name) = HsTyVar noAnn NotPromoted name
 
 
 -- | An instance head that may have documentation and a source location.
@@ -497,6 +513,9 @@ instance NFData id => NFData (Header id) where
 
 instance NFData id => NFData (Hyperlink id) where
   rnf (Hyperlink a b) = a `deepseq` b `deepseq` ()
+
+instance NFData id => NFData (ModLink id) where
+  rnf (ModLink a b) = a `deepseq` b `deepseq` ()
 
 instance NFData Picture where
   rnf (Picture a b) = a `deepseq` b `deepseq` ()
@@ -622,168 +641,199 @@ data SinceQual
 
 
 type ErrMsg = String
-newtype ErrMsgM a = Writer { runWriter :: (a, [ErrMsg]) }
-
-
-instance Functor ErrMsgM where
-        fmap f (Writer (a, msgs)) = Writer (f a, msgs)
-
-instance Applicative ErrMsgM where
-    pure a = Writer (a, [])
-    (<*>)  = ap
-
-instance Monad ErrMsgM where
-        return   = pure
-        m >>= k  = Writer $ let
-                (a, w)  = runWriter m
-                (b, w') = runWriter (k a)
-                in (b, w ++ w')
-
-
-tell :: [ErrMsg] -> ErrMsgM ()
-tell w = Writer ((), w)
+type ErrMsgM = Writer [ErrMsg]
 
 
 -- Exceptions
 
 
 -- | Haddock's own exception type.
-data HaddockException = HaddockException String deriving Typeable
+data HaddockException
+  = HaddockException String
+  | WithContext [String] SomeException
+  deriving Typeable
 
 
 instance Show HaddockException where
   show (HaddockException str) = str
-
+  show (WithContext ctxts se)  = unlines $ ["While " ++ ctxt ++ ":\n" | ctxt <- reverse ctxts] ++ [show se]
 
 throwE :: String -> a
 instance Exception HaddockException
 throwE str = throw (HaddockException str)
 
+withExceptionContext :: MonadCatch m => String -> m a -> m a
+withExceptionContext ctxt =
+  handle (\ex ->
+      case ex of
+        HaddockException _ -> throwM $ WithContext [ctxt] (toException ex)
+        WithContext ctxts se -> throwM $ WithContext (ctxt:ctxts) se
+          ) .
+  handle (throwM . WithContext [ctxt])
 
 -- In "Haddock.Interface.Create", we need to gather
 -- @Haddock.Types.ErrMsg@s a lot, like @ErrMsgM@ does,
 -- but we can't just use @GhcT ErrMsgM@ because GhcT requires the
 -- transformed monad to be MonadIO.
-newtype ErrMsgGhc a = WriterGhc { runWriterGhc :: Ghc (a, [ErrMsg]) }
---instance MonadIO ErrMsgGhc where
---  liftIO = WriterGhc . fmap (\a->(a,[])) liftIO
---er, implementing GhcMonad involves annoying ExceptionMonad and
---WarnLogMonad classes, so don't bother.
+newtype ErrMsgGhc a = ErrMsgGhc { unErrMsgGhc :: WriterT [ErrMsg] Ghc a }
+
+
+deriving newtype instance Functor ErrMsgGhc
+deriving newtype instance Applicative ErrMsgGhc
+deriving newtype instance Monad ErrMsgGhc
+deriving newtype instance (MonadWriter [ErrMsg]) ErrMsgGhc
+deriving newtype instance MonadIO ErrMsgGhc
+
+
+runWriterGhc :: ErrMsgGhc a -> Ghc (a, [ErrMsg])
+runWriterGhc = runWriterT . unErrMsgGhc
+
 liftGhcToErrMsgGhc :: Ghc a -> ErrMsgGhc a
-liftGhcToErrMsgGhc = WriterGhc . fmap (\a->(a,[]))
+liftGhcToErrMsgGhc = ErrMsgGhc . lift
+
 liftErrMsg :: ErrMsgM a -> ErrMsgGhc a
-liftErrMsg = WriterGhc . return . runWriter
---  for now, use (liftErrMsg . tell) for this
---tell :: [ErrMsg] -> ErrMsgGhc ()
---tell msgs = WriterGhc $ return ( (), msgs )
-
-
-instance Functor ErrMsgGhc where
-  fmap f (WriterGhc x) = WriterGhc (fmap (first f) x)
-
-instance Applicative ErrMsgGhc where
-    pure a = WriterGhc (return (a, []))
-    (<*>) = ap
-
-instance Monad ErrMsgGhc where
-  return = pure
-  m >>= k = WriterGhc $ runWriterGhc m >>= \ (a, msgs1) ->
-               fmap (second (msgs1 ++)) (runWriterGhc (k a))
-
-instance MonadIO ErrMsgGhc where
-  liftIO m = WriterGhc (fmap (\x -> (x, [])) (liftIO m))
+liftErrMsg = writer . runWriter
 
 -----------------------------------------------------------------------------
 -- * Pass sensitive types
 -----------------------------------------------------------------------------
 
-type instance XForAllTy        DocNameI = NoExt
-type instance XQualTy          DocNameI = NoExt
-type instance XTyVar           DocNameI = NoExt
-type instance XStarTy          DocNameI = NoExt
-type instance XAppTy           DocNameI = NoExt
-type instance XAppKindTy       DocNameI = NoExt
-type instance XFunTy           DocNameI = NoExt
-type instance XListTy          DocNameI = NoExt
-type instance XTupleTy         DocNameI = NoExt
-type instance XSumTy           DocNameI = NoExt
-type instance XOpTy            DocNameI = NoExt
-type instance XParTy           DocNameI = NoExt
-type instance XIParamTy        DocNameI = NoExt
-type instance XKindSig         DocNameI = NoExt
-type instance XSpliceTy        DocNameI = NoExt
-type instance XDocTy           DocNameI = NoExt
-type instance XBangTy          DocNameI = NoExt
-type instance XRecTy           DocNameI = NoExt
-type instance XExplicitListTy  DocNameI = NoExt
-type instance XExplicitTupleTy DocNameI = NoExt
-type instance XTyLit           DocNameI = NoExt
-type instance XWildCardTy      DocNameI = NoExt
-type instance XXType           DocNameI = NewHsTypeX
+type instance XRec DocNameI a = GenLocated (Anno a) a
+instance UnXRec DocNameI where
+  unXRec = unLoc
+instance MapXRec DocNameI where
+  mapXRec = fmap
+instance WrapXRec DocNameI (HsType DocNameI) where
+  wrapXRec = noLocA
 
-type instance XUserTyVar    DocNameI = NoExt
-type instance XKindedTyVar  DocNameI = NoExt
-type instance XXTyVarBndr   DocNameI = NoExt
+type instance Anno DocName                           = SrcSpanAnnN
+type instance Anno (HsTyVarBndr flag DocNameI)       = SrcSpanAnnA
+type instance Anno [LocatedA (HsType DocNameI)]      = SrcSpanAnnC
+type instance Anno (HsType DocNameI)                 = SrcSpanAnnA
+type instance Anno (DataFamInstDecl DocNameI)        = SrcSpanAnnA
+type instance Anno (DerivStrategy DocNameI)          = SrcAnn NoEpAnns
+type instance Anno (FieldOcc DocNameI)               = SrcAnn NoEpAnns
+type instance Anno (ConDeclField DocNameI)           = SrcSpan
+type instance Anno (Located (ConDeclField DocNameI)) = SrcSpan
+type instance Anno [Located (ConDeclField DocNameI)] = SrcSpan
+type instance Anno (ConDecl DocNameI)                = SrcSpan
+type instance Anno (FunDep DocNameI)                 = SrcSpan
+type instance Anno (TyFamInstDecl DocNameI)          = SrcSpanAnnA
+type instance Anno [LocatedA (TyFamInstDecl DocNameI)] = SrcSpanAnnL
+type instance Anno (FamilyDecl DocNameI)               = SrcSpan
+type instance Anno (Sig DocNameI)                      = SrcSpan
+type instance Anno (InjectivityAnn DocNameI)           = SrcAnn NoEpAnns
+type instance Anno (HsDecl DocNameI)                   = SrcSpanAnnA
+type instance Anno (FamilyResultSig DocNameI)          = SrcAnn NoEpAnns
+type instance Anno (HsOuterTyVarBndrs Specificity DocNameI) = SrcSpanAnnA
+type instance Anno (HsSigType DocNameI)                     = SrcSpanAnnA
+
+type XRecCond a
+  = ( XParTy a           ~ EpAnn AnnParen
+    , NoGhcTc a ~ a
+    , MapXRec a
+    , UnXRec a
+    , WrapXRec a (HsType a)
+    )
+
+type instance XForAllTy        DocNameI = EpAnn [AddEpAnn]
+type instance XQualTy          DocNameI = EpAnn [AddEpAnn]
+type instance XTyVar           DocNameI = EpAnn [AddEpAnn]
+type instance XStarTy          DocNameI = EpAnn [AddEpAnn]
+type instance XAppTy           DocNameI = EpAnn [AddEpAnn]
+type instance XAppKindTy       DocNameI = EpAnn [AddEpAnn]
+type instance XFunTy           DocNameI = EpAnn [AddEpAnn]
+type instance XListTy          DocNameI = EpAnn AnnParen
+type instance XTupleTy         DocNameI = EpAnn AnnParen
+type instance XSumTy           DocNameI = EpAnn AnnParen
+type instance XOpTy            DocNameI = EpAnn [AddEpAnn]
+type instance XParTy           DocNameI = EpAnn AnnParen
+type instance XIParamTy        DocNameI = EpAnn [AddEpAnn]
+type instance XKindSig         DocNameI = EpAnn [AddEpAnn]
+type instance XSpliceTy        DocNameI = Void       -- see `renameHsSpliceTy`
+type instance XDocTy           DocNameI = EpAnn [AddEpAnn]
+type instance XBangTy          DocNameI = EpAnn [AddEpAnn]
+type instance XRecTy           DocNameI = EpAnn [AddEpAnn]
+type instance XExplicitListTy  DocNameI = EpAnn [AddEpAnn]
+type instance XExplicitTupleTy DocNameI = EpAnn [AddEpAnn]
+type instance XTyLit           DocNameI = EpAnn [AddEpAnn]
+type instance XWildCardTy      DocNameI = EpAnn [AddEpAnn]
+type instance XXType           DocNameI = HsCoreTy
+
+type instance XHsForAllVis        DocNameI = NoExtField
+type instance XHsForAllInvis      DocNameI = NoExtField
+type instance XXHsForAllTelescope DocNameI = DataConCantHappen
+
+type instance XUserTyVar    DocNameI = NoExtField
+type instance XKindedTyVar  DocNameI = NoExtField
+type instance XXTyVarBndr   DocNameI = DataConCantHappen
 
 type instance XCFieldOcc   DocNameI = DocName
-type instance XXFieldOcc   DocNameI = NoExt
+type instance XXFieldOcc   DocNameI = NoExtField
 
-type instance XFixitySig   DocNameI = NoExt
-type instance XFixSig      DocNameI = NoExt
-type instance XPatSynSig   DocNameI = NoExt
-type instance XClassOpSig  DocNameI = NoExt
-type instance XTypeSig     DocNameI = NoExt
-type instance XMinimalSig  DocNameI = NoExt
+type instance XFixitySig   DocNameI = NoExtField
+type instance XFixSig      DocNameI = NoExtField
+type instance XPatSynSig   DocNameI = NoExtField
+type instance XClassOpSig  DocNameI = NoExtField
+type instance XTypeSig     DocNameI = NoExtField
+type instance XMinimalSig  DocNameI = NoExtField
 
-type instance XForeignExport  DocNameI = NoExt
-type instance XForeignImport  DocNameI = NoExt
-type instance XConDeclGADT    DocNameI = NoExt
-type instance XConDeclH98     DocNameI = NoExt
+type instance XForeignExport  DocNameI = NoExtField
+type instance XForeignImport  DocNameI = NoExtField
+type instance XConDeclGADT    DocNameI = NoExtField
+type instance XConDeclH98     DocNameI = NoExtField
+type instance XXConDecl       DocNameI = DataConCantHappen
 
-type instance XDerivD     DocNameI = NoExt
-type instance XInstD      DocNameI = NoExt
-type instance XForD       DocNameI = NoExt
-type instance XSigD       DocNameI = NoExt
-type instance XTyClD      DocNameI = NoExt
+type instance XDerivD     DocNameI = NoExtField
+type instance XInstD      DocNameI = NoExtField
+type instance XForD       DocNameI = NoExtField
+type instance XSigD       DocNameI = NoExtField
+type instance XTyClD      DocNameI = NoExtField
 
-type instance XNoSig      DocNameI = NoExt
-type instance XCKindSig   DocNameI = NoExt
-type instance XTyVarSig   DocNameI = NoExt
+type instance XNoSig            DocNameI = NoExtField
+type instance XCKindSig         DocNameI = NoExtField
+type instance XTyVarSig         DocNameI = NoExtField
+type instance XXFamilyResultSig DocNameI = DataConCantHappen
 
-type instance XCFamEqn       DocNameI _ _ = NoExt
+type instance XCFamEqn       DocNameI _ = NoExtField
+type instance XXFamEqn       DocNameI _ = DataConCantHappen
 
-type instance XCClsInstDecl DocNameI = NoExt
-type instance XCDerivDecl   DocNameI = NoExt
+type instance XCClsInstDecl DocNameI = NoExtField
+type instance XCDerivDecl   DocNameI = NoExtField
+type instance XStockStrategy    DocNameI = NoExtField
+type instance XAnyClassStrategy DocNameI = NoExtField
+type instance XNewtypeStrategy  DocNameI = NoExtField
 type instance XViaStrategy  DocNameI = LHsSigType DocNameI
-type instance XDataFamInstD DocNameI = NoExt
-type instance XTyFamInstD   DocNameI = NoExt
-type instance XClsInstD     DocNameI = NoExt
-type instance XCHsDataDefn  DocNameI = NoExt
-type instance XCFamilyDecl  DocNameI = NoExt
-type instance XClassDecl    DocNameI = NoExt
-type instance XDataDecl     DocNameI = NoExt
-type instance XSynDecl      DocNameI = NoExt
-type instance XFamDecl      DocNameI = NoExt
+type instance XDataFamInstD DocNameI = NoExtField
+type instance XTyFamInstD   DocNameI = NoExtField
+type instance XClsInstD     DocNameI = NoExtField
+type instance XCHsDataDefn  DocNameI = NoExtField
+type instance XCFamilyDecl  DocNameI = NoExtField
+type instance XClassDecl    DocNameI = NoExtField
+type instance XDataDecl     DocNameI = NoExtField
+type instance XSynDecl      DocNameI = NoExtField
+type instance XFamDecl      DocNameI = NoExtField
+type instance XXFamilyDecl  DocNameI = DataConCantHappen
+type instance XXTyClDecl    DocNameI = DataConCantHappen
 
-type instance XHsIB      DocNameI _ = NoExt
-type instance XHsWC      DocNameI _ = NoExt
+type instance XHsWC DocNameI _ = NoExtField
 
-type instance XHsQTvs        DocNameI = NoExt
-type instance XConDeclField  DocNameI = NoExt
+type instance XHsOuterExplicit    DocNameI _ = NoExtField
+type instance XHsOuterImplicit    DocNameI   = NoExtField
+type instance XXHsOuterTyVarBndrs DocNameI   = DataConCantHappen
 
-type instance XXPat DocNameI = Located (Pat DocNameI)
+type instance XHsSig      DocNameI = NoExtField
+type instance XXHsSigType DocNameI = DataConCantHappen
 
-type instance SrcSpanLess (LPat DocNameI) = Pat DocNameI
-instance HasSrcSpan (LPat DocNameI) where
-  -- NB: The following chooses the behaviour of the outer location
-  --     wrapper replacing the inner ones.
-  composeSrcSpan (L sp p) =  if sp == noSrcSpan
-                             then p
-                             else XPat (L sp (stripSrcSpanPat p))
-   -- NB: The following only returns the top-level location, if any.
-  decomposeSrcSpan (XPat (L sp p)) = L sp (stripSrcSpanPat p)
-  decomposeSrcSpan p               = L noSrcSpan  p
+type instance XHsQTvs        DocNameI = NoExtField
+type instance XConDeclField  DocNameI = NoExtField
+type instance XXConDeclField DocNameI = DataConCantHappen
 
-stripSrcSpanPat :: LPat DocNameI -> Pat DocNameI
-stripSrcSpanPat (XPat (L _ p)) = stripSrcSpanPat p
-stripSrcSpanPat p              = p
+type instance XXPat DocNameI = DataConCantHappen
+type instance XXHsBindsLR DocNameI a = DataConCantHappen
+
+type instance XCInjectivityAnn DocNameI = NoExtField
+
+type instance XCFunDep DocNameI = NoExtField
+
+type instance XCTyFamInstDecl DocNameI = NoExtField

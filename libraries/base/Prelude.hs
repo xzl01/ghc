@@ -1,5 +1,6 @@
 {-# LANGUAGE Trustworthy #-}
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE ExplicitNamespaces #-}
 
 -----------------------------------------------------------------------------
 -- |
@@ -101,25 +102,32 @@ module Prelude (
     seq, ($!),
 
     -- * List operations
-    map, (++), filter,
-    head, last, tail, init, null, length, (!!),
-    reverse,
+    List.map, (List.++), List.filter,
+    List.head, List.last, List.tail, List.init, (List.!!),
+    Foldable.null, Foldable.length,
+    List.reverse,
     -- *** Special folds
-    and, or, any, all,
-    concat, concatMap,
+    Foldable.and, Foldable.or, Foldable.any, Foldable.all,
+    Foldable.concat, Foldable.concatMap,
     -- ** Building lists
     -- *** Scans
-    scanl, scanl1, scanr, scanr1,
+    List.scanl, List.scanl1, List.scanr, List.scanr1,
     -- *** Infinite lists
-    iterate, repeat, replicate, cycle,
+    List.iterate, List.repeat, List.replicate, List.cycle,
     -- ** Sublists
-    take, drop, splitAt, takeWhile, dropWhile, span, break,
+    List.take, List.drop,
+    List.takeWhile, List.dropWhile,
+    List.span, List.break,
+    List.splitAt,
     -- ** Searching lists
-    notElem, lookup,
+    Foldable.notElem,
+    List.lookup,
     -- ** Zipping and unzipping lists
-    zip, zip3, zipWith, zipWith3, unzip, unzip3,
+    List.zip, List.zip3,
+    List.zipWith, List.zipWith3,
+    List.unzip, List.unzip3,
     -- ** Functions on strings
-    lines, words, unlines, unwords,
+    List.lines, List.words, List.unlines, List.unwords,
 
     -- * Converting to and from @String@
     -- ** Converting to @String@
@@ -152,14 +160,17 @@ module Prelude (
     -- ** Exception handling in the I\/O monad
     IOError, ioError, userError,
 
+    -- ** The equality types
+    type (~)
   ) where
 
 import Control.Monad
 import System.IO
 import System.IO.Error
-import Data.List
+import qualified Data.List as List
 import Data.Either
 import Data.Foldable    ( Foldable(..) )
+import qualified Data.Foldable as Foldable
 import Data.Functor     ( (<$>) )
 import Data.Maybe
 import Data.Traversable ( Traversable(..) )

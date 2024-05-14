@@ -25,7 +25,7 @@
 --  Nothing                 --  (Int -> String) -> Maybe Int -> Maybe String
 --
 --  >>> fmap show [1,2,3]   --  (a   -> b)      -> f a       -> f b
---  ["1", "2", "3"]         --  (Int -> String) -> [Int]     -> [String]
+--  ["1","2","3"]           --  (Int -> String) -> [Int]     -> [String]
 --
 --  >>> fmap show []        --  (a   -> b)      -> f a       -> f b
 --  []                      --  (Int -> String) -> [Int]     -> [String]
@@ -39,8 +39,7 @@
 
 module Data.Functor
     (
-      Functor(fmap),
-      (<$),
+      Functor(..),
       ($>),
       (<$>),
       (<&>),
@@ -97,7 +96,7 @@ infixl 4 <$>
 (<$>) :: Functor f => (a -> b) -> f a -> f b
 (<$>) = fmap
 
-infixl 4 $>
+infixl 1 <&>
 
 -- | Flipped version of '<$>'.
 --
@@ -122,7 +121,7 @@ infixl 4 $>
 (<&>) :: Functor f => f a -> (a -> b) -> f b
 as <&> f = f <$> as
 
-infixl 1 <&>
+infixl 4 $>
 
 -- | Flipped version of '<$'.
 --

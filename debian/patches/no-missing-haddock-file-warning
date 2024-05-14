@@ -7,7 +7,7 @@ Index: b/utils/ghc-pkg/Main.hs
 ===================================================================
 --- a/utils/ghc-pkg/Main.hs
 +++ b/utils/ghc-pkg/Main.hs
-@@ -1889,8 +1889,10 @@ checkPackageConfig pkg verbosity db_stac
+@@ -1923,8 +1923,10 @@ checkPackageConfig pkg verbosity db_stac
    mapM_ (checkDir True  "dynamic-library-dirs") (libraryDynDirs pkg)
    mapM_ (checkDir True  "include-dirs") (includeDirs pkg)
    mapM_ (checkDir True  "framework-dirs") (frameworkDirs pkg)

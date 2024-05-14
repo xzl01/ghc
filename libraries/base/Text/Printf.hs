@@ -1,5 +1,6 @@
 {-# LANGUAGE Safe #-}
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE TypeOperators #-}
+{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
 -----------------------------------------------------------------------------
 -- |
@@ -93,11 +94,14 @@ module Text.Printf(
 
 import Data.Char
 import Data.Int
-import Data.List
+import Data.List (stripPrefix)
 import Data.Word
 import Numeric
 import Numeric.Natural
 import System.IO
+
+-- $setup
+-- >>> import Prelude
 
 -------------------
 
@@ -291,7 +295,7 @@ instance (a ~ ()) => PrintfType (IO a) where
 
 -- | @since 4.7.0.0
 instance (a ~ ()) => HPrintfType (IO a) where
-    hspr hdl fmts args = do
+    hspr hdl fmts args =
         hPutStr hdl (uprintf fmts (reverse args))
 
 -- | @since 2.01

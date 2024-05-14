@@ -1,5 +1,7 @@
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE Trustworthy #-}
-{-# LANGUAGE CPP, NoImplicitPrelude, StandaloneDeriving #-}
+
 {-# OPTIONS_HADDOCK not-home #-}
 
 -----------------------------------------------------------------------------
@@ -19,6 +21,7 @@
 -----------------------------------------------------------------------------
 
 module GHC.Unicode (
+        unicodeVersion,
         GeneralCategory (..), generalCategory,
         isAscii, isLatin1, isControl,
         isAsciiUpper, isAsciiLower,
@@ -34,14 +37,23 @@ import GHC.Base
 import GHC.Char        (chr)
 import GHC.Real
 import GHC.Enum ( Enum (..), Bounded (..) )
-import GHC.Arr ( Ix (..) )
+import GHC.Ix ( Ix (..) )
 import GHC.Num
+import {-# SOURCE #-} Data.Version
 
 -- Data.Char.chr already imports this and we need to define a Show instance
 -- for GeneralCategory
 import GHC.Show ( Show )
 
+-- $setup
+-- >>> import Prelude
+
 #include "HsBaseConfig.h"
+#include "UnicodeVersion.h"
+
+-- | Version of Unicode standard used by @base@.
+unicodeVersion :: Version
+unicodeVersion = makeVersion UNICODE_VERSION_NUMS
 
 -- | Unicode General Categories (column 2 of the UnicodeData table) in
 -- the order they are listed in the Unicode standard (the Unicode

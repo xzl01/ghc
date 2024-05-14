@@ -1,47 +1,36 @@
-module Data.Time.Calendar.CalendarDiffDays
-    (
-        -- * Calendar Duration
-        module Data.Time.Calendar.CalendarDiffDays
-    ) where
+{-# LANGUAGE Safe #-}
 
-#if MIN_VERSION_base(4,8,0)
-#else
-import Data.Monoid
-#endif
-#if MIN_VERSION_base(4,9,0) && !MIN_VERSION_base(4,11,0)
-import Data.Semigroup hiding (option)
-#endif
-import Data.Typeable
+module Data.Time.Calendar.CalendarDiffDays (
+    -- * Calendar Duration
+    module Data.Time.Calendar.CalendarDiffDays,
+) where
+
+import Control.DeepSeq
 import Data.Data
 
 data CalendarDiffDays = CalendarDiffDays
     { cdMonths :: Integer
     , cdDays :: Integer
-    } deriving (Eq,
-    Data
-#if __GLASGOW_HASKELL__ >= 802
-    -- ^ @since 1.9.2
-#endif
-    ,Typeable
-#if __GLASGOW_HASKELL__ >= 802
-    -- ^ @since 1.9.2
-#endif
-    )
+    }
+    deriving
+        ( Eq
+        , -- | @since 1.9.2
+          Data
+        , -- | @since 1.9.2
+          Typeable
+        )
 
-#if MIN_VERSION_base(4,9,0)
+instance NFData CalendarDiffDays where
+    rnf (CalendarDiffDays m d) = rnf m `seq` rnf d `seq` ()
+
 -- | Additive
 instance Semigroup CalendarDiffDays where
     CalendarDiffDays m1 d1 <> CalendarDiffDays m2 d2 = CalendarDiffDays (m1 + m2) (d1 + d2)
-#endif
 
 -- | Additive
 instance Monoid CalendarDiffDays where
     mempty = CalendarDiffDays 0 0
-#if MIN_VERSION_base(4,9,0)
     mappend = (<>)
-#else
-    mappend (CalendarDiffDays m1 d1) (CalendarDiffDays m2 d2) = CalendarDiffDays (m1 + m2) (d1 + d2)
-#endif
 
 instance Show CalendarDiffDays where
     show (CalendarDiffDays m d) = "P" ++ show m ++ "M" ++ show d ++ "D"

@@ -1,5 +1,9 @@
+#include "Rts.h"
 #include "elf_got.h"
+#include "linker/MMap.h"
+
 #include <string.h>
+
 #if defined(OBJFORMAT_ELF)
 /*
  * Check if we need a global offset table slot for a
@@ -16,7 +20,11 @@ needGotSlot(Elf_Sym * symbol) {
      * in a smaller GOT, which is preferrable.
      */
     return ELF_ST_BIND(symbol->st_info) == STB_GLOBAL
-        || ELF_ST_BIND(symbol->st_info) == STB_WEAK;
+        || ELF_ST_BIND(symbol->st_info) == STB_WEAK
+        // Section symbols exist primarily for relocation
+        // and as such may need a GOT slot.
+        || ELF_ST_TYPE(symbol->st_info) == STT_SECTION;
+
 }
 
 bool
@@ -45,11 +53,8 @@ makeGot(ObjectCode * oc) {
     }
     if(got_slots > 0) {
         oc->info->got_size = got_slots * sizeof(void *);
-         void * mem = mmap(NULL, oc->info->got_size,
-                           PROT_READ | PROT_WRITE,
-                           MAP_ANON | MAP_PRIVATE,
-                           -1, 0);
-        if (mem == MAP_FAILED) {
+        void * mem = mmapAnonForLinker(oc->info->got_size);
+        if (mem == NULL) {
             errorBelch("MAP_FAILED. errno=%d", errno);
             return EXIT_FAILURE;
         }
@@ -82,10 +87,12 @@ fillGot(ObjectCode * oc) {
             if(needGotSlot(symbol->elf_sym)) {
 
                 /* no type are undefined symbols */
+                // Note STT_SECTION symbols should have their addres
+                // set prior to the fillGot call in ocResolve_ELF.
                 if(   STT_NOTYPE == ELF_ST_TYPE(symbol->elf_sym->st_info)
                    || STB_WEAK   == ELF_ST_BIND(symbol->elf_sym->st_info)) {
                     if(0x0 == symbol->addr) {
-                        symbol->addr = lookupSymbol_(symbol->name);
+                        symbol->addr = lookupDependentSymbol(symbol->name, oc, NULL);
                         if(0x0 == symbol->addr) {
                             if(0 == strncmp(symbol->name,"_GLOBAL_OFFSET_TABLE_",21)) {
                                 symbol->addr = oc->info->got_start;
@@ -133,10 +140,10 @@ verifyGot(ObjectCode * oc) {
         for(size_t i=0; i < symTab->n_symbols; i++) {
             ElfSymbol * symbol = &symTab->symbols[i];
             if(symbol->got_addr) {
-                ASSERT((void*)(*(void**)symbol->got_addr)
-                       == (void*)symbol->addr);
+                CHECK((void*)(*(void**)symbol->got_addr)
+                      == (void*)symbol->addr);
             }
-            ASSERT(0 == ((uintptr_t)symbol->addr & 0xffff000000000000));
+            CHECK(0 == ((uintptr_t)symbol->addr & 0xffff000000000000));
         }
     }
     return EXIT_SUCCESS;
@@ -144,7 +151,7 @@ verifyGot(ObjectCode * oc) {
 
 void
 freeGot(ObjectCode * oc) {
-//    munmap(oc->info->got_start, oc->info->got_size);
+//    munmapForLinker(oc->info->got_start, oc->info->got_size, "freeGot);
     oc->info->got_start = 0x0;
     oc->info->got_size = 0;
 }

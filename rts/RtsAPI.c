@@ -6,7 +6,7 @@
  *
  * --------------------------------------------------------------------------*/
 
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
 #include "RtsAPI.h"
 #include "HsFFI.h"
@@ -15,6 +15,7 @@
 #include "Prelude.h"
 #include "Schedule.h"
 #include "Capability.h"
+#include "StableName.h"
 #include "StablePtr.h"
 #include "Threads.h"
 #include "Weak.h"
@@ -29,19 +30,31 @@
 HaskellObj
 rts_mkChar (Capability *cap, HsChar c)
 {
-  StgClosure *p = (StgClosure *)allocate(cap, CONSTR_sizeW(0,1));
-  SET_HDR(p, Czh_con_info, CCS_SYSTEM);
-  p->payload[0]  = (StgClosure *)(StgWord)(StgChar)c;
-  return p;
+  StgClosure *p;
+  // See Note [Precomputed static closures]
+  if (c <= MAX_CHARLIKE) {
+    p = (StgClosure *)CHARLIKE_CLOSURE(c);
+  } else {
+    p = (StgClosure *)allocate(cap, CONSTR_sizeW(0,1));
+    SET_HDR(p, Czh_con_info, CCS_SYSTEM);
+    p->payload[0] = (StgClosure *)(StgWord)(StgChar)c;
+  }
+  return TAG_CLOSURE(1, p);
 }
 
 HaskellObj
 rts_mkInt (Capability *cap, HsInt i)
 {
-  StgClosure *p = (StgClosure *)allocate(cap,CONSTR_sizeW(0,1));
-  SET_HDR(p, Izh_con_info, CCS_SYSTEM);
-  p->payload[0]  = (StgClosure *)(StgInt)i;
-  return p;
+  StgClosure *p;
+  // See Note [Precomputed static closures]
+  if (i >= MIN_INTLIKE && i <= MAX_INTLIKE) {
+    p = (StgClosure *)INTLIKE_CLOSURE(i);
+  } else {
+    p = (StgClosure *)allocate(cap,CONSTR_sizeW(0,1));
+    SET_HDR(p, Izh_con_info, CCS_SYSTEM);
+    *(StgInt *)p->payload = i;
+  }
+  return TAG_CLOSURE(1, p);
 }
 
 HaskellObj
@@ -49,9 +62,8 @@ rts_mkInt8 (Capability *cap, HsInt8 i)
 {
   StgClosure *p = (StgClosure *)allocate(cap,CONSTR_sizeW(0,1));
   SET_HDR(p, I8zh_con_info, CCS_SYSTEM);
-  /* Make sure we mask out the bits above the lowest 8 */
-  p->payload[0]  = (StgClosure *)(StgInt)i;
-  return p;
+  *(StgInt8 *)p->payload = i;
+  return TAG_CLOSURE(1, p);
 }
 
 HaskellObj
@@ -59,9 +71,8 @@ rts_mkInt16 (Capability *cap, HsInt16 i)
 {
   StgClosure *p = (StgClosure *)allocate(cap,CONSTR_sizeW(0,1));
   SET_HDR(p, I16zh_con_info, CCS_SYSTEM);
-  /* Make sure we mask out the relevant bits */
-  p->payload[0]  = (StgClosure *)(StgInt)i;
-  return p;
+  *(StgInt16 *)p->payload = i;
+  return TAG_CLOSURE(1, p);
 }
 
 HaskellObj
@@ -69,17 +80,17 @@ rts_mkInt32 (Capability *cap, HsInt32 i)
 {
   StgClosure *p = (StgClosure *)allocate(cap,CONSTR_sizeW(0,1));
   SET_HDR(p, I32zh_con_info, CCS_SYSTEM);
-  p->payload[0]  = (StgClosure *)(StgInt)i;
-  return p;
+  *(StgInt32 *)p->payload = i;
+  return TAG_CLOSURE(1, p);
 }
 
 HaskellObj
 rts_mkInt64 (Capability *cap, HsInt64 i)
 {
-  StgClosure *p = (StgClosure *)allocate(cap,CONSTR_sizeW(0,2));
+  StgClosure *p = (StgClosure *)allocate(cap,CONSTR_sizeW(0,sizeofW(StgInt64)));
   SET_HDR(p, I64zh_con_info, CCS_SYSTEM);
   ASSIGN_Int64((P_)&(p->payload[0]), i);
-  return p;
+  return TAG_CLOSURE(1, p);
 }
 
 HaskellObj
@@ -87,48 +98,44 @@ rts_mkWord (Capability *cap, HsWord i)
 {
   StgClosure *p = (StgClosure *)allocate(cap,CONSTR_sizeW(0,1));
   SET_HDR(p, Wzh_con_info, CCS_SYSTEM);
-  p->payload[0]  = (StgClosure *)(StgWord)i;
-  return p;
+  *(StgWord *)p->payload = i;
+  return TAG_CLOSURE(1, p);
 }
 
 HaskellObj
 rts_mkWord8 (Capability *cap, HsWord8 w)
 {
-  /* see rts_mkInt* comments */
   StgClosure *p = (StgClosure *)allocate(cap,CONSTR_sizeW(0,1));
   SET_HDR(p, W8zh_con_info, CCS_SYSTEM);
-  p->payload[0]  = (StgClosure *)(StgWord)(w & 0xff);
-  return p;
+  *(StgWord8 *)p->payload = w;
+  return TAG_CLOSURE(1, p);
 }
 
 HaskellObj
 rts_mkWord16 (Capability *cap, HsWord16 w)
 {
-  /* see rts_mkInt* comments */
   StgClosure *p = (StgClosure *)allocate(cap,CONSTR_sizeW(0,1));
   SET_HDR(p, W16zh_con_info, CCS_SYSTEM);
-  p->payload[0]  = (StgClosure *)(StgWord)(w & 0xffff);
-  return p;
+  *(StgWord16 *)p->payload = w;
+  return TAG_CLOSURE(1, p);
 }
 
 HaskellObj
 rts_mkWord32 (Capability *cap, HsWord32 w)
 {
-  /* see rts_mkInt* comments */
   StgClosure *p = (StgClosure *)allocate(cap,CONSTR_sizeW(0,1));
   SET_HDR(p, W32zh_con_info, CCS_SYSTEM);
-  p->payload[0]  = (StgClosure *)(StgWord)(w & 0xffffffff);
-  return p;
+  *(StgWord32 *)p->payload = w;
+  return TAG_CLOSURE(1, p);
 }
 
 HaskellObj
 rts_mkWord64 (Capability *cap, HsWord64 w)
 {
-  StgClosure *p = (StgClosure *)allocate(cap,CONSTR_sizeW(0,2));
-  /* see mk_Int8 comment */
+  StgClosure *p = (StgClosure *)allocate(cap,CONSTR_sizeW(0,sizeofW(StgWord64)));
   SET_HDR(p, W64zh_con_info, CCS_SYSTEM);
   ASSIGN_Word64((P_)&(p->payload[0]), w);
-  return p;
+  return TAG_CLOSURE(1, p);
 }
 
 
@@ -138,7 +145,7 @@ rts_mkFloat (Capability *cap, HsFloat f)
   StgClosure *p = (StgClosure *)allocate(cap,CONSTR_sizeW(0,1));
   SET_HDR(p, Fzh_con_info, CCS_SYSTEM);
   ASSIGN_FLT((P_)p->payload, (StgFloat)f);
-  return p;
+  return TAG_CLOSURE(1, p);
 }
 
 HaskellObj
@@ -147,7 +154,7 @@ rts_mkDouble (Capability *cap, HsDouble d)
   StgClosure *p = (StgClosure *)allocate(cap,CONSTR_sizeW(0,sizeofW(StgDouble)));
   SET_HDR(p, Dzh_con_info, CCS_SYSTEM);
   ASSIGN_DBL((P_)p->payload, (StgDouble)d);
-  return p;
+  return TAG_CLOSURE(1, p);
 }
 
 HaskellObj
@@ -155,8 +162,8 @@ rts_mkStablePtr (Capability *cap, HsStablePtr s)
 {
   StgClosure *p = (StgClosure *)allocate(cap,sizeofW(StgHeader)+1);
   SET_HDR(p, StablePtr_con_info, CCS_SYSTEM);
-  p->payload[0]  = (StgClosure *)s;
-  return p;
+  p->payload[0] = (StgClosure *)s;
+  return TAG_CLOSURE(1, p);
 }
 
 HaskellObj
@@ -164,8 +171,8 @@ rts_mkPtr (Capability *cap, HsPtr a)
 {
   StgClosure *p = (StgClosure *)allocate(cap,sizeofW(StgHeader)+1);
   SET_HDR(p, Ptr_con_info, CCS_SYSTEM);
-  p->payload[0]  = (StgClosure *)a;
-  return p;
+  p->payload[0] = (StgClosure *)a;
+  return TAG_CLOSURE(1, p);
 }
 
 HaskellObj
@@ -173,17 +180,17 @@ rts_mkFunPtr (Capability *cap, HsFunPtr a)
 {
   StgClosure *p = (StgClosure *)allocate(cap,sizeofW(StgHeader)+1);
   SET_HDR(p, FunPtr_con_info, CCS_SYSTEM);
-  p->payload[0]  = (StgClosure *)a;
-  return p;
+  p->payload[0] = (StgClosure *)a;
+  return TAG_CLOSURE(1, p);
 }
 
 HaskellObj
 rts_mkBool (Capability *cap STG_UNUSED, HsBool b)
 {
   if (b) {
-    return (StgClosure *)True_closure;
+    return TAG_CLOSURE(2, (StgClosure *)True_closure);
   } else {
-    return (StgClosure *)False_closure;
+    return TAG_CLOSURE(1, (StgClosure *)False_closure);
   }
 }
 
@@ -232,7 +239,7 @@ rts_getInt (HaskellObj p)
     // See comment above:
     // ASSERT(p->header.info == Izh_con_info ||
     //        p->header.info == Izh_static_info);
-    return (HsInt)(UNTAG_CLOSURE(p)->payload[0]);
+    return *(HsInt *)(UNTAG_CLOSURE(p)->payload);
 }
 
 HsInt8
@@ -241,7 +248,7 @@ rts_getInt8 (HaskellObj p)
     // See comment above:
     // ASSERT(p->header.info == I8zh_con_info ||
     //        p->header.info == I8zh_static_info);
-    return (HsInt8)(HsInt)(UNTAG_CLOSURE(p)->payload[0]);
+    return *(HsInt8 *)(UNTAG_CLOSURE(p)->payload);
 }
 
 HsInt16
@@ -250,7 +257,7 @@ rts_getInt16 (HaskellObj p)
     // See comment above:
     // ASSERT(p->header.info == I16zh_con_info ||
     //        p->header.info == I16zh_static_info);
-    return (HsInt16)(HsInt)(UNTAG_CLOSURE(p)->payload[0]);
+    return *(HsInt16 *)(UNTAG_CLOSURE(p)->payload);
 }
 
 HsInt32
@@ -259,7 +266,7 @@ rts_getInt32 (HaskellObj p)
     // See comment above:
     // ASSERT(p->header.info == I32zh_con_info ||
     //        p->header.info == I32zh_static_info);
-  return (HsInt32)(HsInt)(UNTAG_CLOSURE(p)->payload[0]);
+    return *(HsInt32 *)(UNTAG_CLOSURE(p)->payload);
 }
 
 HsInt64
@@ -277,7 +284,7 @@ rts_getWord (HaskellObj p)
     // See comment above:
     // ASSERT(p->header.info == Wzh_con_info ||
     //        p->header.info == Wzh_static_info);
-    return (HsWord)(UNTAG_CLOSURE(p)->payload[0]);
+    return *(HsWord *)(UNTAG_CLOSURE(p)->payload);
 }
 
 HsWord8
@@ -286,7 +293,7 @@ rts_getWord8 (HaskellObj p)
     // See comment above:
     // ASSERT(p->header.info == W8zh_con_info ||
     //        p->header.info == W8zh_static_info);
-    return (HsWord8)(HsWord)(UNTAG_CLOSURE(p)->payload[0]);
+    return *(HsWord8 *)(UNTAG_CLOSURE(p)->payload);
 }
 
 HsWord16
@@ -295,7 +302,7 @@ rts_getWord16 (HaskellObj p)
     // See comment above:
     // ASSERT(p->header.info == W16zh_con_info ||
     //        p->header.info == W16zh_static_info);
-    return (HsWord16)(HsWord)(UNTAG_CLOSURE(p)->payload[0]);
+    return *(HsWord16 *)(UNTAG_CLOSURE(p)->payload);
 }
 
 HsWord32
@@ -304,7 +311,7 @@ rts_getWord32 (HaskellObj p)
     // See comment above:
     // ASSERT(p->header.info == W32zh_con_info ||
     //        p->header.info == W32zh_static_info);
-    return (HsWord32)(HsWord)(UNTAG_CLOSURE(p)->payload[0]);
+    return *(HsWord32 *)(UNTAG_CLOSURE(p)->payload);
 }
 
 HsWord64
@@ -364,6 +371,11 @@ rts_getFunPtr (HaskellObj p)
 HsBool
 rts_getBool (HaskellObj p)
 {
+    const StgWord tag = GET_CLOSURE_TAG(p);
+    if (tag > 0) {
+        return tag - 1;
+    }
+
     const StgInfoTable *info;
 
     info = get_itbl((const StgClosure *)UNTAG_CONST_CLOSURE(p));
@@ -423,6 +435,10 @@ createStrictIOThread(Capability *cap, W_ stack_size,  StgClosure *closure)
 
 /* ----------------------------------------------------------------------------
    Evaluating Haskell expressions
+
+   The running task (capability->running_task) must be bounded i.e. you must
+   call newBoundTask() before calling these functions. Note that rts_lock() and
+   rts_pause() both call newBoundTask().
    ------------------------------------------------------------------------- */
 
 void rts_eval (/* inout */ Capability **cap,
@@ -461,10 +477,30 @@ void rts_evalIO (/* inout */ Capability **cap,
 }
 
 /*
+ * rts_inCall() is similar to rts_evalIO, but expects to be called as an incall,
+ * and is not expected to be called by user code directly.
+ */
+void rts_inCall (/* inout */ Capability **cap,
+                 /* in    */ HaskellObj p,
+                 /* out */   HaskellObj *ret)
+{
+    StgTSO* tso;
+
+    tso = createStrictIOThread(*cap, RtsFlags.GcFlags.initialStkSize, p);
+    if ((*cap)->running_task->preferred_capability != -1) {
+        // enabled_capabilities should not change between here and waitCapability()
+        ASSERT((*cap)->no == ((*cap)->running_task->preferred_capability % enabled_capabilities));
+        // we requested explicit affinity; don't move this thread from now on.
+        tso->flags |= TSO_LOCKED;
+    }
+    scheduleWaitThread(tso,ret,cap);
+}
+
+/*
  * rts_evalStableIOMain() is suitable for calling main Haskell thread
  * stored in (StablePtr (IO a)) it calls rts_evalStableIO but wraps
  * function in GHC.TopHandler.runMainIO that installs top_handlers.
- * See Trac #12903.
+ * See #12903.
  */
 void rts_evalStableIOMain(/* inout */ Capability **cap,
                           /* in    */ HsStablePtr s,
@@ -577,12 +613,23 @@ rts_getSchedStatus (Capability *cap)
     return cap->running_task->incall->rstat;
 }
 
+#if defined(THREADED_RTS)
+// The task that paused the RTS. The rts_pausing_task variable is owned by the
+// task that owns all capabilities (there is at most one such task).
+//
+// It's possible to remove this and instead define the pausing task as whichever
+// task owns all capabilities, but using `rts_pausing_task` leads to marginally
+// cleaner code/API and better error messages.
+Task * rts_pausing_task = NULL;
+#endif
+
 Capability *
 rts_lock (void)
 {
     Capability *cap;
     Task *task;
 
+    // Bound the current task. This is necessary to support rts_eval* functions.
     task = newBoundTask();
 
     if (task->running_finalizers) {
@@ -592,6 +639,14 @@ rts_lock (void)
                    "   Foreign.Concurrent.newForeignPtr instead of Foreign.newForeignPtr.");
         stg_exit(EXIT_FAILURE);
     }
+
+#if defined(THREADED_RTS)
+    if (rts_pausing_task == task) {
+        errorBelch("error: rts_lock: The RTS is already paused by this thread.\n"
+                   "   There is no need to call rts_lock if you have already called rts_pause.");
+        stg_exit(EXIT_FAILURE);
+    }
+#endif
 
     cap = NULL;
     waitForCapability(&cap, task);
@@ -620,21 +675,21 @@ rts_unlock (Capability *cap)
     task = cap->running_task;
     ASSERT_FULL_CAPABILITY_INVARIANTS(cap,task);
 
-    // Now release the Capability.  With the capability released, GC
-    // may happen.  NB. does not try to put the current Task on the
+    // Now release the Capability. With the capability released, GC
+    // may happen. NB. does not try to put the current Task on the
     // worker queue.
-    // NB. keep cap->lock held while we call boundTaskExiting().  This
+    // NB. keep cap->lock held while we call exitMyTask(). This
     // is necessary during shutdown, where we want the invariant that
     // after shutdownCapability(), all the Tasks associated with the
-    // Capability have completed their shutdown too.  Otherwise we
-    // could have boundTaskExiting()/workerTaskStop() running at some
+    // Capability have completed their shutdown too. Otherwise we
+    // could have exitMyTask()/workerTaskStop() running at some
     // random point in the future, which causes problems for
     // freeTaskManager().
     ACQUIRE_LOCK(&cap->lock);
     releaseCapability_(cap,false);
 
     // Finally, we can release the Task to the free list.
-    boundTaskExiting(task);
+    exitMyTask();
     RELEASE_LOCK(&cap->lock);
 
     if (task->incall == NULL) {
@@ -644,6 +699,208 @@ rts_unlock (Capability *cap)
       traceTaskDelete(task);
     }
 }
+
+struct PauseToken_ {
+    Capability *capability;
+};
+
+Capability *pauseTokenCapability(PauseToken *pauseToken) {
+    return pauseToken->capability;
+}
+
+#if defined(THREADED_RTS)
+
+// See Note [Locking and Pausing the RTS]
+PauseToken *rts_pause (void)
+{
+    // It is an error if this thread already paused the RTS. If another
+    // thread has paused the RTS, then rts_pause will block until rts_resume is
+    // called (and compete with other threads calling rts_pause). The blocking
+    // behavior is implied by the use of `stopAllCapabilities`.
+    Task * task = getMyTask();
+    if (rts_pausing_task == task)
+    {
+        // This task already passed the RTS.
+        errorBelch("error: rts_pause: This thread has already paused the RTS.");
+        stg_exit(EXIT_FAILURE);
+    }
+
+    // The current task must not own a capability. This is true for non-worker
+    // threads e.g. when making a safe FFI call. We allow pausing when
+    // `task->cap->running_task != task` because the capability can be taken by
+    // other capabilities. Doing this check is justified because rts_pause is a
+    // user facing function and we want good error reporting. We also don't
+    // expect rts_pause to be performance critical.
+    //
+    // N.B. we use a relaxed load since there is no easy way to synchronize
+    // here and this check is ultimately just a convenience for the user..
+    if (task->cap && RELAXED_LOAD(&task->cap->running_task) == task)
+    {
+        // This task owns a capability (and it can't be taken by other capabilities).
+        errorBelch(task->cap->in_haskell
+            ? ("error: rts_pause: attempting to pause via an unsafe FFI call.\n"
+               "   Perhaps a 'foreign import unsafe' should be 'safe'?")
+            : ("error: rts_pause: attempting to pause from a Task that owns a capability.\n"
+               "   Have you already acquired a capability e.g. with rts_lock?"));
+        stg_exit(EXIT_FAILURE);
+    }
+
+    // Bound the current task. This is necessary to support rts_eval* functions.
+    task = newBoundTask();
+    stopAllCapabilities(NULL, task);
+
+    // Now we own all capabilities so we own rts_pausing_task and may set it.
+    rts_pausing_task = task;
+
+    PauseToken *token = stgMallocBytes(sizeof(PauseToken), "rts_pause");
+    token->capability = task->cap;
+    return token;
+}
+
+static void assert_isPausedOnMyTask(const char *functionName);
+
+// See Note [Locking and Pausing the RTS]. The pauseToken argument is here just
+// for symmetry with rts_pause and to match the pattern of rts_lock/rts_unlock.
+void rts_resume (PauseToken *pauseToken)
+{
+    assert_isPausedOnMyTask("rts_resume");
+    Task * task = getMyTask();
+
+    // Now we own all capabilities so we own rts_pausing_task and may write to
+    // it.
+    rts_pausing_task = NULL;
+
+    // releaseAllCapabilities will not block because the current task owns all
+    // capabilities.
+    releaseAllCapabilities(getNumCapabilities(), NULL, task);
+    exitMyTask();
+    stgFree(pauseToken);
+}
+
+// See RtsAPI.h
+bool rts_isPaused(void)
+{
+    return rts_pausing_task != NULL;
+}
+
+// Check that the rts_pause was called on this thread/task and this thread owns
+// all capabilities. If not, outputs an error and exits with EXIT_FAILURE.
+static void assert_isPausedOnMyTask(const char *functionName)
+{
+    Task * task = getMyTask();
+    if (rts_pausing_task == NULL)
+    {
+        errorBelch (
+            "error: %s: the rts is not paused. Did you forget to call rts_pause?",
+            functionName);
+        stg_exit(EXIT_FAILURE);
+    }
+
+    if (task != rts_pausing_task)
+    {
+        // We don't have ownership of rts_pausing_task, so it may have changed
+        // just after the above read. Still, we are guaranteed that
+        // rts_pausing_task won't be set to the current task (because the
+        // current task is here now!), so the error messages are still correct.
+        errorBelch (
+            "error: %s: called from a different OS thread than rts_pause.",
+            functionName);
+
+        stg_exit(EXIT_FAILURE);
+    }
+
+    // Check that we own all capabilities.
+    for (unsigned int i = 0; i < getNumCapabilities(); i++)
+    {
+        Capability *cap = getCapability(i);
+        if (cap->running_task != task)
+        {
+            errorBelch (
+                "error: %s: the pausing thread does not own all capabilities.\n"
+                "   Have you manually released a capability after calling rts_pause?",
+                functionName);
+            stg_exit(EXIT_FAILURE);
+        }
+    }
+}
+
+// See RtsAPI.h
+void rts_listThreads(ListThreadsCb cb, void *user)
+{
+    assert_isPausedOnMyTask("rts_listThreads");
+
+    // The rts is paused and can only be resumed by the current thread. Hence it
+    // is safe to read global thread data.
+
+    for (uint32_t g=0; g < RtsFlags.GcFlags.generations; g++) {
+        StgTSO *tso = generations[g].threads;
+        while (tso != END_TSO_QUEUE) {
+            cb(user, tso);
+            tso = tso->global_link;
+        }
+    }
+}
+
+struct list_roots_ctx {
+    ListRootsCb cb;
+    void *user;
+};
+
+// This is an evac_fn.
+static void list_roots_helper(void *user, StgClosure **p) {
+    struct list_roots_ctx *ctx = (struct list_roots_ctx *) user;
+    ctx->cb(ctx->user, *p);
+}
+
+// See RtsAPI.h
+void rts_listMiscRoots (ListRootsCb cb, void *user)
+{
+    assert_isPausedOnMyTask("rts_listMiscRoots");
+
+    struct list_roots_ctx ctx;
+    ctx.cb = cb;
+    ctx.user = user;
+
+    threadStableNameTable(&list_roots_helper, (void *)&ctx);
+    threadStablePtrTable(&list_roots_helper, (void *)&ctx);
+}
+
+#else
+PauseToken GNU_ATTRIBUTE(__noreturn__)
+*rts_pause (void)
+{
+    errorBelch("Warning: Pausing the RTS is only possible for "
+               "multithreaded RTS.");
+    stg_exit(EXIT_FAILURE);
+}
+
+void GNU_ATTRIBUTE(__noreturn__)
+rts_resume (PauseToken *pauseToken STG_UNUSED)
+{
+    errorBelch("Warning: Resuming the RTS is only possible for "
+               "multithreaded RTS.");
+    stg_exit(EXIT_FAILURE);
+}
+
+bool rts_isPaused(void)
+{
+    errorBelch("Warning: Pausing/Resuming the RTS is only possible for "
+               "multithreaded RTS.");
+    return false;
+}
+
+// See RtsAPI.h
+void rts_listThreads(ListThreadsCb cb STG_UNUSED, void *user STG_UNUSED)
+{
+    errorBelch("Warning: rts_listThreads is only possible for multithreaded RTS.");
+}
+
+// See RtsAPI.h
+void rts_listMiscRoots (ListRootsCb cb STG_UNUSED, void *user STG_UNUSED)
+{
+    errorBelch("Warning: rts_listMiscRoots is only possible for multithreaded RTS.");
+}
+#endif
 
 void rts_done (void)
 {
@@ -680,8 +937,9 @@ void rts_done (void)
 void hs_try_putmvar (/* in */ int capability,
                      /* in */ HsStablePtr mvar)
 {
-    Task *task = getTask();
+    Task *task = getMyTask();
     Capability *cap;
+    Capability *task_old_cap USED_IF_THREADS;
 
     if (capability < 0) {
         capability = task->preferred_capability;
@@ -689,7 +947,7 @@ void hs_try_putmvar (/* in */ int capability,
             capability = 0;
         }
     }
-    cap = capabilities[capability % enabled_capabilities];
+    cap = getCapability(capability % enabled_capabilities);
 
 #if !defined(THREADED_RTS)
 
@@ -702,6 +960,7 @@ void hs_try_putmvar (/* in */ int capability,
     // If the capability is free, we can perform the tryPutMVar immediately
     if (cap->running_task == NULL) {
         cap->running_task = task;
+        task_old_cap = task->cap;
         task->cap = cap;
         RELEASE_LOCK(&cap->lock);
 
@@ -712,6 +971,7 @@ void hs_try_putmvar (/* in */ int capability,
         // Wake up the capability, which will start running the thread that we
         // just awoke (if there was one).
         releaseCapability(cap);
+        task->cap = task_old_cap;
     } else {
         PutMVar *p = stgMallocBytes(sizeof(PutMVar),"hs_try_putmvar");
         // We cannot deref the StablePtr if we don't have a capability,

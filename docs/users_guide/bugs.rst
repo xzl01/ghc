@@ -24,12 +24,11 @@ The limitations here are listed in Haskell Report order (roughly).
 Divergence from Haskell 98 and Haskell 2010
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-By default, GHC mainly aims to behave (mostly) like a Haskell 2010
-compiler, although you can tell it to try to behave like a particular
-version of the language with the :ghc-flag:`-XHaskell98` and
-:ghc-flag:`-XHaskell2010` flags. The known deviations from the standards are
-described below. Unless otherwise stated, the deviation applies in Haskell 98,
-Haskell 2010 and the default modes.
+GHC aims to be able to behave (mostly) like a Haskell 98 or Haskell 2010
+compiler, if you tell it to try to behave like that  with the
+:extension:`Haskell98` and :extension:`Haskell2010` flags. The known deviations
+from the standards are described below. Unless otherwise stated, the deviation
+applies in both Haskell 98 and Haskell 2010 mode.
 
 .. _infelicities-lexical:
 
@@ -45,16 +44,83 @@ Lexical syntax
 -  ``forall`` is always a reserved keyword at the type level, contrary
    to the Haskell Report, which allows type variables to be named ``forall``.
    Note that this does not imply that GHC always enables the
-   :ghc-flag:`-XExplicitForAll` extension. Even without this extension enabled,
+   :extension:`ExplicitForAll` extension. Even without this extension enabled,
    reserving ``forall`` as a keyword has significance. For instance, GHC will
    not parse the type signature ``foo :: forall x``.
+
+-  The ``(!)`` operator, when written in prefix form (preceded by whitespace
+   and not followed by whitespace, as in ``f !x = ...``), is interpreted as a
+   bang pattern, contrary to the Haskell Report, which prescribes to treat ``!``
+   as an operator regardless of surrounding whitespace. Note that this does not
+   imply that GHC always enables :extension:`BangPatterns`. Without the
+   extension, GHC will issue a parse error on ``f !x``, asking to enable the
+   extension.
+
+-  Irrefutable patterns must be written in prefix form::
+
+     f ~a ~b = ...    -- accepted by both GHC and the Haskell Report
+     f ~ a ~ b = ...  -- accepted by the Haskell Report but not GHC
+
+   When written in non-prefix form, ``(~)`` is treated by GHC as a regular
+   infix operator.
+
+   See `GHC Proposal #229 <https://github.com/ghc-proposals/ghc-proposals/blob/master/proposals/0229-whitespace-bang-patterns.rst>`__
+   for the precise rules.
+
+-  Strictness annotations in data declarations must be written in prefix form::
+
+     data T = MkT !Int   -- accepted by both GHC and the Haskell Report
+     data T = MkT ! Int  -- accepted by the Haskell Report but not GHC
+
+   See `GHC Proposal #229 <https://github.com/ghc-proposals/ghc-proposals/blob/master/proposals/0229-whitespace-bang-patterns.rst>`__
+   for the precise rules.
+
+-  As-patterns must not be surrounded by whitespace on either side::
+
+     f p@(x, y, z) = ...    -- accepted by both GHC and the Haskell Report
+
+     -- accepted by the Haskell Report but not GHC:
+     f p @ (x, y, z) = ...
+     f p @(x, y, z) = ...
+     f p@ (x, y, z) = ...
+
+   When surrounded by whitespace on both sides, ``(@)`` is treated by GHC as a
+   regular infix operator.
+
+   When preceded but not followed by whitespace, ``(@)`` is treated as a
+   visible type application.
+
+   See `GHC Proposal #229 <https://github.com/ghc-proposals/ghc-proposals/blob/master/proposals/0229-whitespace-bang-patterns.rst>`__
+   for the precise rules.
+
+- Haskell Report allows any Unicode Decimal Number in decimal literals.
+  However, GHC accepts only ASCII numbers::
+
+     ascDigit    →   0 | 1 | … | 9
+     decimal     →   ascDigit {ascDigit}
+
+- GHC is more lenient in which characters are allowed in the identifiers.
+  Unicode Other Letters are considered to be small letters,
+  therefore variable identifiers can begin with them.
+  Digit class contains all Unicode numbers instead of just Decimal Numbers.
+  Modifier Letters and Non-Spacing Marks can appear in the tail
+  of the identifiers.::
+
+     uniSmall    →   any Unicode Lowercase Letter or Other Letter
+     uniDigit    →   any Unicode Decimal Number, Letter Number or Other Number
+
+     uniIdchar   →   any Unicode Modifier Letter or Non-Spacing Mark
+     idchar      →   small | large | digit | uniIdchar | '
+
+     varid       →   small {idchar} ⟨reservedid⟩
+     conid       →   large {idchar}
 
 .. _infelicities-syntax:
 
 Context-free syntax
 ^^^^^^^^^^^^^^^^^^^
 
--  In Haskell 98 mode and by default (but not in Haskell 2010 mode), GHC
+-  In Haskell 98 mode (but not in Haskell 2010 mode), GHC
    is a little less strict about the layout rule when used in ``do``
    expressions. Specifically, the restriction that "a nested context
    must be indented further to the right than the enclosing context" is
@@ -68,8 +134,17 @@ Context-free syntax
                  ps <- mapM process args
                  mapM print ps
 
-   This behaviour is controlled by the ``NondecreasingIndentation``
+   This behaviour is controlled by the :extension:`NondecreasingIndentation`
    extension.
+
+.. extension:: NondecreasingIndentation
+    :shortdesc: Allow nested contexts to be at the same indentation level as
+      its enclosing context.
+
+    :since: 7.2.1
+
+    Allow nested contexts to be at the same indentation level as
+    its enclosing context.
 
 -  GHC doesn't do the fixity resolution in expressions during parsing as
    required by Haskell 98 (but not by Haskell 2010). For example,
@@ -95,8 +170,8 @@ Context-free syntax
 Expressions and patterns
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
-In its default mode, GHC makes some programs slightly more defined than
-they should be. For example, consider ::
+By default, GHC makes some programs slightly more defined than they should be.
+For example, consider ::
 
     f :: [a] -> b -> b
     f [] = error "urk"
@@ -113,19 +188,40 @@ eta-expands ``f`` to
     f []     v = error "urk"
     f (x:xs) v = v
 
-This improves efficiency slightly but significantly for most programs,
-and is bad for only a few. To suppress this bogus "optimisation" use
-``-fpedantic-bottoms``.
+For most programs this improves efficiency enough to be enabled
+& bad only in few rare cases.
+To suppress this optimisation use :ghc-flag:`-fpedantic-bottoms`.
 
-.. _infelicities-decls:
+.. _infelicities-failable-pats:
 
-Declarations and bindings
-^^^^^^^^^^^^^^^^^^^^^^^^^
+Failable patterns
+^^^^^^^^^^^^^^^^^
 
-In its default mode, GHC does not accept datatype contexts, as it has
-been decided to remove them from the next version of the language
-standard. This behaviour can be controlled with the ``DatatypeContexts``
-extension. See :ref:`datatype-contexts`.
+Since the `MonadFail Proposal (MFP) <https://gitlab.haskell.org/haskell/prime/-/wikis/libraries/proposals/monad-fail>`__,
+do-notation blocks that contain a failable pattern need a `MonadFail <https://hackage.haskell.org/package/base-4.14.1.0/docs/Control-Monad-Fail.html#t:MonadFail>`__ constraint.
+
+For example
+
+::
+
+    mayFail :: (MonadIO m) => m ()
+    mayFail = do
+      (Just value) <- fetchData
+      putStrLn value
+
+Will warn you with
+
+.. code-block:: none
+
+    • Could not deduce (MonadFail m)
+        arising from a do statement
+        with the failable pattern ‘(Just x)’
+      from the context: MonadIO m
+        bound by the type signature for:
+                   mayFail :: forall (m :: * -> *). MonadIO m => m ()
+
+And indeed, since the `Monad <https://hackage.haskell.org/package/base-4.14.1.0/docs/Control-Monad.html#t:Monad>`__ class does not have the ``fail`` method anymore,
+we need to explicitly add ``(MonadFail m)`` to the constraints of the function.
 
 .. _infelicities-recursive-groups:
 
@@ -136,12 +232,12 @@ The Haskell Report specifies that a group of bindings (at top level, or
 in a ``let`` or ``where``) should be sorted into strongly-connected
 components, and then type-checked in dependency order
 (`Haskell Report, Section
-4.5.1 <http://www.haskell.org/onlinereport/decls.html#sect4.5.1>`__). As
+4.5.1 <https://www.haskell.org/onlinereport/decls.html#sect4.5.1>`__). As
 each group is type-checked, any binders of the group that have an
 explicit type signature are put in the type environment with the
 specified polymorphic type, and all others are monomorphic until the
 group is generalised (`Haskell Report, Section
-4.5.2 <http://www.haskell.org/onlinereport/decls.html#sect4.5.2>`__).
+4.5.2 <https://www.haskell.org/onlinereport/decls.html#sect4.5.2>`__).
 
 Following a suggestion of Mark Jones, in his paper `Typing Haskell in
 Haskell <https://web.cecs.pdx.edu/~mpj/thih/>`__, GHC implements a
@@ -231,7 +327,7 @@ GHC requires the use of ``hs-boot`` files to cut the recursive loops
 among mutually recursive modules as described in
 :ref:`mutual-recursion`. This more of an infelicity than a bug: the
 Haskell Report says (`Section
-5.7 <http://haskell.org/onlinereport/modules.html#sect5.7>`__)
+5.7 <https://haskell.org/onlinereport/modules.html#sect5.7>`__)
 
     "Depending on the Haskell implementation used, separate compilation of
     mutually recursive modules may require that imported modules contain
@@ -253,10 +349,10 @@ Numbers, basic types, and built-in classes
     by:
 
     -  Whenever you make a ``Num`` instance of a type, also make
-        ``Show`` and ``Eq`` instances, and
+       ``Show`` and ``Eq`` instances, and
 
     -  Whenever you give a function, instance or class a ``Num t``
-        constraint, also give it ``Show t`` and ``Eq t`` constraints.
+       constraint, also give it ``Show t`` and ``Eq t`` constraints.
 
 ``Bits`` superclass
     The ``Bits`` class does not have a ``Num`` superclass. It
@@ -266,18 +362,18 @@ Numbers, basic types, and built-in classes
     You can make code that works with both Haskell 2010 and GHC by:
 
     -  Whenever you make a ``Bits`` instance of a type, also make a
-        ``Num`` instance, and
+       ``Num`` instance, and
 
     -  Whenever you give a function, instance or class a ``Bits t``
-        constraint, also give it a ``Num t`` constraint, and
+       constraint, also give it a ``Num t`` constraint, and
 
     -  Always define the ``bit``, ``testBit`` and ``popCount`` methods
-        in ``Bits`` instances.
+       in ``Bits`` instances.
 
 ``Read`` class methods
     The ``Read`` class has two extra methods, ``readPrec`` and
     ``readListPrec``, that are not found in the Haskell 2010 since they rely
-    on the ``ReadPrec`` data type, which requires the :ghc-flag:`-XRankNTypes`
+    on the ``ReadPrec`` data type, which requires the :extension:`RankNTypes`
     extension. GHC also derives ``Read`` instances by implementing ``readPrec``
     instead of ``readsPrec``, and relies on a default implementation of
     ``readsPrec`` that is defined in terms of ``readPrec``. GHC adds these two
@@ -311,14 +407,6 @@ Multiply-defined array elements not checked
 
 In ``Prelude`` support
 ^^^^^^^^^^^^^^^^^^^^^^
-
-Arbitrary-sized tuples
-    Tuples are currently limited to size 100. However, standard
-    instances for tuples (``Eq``, ``Ord``, ``Bounded``, ``Ix``, ``Read``,
-    and ``Show``) are available *only* up to 16-tuples.
-
-    This limitation is easily subvertible, so please ask if you get
-    stuck on it.
 
 ``splitAt`` semantics
     ``Data.List.splitAt`` is more strict than specified in the Report.
@@ -393,31 +481,6 @@ The Foreign Function Interface
         single: hs_init
         single: hs_exit
 
-.. _infelicities-operator-sections:
-
-Operator sections
-^^^^^^^^^^^^^^^^^
-
-The Haskell Report demands that, for infix operators ``%``, the following
-identities hold:
-
-::
-
-    (% expr) = \x -> x % expr
-    (expr %) = \x -> expr % x
-
-However, the second law is violated in the presence of undefined operators,
-
-::
-
-    (%) = error "urk"
-    (() %)         `seq` () -- urk
-    (\x -> () % x) `seq` () -- OK, result ()
-
-The operator section is treated like function application of an undefined
-function, while the lambda form is in WHNF that contains an application of an
-undefined function.
-
 .. _haskell-98-2010-undefined:
 
 GHC's interpretation of undefined behaviour in Haskell 98 and Haskell 2010
@@ -443,7 +506,7 @@ undefined or implementation specific in Haskell 98.
     architecture; in other words it holds 32 bits on a 32-bit machine,
     and 64-bits on a 64-bit machine.
 
-    Arithmetic on ``Int`` is unchecked for overflowoverflow\ ``Int``, so
+    Arithmetic on ``Int`` is unchecked for overflow\ ``Int``, so
     all operations on ``Int`` happen modulo 2\ :sup:`⟨n⟩` where ⟨n⟩ is
     the size in bits of the ``Int`` type.
 
@@ -481,13 +544,20 @@ Unchecked floating-point arithmetic
     .. index::
         single: floating-point exceptions.
 
+Large tuple support
+    The Haskell Report only requires implementations to provide tuple
+    types and their accompanying standard instances up to size 15. GHC
+    limits the size of tuple types to 62 and provides instances of
+    ``Eq``, ``Ord``, ``Bounded``, ``Read``, ``Show``, and ``Ix`` for
+    tuples up to size 15.
+
 .. _bugs:
 
 Known bugs or infelicities
 --------------------------
 
 The bug tracker lists bugs that have been reported in GHC but not yet
-fixed: see the `GHC Trac <http://ghc.haskell.org/trac/ghc/>`__. In
+fixed: see the `GHC issue tracker <https://gitlab.haskell.org/ghc/ghc/issues>`__. In
 addition to those, GHC also has the following known bugs or
 infelicities. These bugs are more permanent; it is unlikely that any of
 them will be fixed in the short term.
@@ -553,13 +623,13 @@ Bugs in GHC
          To increase the limit, use -fsimpl-tick-factor=N (default 100)
 
    with the panic being reported no matter how high a
-   :ghc-flag:`-fsimpl-tick-factor` you supply.
+   :ghc-flag:`-fsimpl-tick-factor <-fsimpl-tick-factor=⟨n⟩>` you supply.
 
    We have never found another class of programs, other than this
    contrived one, that makes GHC diverge, and fixing the problem would
    impose an extra overhead on every compilation. So the bug remains
    un-fixed. There is more background in `Secrets of the GHC
-   inliner <http://research.microsoft.com/~simonpj/Papers/inlining/>`__.
+   inliner <https://research.microsoft.com/~simonpj/Papers/inlining/>`__.
 
 -  On 32-bit x86 platforms when using the native code generator, the
    :ghc-flag:`-fexcess-precision` option is always on.
@@ -585,7 +655,7 @@ Bugs in GHC
    libraries that come with GHC are probably built without this option,
    unless you built GHC yourself.
 
--  The :ghc-flag:`state hack <-fstate-hack>` optimization can result in
+-  The :ghc-flag:`state hack <-fno-state-hack>` optimization can result in
    non-obvious changes in evaluation ordering which may hide exceptions, even
    with :ghc-flag:`-fpedantic-bottoms` (see, e.g., :ghc-ticket:`7411`). For
    instance, ::

@@ -5,8 +5,8 @@
 # This file is part of the GHC build system.
 #
 # To understand how the build system works and how to modify it, see
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Architecture
-#      http://ghc.haskell.org/trac/ghc/wiki/Building/Modifying
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/architecture
+#      https://gitlab.haskell.org/ghc/ghc/wikis/building/modifying
 #
 # -----------------------------------------------------------------------------
 
@@ -21,8 +21,6 @@ utils/hp2ps_dist_PROGNAME        = hp2ps
 utils/hp2ps_dist_INSTALL_INPLACE = YES
 utils/hp2ps_dist_SHELL_WRAPPER              = YES
 utils/hp2ps_dist_INSTALL_SHELL_WRAPPER_NAME = hp2ps
-
-utils/hp2ps_CC_OPTS += $(addprefix -I,$(GHC_INCLUDE_DIRS))
 
 # stage 1
 utils/hp2ps_dist-install_C_SRCS = $(utils/hp2ps_dist_C_SRCS)

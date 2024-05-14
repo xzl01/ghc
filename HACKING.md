@@ -8,16 +8,16 @@ information to help you get started right away.
 The GHC Developer's Wiki
 ========================
 
-The home for GHC hackers is our Trac instance, located here:
+The home for GHC hackers is our GitLab instance, located here:
 
-<http://ghc.haskell.org/trac/ghc>
+<https://gitlab.haskell.org/ghc/ghc>
 
-From here, you can file bugs (or look them up,) use the wiki, view the
+From here, you can file bugs (or look them up), use the wiki, view the
 `git` history, among other things. Of particular note is the building
 page, which has the high level overview of the build process and how
 to get the source:
 
-<http://ghc.haskell.org/trac/ghc/wiki/Building>
+<https://gitlab.haskell.org/ghc/ghc/wikis/building>
 
 Contributing patches to GHC in a hurry
 ======================================
@@ -25,7 +25,7 @@ Contributing patches to GHC in a hurry
 Make sure your system has the necessary tools to compile GHC. You can
 find an overview here:
 
-<http://ghc.haskell.org/trac/ghc/wiki/Building/Preparation>
+<https://gitlab.haskell.org/ghc/ghc/wikis/building/preparation>
 
 Next, clone the repository and all the associated libraries:
 
@@ -34,7 +34,7 @@ $ git clone --recursive git@gitlab.haskell.org:ghc/ghc.git
 ```
 
 On Windows, you need an extra repository containing some build tools.
-These can be downloaded for you by configure. This only needs to be done once by running:
+These can be downloaded for you by `configure`. This only needs to be done once by running:
 
 ```
 $ ./configure --enable-tarballs-autodownload
@@ -50,47 +50,54 @@ $ ... double-check mk/build.mk ...
 ```
 
 Now build. The convenient `validate` script will build the tree in a way which
-is both quick to build and consistent with our testsuite,
+is both quick to build and consistent with our testsuite:
 
 ```
 $ ./validate --build-only
 ```
 
-You can use the `./inplace/bin/ghc-stage2` binary to play with the
+You can use the `_validatebuild/stage1/bin/ghc` binary to play with the
 newly built compiler.
 
 Now, hack on your copy and rebuild (with `make`) as necessary.
 
 Then start by making your commits however you want. When you're done, you can submit
- a pull request on Github for small changes. For larger changes the patch needs to be
- submitted to [Phabricator](https://phabricator.haskell.org/) for code review.
- The GHC Trac Wiki has a good summary for the [overall process](https://ghc.haskell.org/trac/ghc/wiki/WorkingConventions/FixingBugs)
- as well as a guide on 
- [how to use Phabricator/arcanist](https://ghc.haskell.org/trac/ghc/wiki/Phabricator).
+a pull request on Github for small changes. For larger changes the patch needs to be
+submitted to [GitLab](https://gitlab.haskell.org/ghc/ghc/merge_requests) for code review.
+The GHC Wiki has a good summary for the [overall process](https://gitlab.haskell.org/ghc/ghc/wikis/working-conventions/fixing-bugs). One or several reviewers will review your PR, and when they are ok with your changes, they will assign the PR to [Marge Bot](https://gitlab.haskell.org/marge-bot) which will automatically rebase, batch and then merge your PR (assuming the build passes).
 
 
 Useful links:
 =============
 
-An overview of things like using git, the release process, filing bugs
+An overview of things like using Git, the release process, filing bugs
 and more can be located here:
 
-<http://ghc.haskell.org/trac/ghc/wiki/WorkingConventions>
+<https://gitlab.haskell.org/ghc/ghc/wikis/contributing>
 
 You can find our coding conventions for the compiler and RTS here:
 
-<http://ghc.haskell.org/trac/ghc/wiki/Commentary/CodingStyle>
-<http://ghc.haskell.org/trac/ghc/wiki/Commentary/Rts/Conventions>
-
-A high level overview of the bug tracker:
-
-<http://ghc.haskell.org/trac/ghc/wiki/WorkingConventions/BugTracker>
+<https://gitlab.haskell.org/ghc/ghc/wikis/commentary/coding-style>
+<https://gitlab.haskell.org/ghc/ghc/wikis/commentary/rts/conventions>
 
 If you're going to contribute regularly, **learning how to use the
 build system is important** and will save you lots of time. You should
 read over this page carefully:
 
-<http://ghc.haskell.org/trac/ghc/wiki/Building/Using>
+<https://gitlab.haskell.org/ghc/ghc/wikis/building/using>
+
+A web based code explorer for the GHC source code with semantic analysis
+and type information of the GHC sources is available at:
+
+<https://haskell-code-explorer.mfix.io/>
+
+Look for `GHC` in `Package-name`. For example, here is the link to
+[GHC-8.6.5](https://haskell-code-explorer.mfix.io/package/ghc-8.6.5).
+
+If you want to watch issues and code review activities, the following page is a good start:
+
+<https://gitlab.haskell.org/ghc/ghc/activity>
+
 
 How to communicate with us
 ==========================
@@ -101,7 +108,7 @@ provide plenty through a variety of means!
 ## IRC
 
 If you're an IRC user, be sure to drop by the official `#ghc` channel
-on [freenode](http://freenode.org). Many (but not all) of the
+on [Libera.Chat](https://libera.chat). Many (but not all) of the
 developers and committers are actively there during a variety of
 hours.
 
@@ -126,10 +133,6 @@ undoubtedly also interested in the other mailing lists:
 
  * [glasgow-haskell-users](http://www.haskell.org/mailman/listinfo/glasgow-haskell-users)
    is where developers/users meet.
- * [ghc-tickets](http://www.haskell.org/mailman/listinfo/ghc-tickets)
-   for email from Trac.
- * [ghc-builds](http://www.haskell.org/mailman/listinfo/ghc-builds)
-   for nightly build emails.
  * [ghc-commits](http://www.haskell.org/mailman/listinfo/ghc-commits)
    for commit messages when someone pushes to the repository.
 

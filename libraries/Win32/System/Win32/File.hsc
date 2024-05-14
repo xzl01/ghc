@@ -1,6 +1,6 @@
 #if __GLASGOW_HASKELL__ >= 709
 {-# LANGUAGE Safe #-}
-#elif __GLASGOW_HASKELL__ >= 701
+#else
 {-# LANGUAGE Trustworthy #-}
 #endif
 -----------------------------------------------------------------------------
@@ -18,13 +18,225 @@
 -----------------------------------------------------------------------------
 
 module System.Win32.File
-{-
-        ( AccessMode, ShareMode, CreateMode, FileAttributeOrFlag
-        , CreateFile, CloseHandle, DeleteFile, CopyFile
-        , MoveFileFlag, MoveFile, MoveFileEx,
-        )
--}
-where
+    ( -- * Access modes
+      AccessMode
+    , gENERIC_NONE
+    , gENERIC_READ
+    , gENERIC_WRITE
+    , gENERIC_EXECUTE
+    , gENERIC_ALL
+    , dELETE
+    , rEAD_CONTROL
+    , wRITE_DAC
+    , wRITE_OWNER
+    , sYNCHRONIZE
+    , sTANDARD_RIGHTS_REQUIRED
+    , sTANDARD_RIGHTS_READ
+    , sTANDARD_RIGHTS_WRITE
+    , sTANDARD_RIGHTS_EXECUTE
+    , sTANDARD_RIGHTS_ALL
+    , sPECIFIC_RIGHTS_ALL
+    , aCCESS_SYSTEM_SECURITY
+    , mAXIMUM_ALLOWED
+    , fILE_ADD_FILE
+    , fILE_ADD_SUBDIRECTORY
+    , fILE_ALL_ACCESS
+    , fILE_APPEND_DATA
+    , fILE_CREATE_PIPE_INSTANCE
+    , fILE_DELETE_CHILD
+    , fILE_EXECUTE
+    , fILE_LIST_DIRECTORY
+    , fILE_READ_ATTRIBUTES
+    , fILE_READ_DATA
+    , fILE_READ_EA
+    , fILE_TRAVERSE
+    , fILE_WRITE_ATTRIBUTES
+    , fILE_WRITE_DATA
+    , fILE_WRITE_EA
+
+      -- * Sharing modes
+    , ShareMode
+    , fILE_SHARE_NONE
+    , fILE_SHARE_READ
+    , fILE_SHARE_WRITE
+    , fILE_SHARE_DELETE
+
+      -- * Creation modes
+    , CreateMode
+    , cREATE_NEW
+    , cREATE_ALWAYS
+    , oPEN_EXISTING
+    , oPEN_ALWAYS
+    , tRUNCATE_EXISTING
+
+      -- * File attributes and flags
+    , FileAttributeOrFlag
+    , fILE_ATTRIBUTE_READONLY
+    , fILE_ATTRIBUTE_HIDDEN
+    , fILE_ATTRIBUTE_SYSTEM
+    , fILE_ATTRIBUTE_DIRECTORY
+    , fILE_ATTRIBUTE_ARCHIVE
+    , fILE_ATTRIBUTE_NORMAL
+    , fILE_ATTRIBUTE_TEMPORARY
+    , fILE_ATTRIBUTE_COMPRESSED
+    , fILE_ATTRIBUTE_REPARSE_POINT
+    , fILE_FLAG_WRITE_THROUGH
+    , fILE_FLAG_OVERLAPPED
+    , fILE_FLAG_NO_BUFFERING
+    , fILE_FLAG_RANDOM_ACCESS
+    , fILE_FLAG_SEQUENTIAL_SCAN
+    , fILE_FLAG_DELETE_ON_CLOSE
+    , fILE_FLAG_BACKUP_SEMANTICS
+    , fILE_FLAG_POSIX_SEMANTICS
+#ifndef __WINE_WINDOWS_H
+    , sECURITY_ANONYMOUS
+    , sECURITY_IDENTIFICATION
+    , sECURITY_IMPERSONATION
+    , sECURITY_DELEGATION
+    , sECURITY_CONTEXT_TRACKING
+    , sECURITY_EFFECTIVE_ONLY
+    , sECURITY_SQOS_PRESENT
+    , sECURITY_VALID_SQOS_FLAGS
+#endif
+
+      -- * Move file flags
+    , MoveFileFlag
+    , mOVEFILE_REPLACE_EXISTING
+    , mOVEFILE_COPY_ALLOWED
+    , mOVEFILE_DELAY_UNTIL_REBOOT
+
+      -- * File pointer directions
+    , FilePtrDirection
+    , fILE_BEGIN
+    , fILE_CURRENT
+    , fILE_END
+
+      -- * Drive types
+    , DriveType
+    , dRIVE_UNKNOWN
+    , dRIVE_NO_ROOT_DIR
+    , dRIVE_REMOVABLE
+    , dRIVE_FIXED
+    , dRIVE_REMOTE
+    , dRIVE_CDROM
+    , dRIVE_RAMDISK
+
+      -- * Define DOS device flags
+    , DefineDosDeviceFlags
+    , dDD_RAW_TARGET_PATH
+    , dDD_REMOVE_DEFINITION
+    , dDD_EXACT_MATCH_ON_REMOVE
+
+      -- * Binary types
+    , BinaryType
+    , sCS_32BIT_BINARY
+    , sCS_DOS_BINARY
+    , sCS_WOW_BINARY
+    , sCS_PIF_BINARY
+    , sCS_POSIX_BINARY
+    , sCS_OS216_BINARY
+
+      -- * File notification flags
+    , FileNotificationFlag
+    , fILE_NOTIFY_CHANGE_FILE_NAME
+    , fILE_NOTIFY_CHANGE_DIR_NAME
+    , fILE_NOTIFY_CHANGE_ATTRIBUTES
+    , fILE_NOTIFY_CHANGE_SIZE
+    , fILE_NOTIFY_CHANGE_LAST_WRITE
+    , fILE_NOTIFY_CHANGE_SECURITY
+
+      -- * File types
+    , FileType
+    , fILE_TYPE_UNKNOWN
+    , fILE_TYPE_DISK
+    , fILE_TYPE_CHAR
+    , fILE_TYPE_PIPE
+    , fILE_TYPE_REMOTE
+
+      -- * Lock modes
+    , LockMode
+    , lOCKFILE_EXCLUSIVE_LOCK
+    , lOCKFILE_FAIL_IMMEDIATELY
+
+      -- * GetFileEx information levels
+    , GET_FILEEX_INFO_LEVELS
+    , getFileExInfoStandard
+    , getFileExMaxInfoLevel
+
+      -- * Security attributes
+    , SECURITY_ATTRIBUTES(..)
+    , PSECURITY_ATTRIBUTES
+    , LPSECURITY_ATTRIBUTES
+    , MbLPSECURITY_ATTRIBUTES
+
+      -- * BY_HANDLE file information
+    , BY_HANDLE_FILE_INFORMATION(..)
+
+      -- * Win32 file attribute data
+    , WIN32_FILE_ATTRIBUTE_DATA(..)
+
+      -- * Helpers
+    , failIfWithRetry
+    , failIfWithRetry_
+    , failIfFalseWithRetry_
+      -- * File operations
+    , deleteFile
+    , copyFile
+    , moveFile
+    , moveFileEx
+    , setCurrentDirectory
+    , createDirectory
+    , createDirectoryEx
+    , removeDirectory
+    , getBinaryType
+
+      -- * HANDLE operations
+    , createFile
+    , closeHandle
+    , getFileType
+    , flushFileBuffers
+    , setEndOfFile
+    , setFileAttributes
+    , getFileAttributes
+    , getFileAttributesExStandard
+    , getFileInformationByHandle
+
+      -- ** Reading/writing
+      -- | Some operations below bear the @win32_@ prefix to avoid shadowing
+      -- operations from "Prelude".
+    , OVERLAPPED(..)
+    , LPOVERLAPPED
+    , MbLPOVERLAPPED
+    , win32_ReadFile
+    , win32_WriteFile
+    , setFilePointerEx
+
+      -- * File notifications
+    , findFirstChangeNotification
+    , findNextChangeNotification
+    , findCloseChangeNotification
+
+      -- * Directories
+    , FindData
+    , getFindDataFileName
+    , findFirstFile
+    , findNextFile
+    , findClose
+
+      -- * DOS device flags
+    , defineDosDevice
+    , areFileApisANSI
+    , setFileApisToOEM
+    , setFileApisToANSI
+    , setHandleCount
+    , getLogicalDrives
+    , getDiskFreeSpace
+    , setVolumeLabel
+
+      -- * File locks
+    , lockFile
+    , unlockFile
+    ) where
 
 import System.Win32.Types
 import System.Win32.Time
@@ -227,6 +439,15 @@ type FileType = DWORD
 
 ----------------------------------------------------------------
 
+type LockMode = DWORD
+
+#{enum LockMode,
+ , lOCKFILE_EXCLUSIVE_LOCK   = LOCKFILE_EXCLUSIVE_LOCK
+ , lOCKFILE_FAIL_IMMEDIATELY = LOCKFILE_FAIL_IMMEDIATELY
+ }
+
+----------------------------------------------------------------
+
 newtype GET_FILEEX_INFO_LEVELS = GET_FILEEX_INFO_LEVELS (#type GET_FILEEX_INFO_LEVELS)
     deriving (Eq, Ord)
 
@@ -237,8 +458,28 @@ newtype GET_FILEEX_INFO_LEVELS = GET_FILEEX_INFO_LEVELS (#type GET_FILEEX_INFO_L
 
 ----------------------------------------------------------------
 
-type LPSECURITY_ATTRIBUTES = Ptr ()
+data SECURITY_ATTRIBUTES = SECURITY_ATTRIBUTES
+    { nLength              :: !DWORD
+    , lpSecurityDescriptor :: !LPVOID
+    , bInheritHandle       :: !BOOL
+    } deriving Show
+
+type PSECURITY_ATTRIBUTES = Ptr SECURITY_ATTRIBUTES
+type LPSECURITY_ATTRIBUTES = Ptr SECURITY_ATTRIBUTES
 type MbLPSECURITY_ATTRIBUTES = Maybe LPSECURITY_ATTRIBUTES
+
+instance Storable SECURITY_ATTRIBUTES where
+    sizeOf = const #{size SECURITY_ATTRIBUTES}
+    alignment _ = #alignment SECURITY_ATTRIBUTES
+    poke buf input = do
+        (#poke SECURITY_ATTRIBUTES, nLength)              buf (nLength input)
+        (#poke SECURITY_ATTRIBUTES, lpSecurityDescriptor) buf (lpSecurityDescriptor input)
+        (#poke SECURITY_ATTRIBUTES, bInheritHandle)       buf (bInheritHandle input)
+    peek buf = do
+        nLength'              <- (#peek SECURITY_ATTRIBUTES, nLength)              buf
+        lpSecurityDescriptor' <- (#peek SECURITY_ATTRIBUTES, lpSecurityDescriptor) buf
+        bInheritHandle'       <- (#peek SECURITY_ATTRIBUTES, bInheritHandle)       buf
+        return $ SECURITY_ATTRIBUTES nLength' lpSecurityDescriptor' bInheritHandle'
 
 ----------------------------------------------------------------
 -- Other types
@@ -446,10 +687,6 @@ closeHandle h =
 foreign import WINDOWS_CCONV unsafe "windows.h CloseHandle"
   c_CloseHandle :: HANDLE -> IO Bool
 
-{-# CFILES cbits/HsWin32.c #-}
-foreign import ccall "HsWin32.h &CloseHandleFinaliser"
-    c_CloseHandleFinaliser :: FunPtr (Ptr a -> IO ())
-
 foreign import WINDOWS_CCONV unsafe "windows.h GetFileType"
   getFileType :: HANDLE -> IO FileType
 --Apparently no error code
@@ -503,12 +740,33 @@ foreign import WINDOWS_CCONV unsafe "windows.h GetFileInformationByHandle"
 ----------------------------------------------------------------
 
 -- No support for this yet
---type OVERLAPPED =
--- (DWORD,  -- Offset
---  DWORD,  -- OffsetHigh
---  HANDLE) -- hEvent
+data OVERLAPPED
+  = OVERLAPPED { ovl_internal     :: ULONG_PTR
+               , ovl_internalHigh :: ULONG_PTR
+               , ovl_offset       :: DWORD
+               , ovl_offsetHigh   :: DWORD
+               , ovl_hEvent       :: HANDLE
+               } deriving (Show)
 
-type LPOVERLAPPED = Ptr ()
+instance Storable OVERLAPPED where
+  sizeOf = const (#size OVERLAPPED)
+  alignment _ = #alignment OVERLAPPED
+  poke buf ad = do
+      (#poke OVERLAPPED, Internal    ) buf (ovl_internal     ad)
+      (#poke OVERLAPPED, InternalHigh) buf (ovl_internalHigh ad)
+      (#poke OVERLAPPED, Offset      ) buf (ovl_offset       ad)
+      (#poke OVERLAPPED, OffsetHigh  ) buf (ovl_offsetHigh   ad)
+      (#poke OVERLAPPED, hEvent      ) buf (ovl_hEvent       ad)
+
+  peek buf = do
+      intnl      <- (#peek OVERLAPPED, Internal    ) buf
+      intnl_high <- (#peek OVERLAPPED, InternalHigh) buf
+      off        <- (#peek OVERLAPPED, Offset      ) buf
+      off_high   <- (#peek OVERLAPPED, OffsetHigh  ) buf
+      hevnt      <- (#peek OVERLAPPED, hEvent      ) buf
+      return $ OVERLAPPED intnl intnl_high off off_high hevnt
+
+type LPOVERLAPPED = Ptr OVERLAPPED
 
 type MbLPOVERLAPPED = Maybe LPOVERLAPPED
 
@@ -531,9 +789,13 @@ win32_WriteFile h buf n mb_over =
 foreign import WINDOWS_CCONV unsafe "windows.h WriteFile"
   c_WriteFile :: HANDLE -> Ptr a -> DWORD -> Ptr DWORD -> LPOVERLAPPED -> IO Bool
 
--- missing Seek functioinality; GSL ???
--- Dont have Word64; ADR
--- %fun SetFilePointer :: HANDLE -> Word64 -> FilePtrDirection -> IO Word64
+setFilePointerEx :: HANDLE -> LARGE_INTEGER -> FilePtrDirection -> IO LARGE_INTEGER
+setFilePointerEx h dist dir =
+  alloca $ \p_pos -> do
+  failIfFalse_ "SetFilePointerEx" $ c_SetFilePointerEx h dist p_pos dir
+  peek p_pos
+foreign import WINDOWS_CCONV unsafe "windows.h SetFilePointerEx"
+  c_SetFilePointerEx :: HANDLE -> LARGE_INTEGER -> Ptr LARGE_INTEGER -> FilePtrDirection -> IO Bool
 
 ----------------------------------------------------------------
 -- File Notifications
@@ -668,6 +930,48 @@ setVolumeLabel path name =
   failIfFalse_ "SetVolumeLabel" $ c_SetVolumeLabel c_path c_name
 foreign import WINDOWS_CCONV unsafe "windows.h SetVolumeLabelW"
   c_SetVolumeLabel :: LPCTSTR -> LPCTSTR -> IO Bool
+
+----------------------------------------------------------------
+-- File locks
+----------------------------------------------------------------
+
+-- | Locks a given range in a file handle, To lock an entire file
+--   use 0xFFFFFFFFFFFFFFFF for size and 0 for offset.
+lockFile :: HANDLE   -- ^ CreateFile handle
+         -> LockMode -- ^ Locking mode
+         -> DWORD64  -- ^ Size of region to lock
+         -> DWORD64  -- ^ Beginning offset of file to lock
+         -> IO BOOL  -- ^ Indicates if locking was successful, if not query
+                     --   getLastError.
+lockFile hwnd mode size f_offset =
+  do let s_low = fromIntegral (size .&. 0xFFFFFFFF)
+         s_hi  = fromIntegral (size `shiftR` 32)
+         o_low = fromIntegral (f_offset .&. 0xFFFFFFFF)
+         o_hi  = fromIntegral (f_offset `shiftR` 32)
+         ovlp  = OVERLAPPED 0 0 o_low o_hi nullPtr
+     with ovlp $ \ptr -> c_LockFileEx hwnd mode 0 s_low s_hi ptr
+
+foreign import WINDOWS_CCONV unsafe "LockFileEx"
+  c_LockFileEx :: HANDLE -> DWORD -> DWORD -> DWORD -> DWORD -> LPOVERLAPPED
+               -> IO BOOL
+
+-- | Unlocks a given range in a file handle, To unlock an entire file
+--   use 0xFFFFFFFFFFFFFFFF for size and 0 for offset.
+unlockFile :: HANDLE  -- ^ CreateFile handle
+           -> DWORD64 -- ^ Size of region to unlock
+           -> DWORD64 -- ^ Beginning offset of file to unlock
+           -> IO BOOL -- ^ Indicates if unlocking was successful, if not query
+                      --   getLastError.
+unlockFile hwnd size f_offset =
+  do let s_low = fromIntegral (size .&. 0xFFFFFFFF)
+         s_hi  = fromIntegral (size `shiftR` 32)
+         o_low = fromIntegral (f_offset .&. 0xFFFFFFFF)
+         o_hi  = fromIntegral (f_offset `shiftR` 32)
+         ovlp  = OVERLAPPED 0 0 o_low o_hi nullPtr
+     with ovlp $ \ptr -> c_UnlockFileEx hwnd 0 s_low s_hi ptr
+
+foreign import WINDOWS_CCONV unsafe "UnlockFileEx"
+  c_UnlockFileEx :: HANDLE -> DWORD -> DWORD -> DWORD -> LPOVERLAPPED -> IO BOOL
 
 ----------------------------------------------------------------
 -- End

@@ -8,7 +8,7 @@
 --
 -- A data type defining the language extensions supported by GHC.
 --
-{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveGeneric, Safe #-}
 module GHC.LanguageExtensions.Type ( Extension(..) ) where
 
 import Prelude -- See note [Why do we import Prelude here?]
@@ -21,15 +21,16 @@ import GHC.Generics
 -- here as this would require adding transitive dependencies to the
 -- @template-haskell@ package, which must have a minimal dependency set.
 data Extension
--- See Note [Updating flag description in the User's Guide] in DynFlags
+-- See Note [Updating flag description in the User's Guide] in
+-- GHC.Driver.Session
    = Cpp
    | OverlappingInstances
    | UndecidableInstances
    | IncoherentInstances
    | UndecidableSuperClasses
    | MonomorphismRestriction
-   | MonoPatBinds
    | MonoLocalBinds
+   | DeepSubsumption
    | RelaxedPolyRec           -- Deprecated
    | ExtendedDefaultRules     -- Use GHC's extended rules for defaulting
    | ForeignFunctionInterface
@@ -42,6 +43,7 @@ data Extension
    | Arrows                   -- Arrow-notation syntax
    | TemplateHaskell
    | TemplateHaskellQuotes    -- subset of TH supported by stage1, no splice
+   | QualifiedDo
    | QuasiQuotes
    | ImplicitParams
    | ImplicitPrelude
@@ -49,6 +51,8 @@ data Extension
    | AllowAmbiguousTypes
    | UnboxedTuples
    | UnboxedSums
+   | UnliftedNewtypes
+   | UnliftedDatatypes
    | BangPatterns
    | TypeFamilies
    | TypeFamilyDependencies
@@ -58,7 +62,7 @@ data Extension
    | NumDecimals
    | DisambiguateRecordFields
    | RecordWildCards
-   | RecordPuns
+   | NamedFieldPuns
    | ViewPatterns
    | GADTs
    | GADTSyntax
@@ -71,6 +75,7 @@ data Extension
    | DataKinds                -- Datatype promotion
    | InstanceSigs
    | ApplicativeDo
+   | LinearTypes
 
    | StandaloneDeriving
    | DeriveDataTypeable
@@ -134,9 +139,19 @@ data Extension
    | TypeApplications
    | Strict
    | StrictData
-   | MonadFailDesugaring
    | EmptyDataDeriving
    | NumericUnderscores
    | QuantifiedConstraints
    | StarIsType
+   | ImportQualifiedPost
+   | CUSKs
+   | StandaloneKindSignatures
+   | LexicalNegation
+   | FieldSelectors
+   | OverloadedRecordDot
+   | OverloadedRecordUpdate
    deriving (Eq, Enum, Show, Generic, Bounded)
+-- 'Ord' and 'Bounded' are provided for GHC API users (see discussions
+-- in https://gitlab.haskell.org/ghc/ghc/merge_requests/2707 and
+-- https://gitlab.haskell.org/ghc/ghc/merge_requests/826).
+instance Ord Extension where compare a b = compare (fromEnum a) (fromEnum b)

@@ -1,3 +1,4 @@
+{-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -70,6 +71,10 @@ foreign import ccall setupterm :: CString -> CInt -> Ptr CInt -> IO ()
 -- | Initialize the terminfo library to the given terminal entry.
 -- 
 -- Throws a 'SetupTermError' if the terminfo database could not be read.
+--
+-- *Note:* @ncurses@ is not thread-safe; initializing or using multiple
+-- 'Terminal's in different threads at the same time can result in memory
+-- unsafety.
 setupTerm :: String -> IO Terminal
 setupTerm term =
     withCString term $ \c_term ->
@@ -259,8 +264,8 @@ tiGetStr cap = Capability $ const $ do
 
 
                     
-foreign import ccall tparm ::
-    CString -> CLong -> CLong -> CLong -> CLong -> CLong -> CLong 
+foreign import capi "term.h tparm"
+    tparm :: CString -> CLong -> CLong -> CLong -> CLong -> CLong -> CLong
     -> CLong -> CLong -> CLong -- p1,...,p9
     -> IO CString
 
